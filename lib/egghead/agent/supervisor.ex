@@ -25,6 +25,36 @@ defmodule Egghead.Agent.Supervisor do
   end
 
   @doc """
+  Returns the default built-in agent record. Always available even when
+  no agent records exist in the store.
+  """
+  def default_agent do
+    %Egghead.Record{
+      id: "egghead",
+      title: "Egghead",
+      class: :agent,
+      tags: ["agent"],
+      meta: %{
+        "model" => "claude-sonnet-4-6",
+        "provider" => "anthropic",
+        "capabilities" => ["record_read", "record_append", "search"]
+      },
+      body: """
+      You are Egghead, the default agent for this record store. You are helpful,
+      direct, and knowledgeable about the contents of the store.
+
+      When asked a question, search the records for relevant information and
+      provide a well-sourced answer. When asked to explore a topic, search
+      broadly and create records for significant findings.
+
+      If the store is empty or doesn't contain relevant information, say so
+      honestly and suggest what kinds of records might be worth creating.
+      """,
+      source_path: nil
+    }
+  end
+
+  @doc """
   Scans the record store for agent records and starts agent processes
   for any that aren't already running.
 
@@ -36,6 +66,14 @@ defmodule Egghead.Agent.Supervisor do
   def sync_agents(supervisor \\ __MODULE__, opts \\ []) do
     store = Keyword.get(opts, :store, Egghead.RecordStore)
     agent_records = Egghead.RecordStore.search_by_class(store, :agent)
+
+    # Always ensure the default agent is running
+    default = default_agent()
+    default_name = Egghead.Agent.agent_name(default.id)
+
+    if GenServer.whereis(default_name) == nil do
+      start_agent(supervisor, default, store: store)
+    end
 
     # Start agents that aren't running
     Enum.each(agent_records, fn record ->
@@ -58,7 +96,7 @@ defmodule Egghead.Agent.Supervisor do
       if is_pid(pid) do
         case :sys.get_state(pid) do
           %{id: id} ->
-            unless MapSet.member?(running_ids, id) do
+            unless MapSet.member?(running_ids, id) or id == default.id do
               Logger.info("Stopping agent: #{id} (record removed)")
               DynamicSupervisor.terminate_child(supervisor, pid)
             end

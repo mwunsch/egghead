@@ -215,17 +215,23 @@ defmodule Egghead.Agent do
   """
   @spec list_agents() :: [map()]
   def list_agents do
-    Egghead.search_by_class(:agent)
-    |> Enum.filter(fn record ->
-      agent_name(record.id) |> GenServer.whereis() != nil
-    end)
-    |> Enum.map(fn record ->
-      name = agent_name(record.id)
+    # Get agent records from the store
+    store_agents =
+      Egghead.search_by_class(:agent)
+      |> Enum.map(& &1.id)
+
+    # Include the default agent
+    all_ids = Enum.uniq(["egghead" | store_agents])
+
+    all_ids
+    |> Enum.filter(fn id -> agent_name(id) |> GenServer.whereis() != nil end)
+    |> Enum.map(fn id ->
+      name = agent_name(id)
       state = :sys.get_state(GenServer.whereis(name))
 
       %{
-        id: record.id,
-        name: record.title || record.id,
+        id: state.id,
+        name: state.name,
         capabilities: state.capabilities,
         model: state.model,
         usage: state.usage,

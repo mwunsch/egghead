@@ -1,21 +1,63 @@
 # Egghead
 
-**TODO: Add description**
+A consultable record store with agent perspectives, built on Elixir/OTP.
 
-## Installation
+Plain Markdown and org-mode files sit at the center. A SQLite graph index
+materializes queries. AI agents with configurable dispositions read, reason
+about, and contribute to the shared knowledge. External tools consult
+Egghead via MCP.
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `egghead` to your list of dependencies in `mix.exs`:
+## Quick Start
 
-```elixir
-def deps do
-  [
-    {:egghead, "~> 0.1.0"}
-  ]
-end
+```bash
+mix deps.get
+export ANTHROPIC_API_KEY=your-key-here
+iex -S mix
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/egghead>.
+```elixir
+Egghead.create_record(%{id: "ideas/first", title: "First Thought", tags: ["meta"], body: "Content."})
+Egghead.search("first")
+Egghead.prompt("egghead", "What do we know so far?")
+```
 
+Or drop `.md` files in `records/` — the file watcher picks them up.
+
+## Records
+
+Markdown with optional YAML frontmatter. All metadata is optional — id
+derives from filename, timestamps from the filesystem, author from file
+owner. Subdirectories are supported. Arbitrary frontmatter keys are preserved.
+
+Four record classes: `durable` (permanent knowledge), `inbox` (ephemeral),
+`deliberation` (agent conversation trails), `agent` (agent configuration).
+
+## Agents
+
+Agents are records with `class: agent`. The body is the system prompt.
+Meta fields set model, provider, capabilities. Drop a file, agent starts.
+Edit it, agent restarts. Delete it, agent terminates.
+
+Agents decide when to use their tools (search, read, create, update records).
+No forced behavior — the LLM reasons and calls tools as needed.
+
+## MCP
+
+Stdio transport (for Claude Code) and HTTP transport (for anything, from
+anywhere). 11 tools covering search, CRUD, graph traversal, and agent
+prompting.
+
+See `.mcp.json` for the project-local config. For global access:
+
+```bash
+claude mcp add --transport stdio --scope user egghead \
+  -- bash -c "cd /path/to/egghead && mix run --no-halt -e 'Egghead.MCP.Server.start()'"
+```
+
+## Documentation
+
+Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc):
+
+```bash
+mix docs
+```

@@ -27,7 +27,9 @@ defmodule Egghead.MixProject do
       {:earmark, "~> 1.4"},
       {:nimble_parsec, "~> 1.4"},
       {:exqlite, "~> 0.27"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:bandit, "~> 1.6"},
+      {:plug, "~> 1.16"}
     ]
   end
 end

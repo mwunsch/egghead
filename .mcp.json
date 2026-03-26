@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "egghead": {
+      "command": "mix",
+      "args": ["run", "--no-halt", "-e", "Egghead.MCP.Server.start()"],
+      "cwd": "/Users/m/Work/egghead"
+    }
+  }
+}

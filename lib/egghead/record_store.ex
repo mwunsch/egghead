@@ -1,24 +1,24 @@
 defmodule Egghead.RecordStore do
   @moduledoc """
-  GenServer that manages the in-memory record index.
+  GenServer that manages the record store.
 
-  Watches a configurable records directory on the filesystem, parses
-  Markdown and org-mode files into `Egghead.Record` structs, and
-  maintains an in-memory index for querying by id, tag, class, and links.
+  Watches a configurable records directory on the filesystem, delegates
+  all queries to `Egghead.Index` (SQLite-backed), and handles file
+  creation and filesystem events.
 
-  The index stores lightweight records — metadata only, with `body` and
-  `ast` set to `nil`. When you call `get_record/2`, the full record is
-  hydrated from disk, including body, AST, and outline. Listing and
-  search functions return lightweight index records.
+  The Index stores lightweight metadata. `get_record/2` hydrates the
+  full record (body, AST, outline) from disk on each call — files are
+  the source of truth.
 
   ## State
 
   The GenServer state is an explicit `%Egghead.RecordStore.State{}` struct
-  containing the records directory path and a map of id => record.
+  containing the records directory path, watcher pid, and index server ref.
   """
 
   use GenServer
 
+  alias Egghead.Index
   alias Egghead.Record
   alias Egghead.Record.Parser
 
@@ -30,10 +30,10 @@ defmodule Egghead.RecordStore do
     @type t :: %__MODULE__{
             records_dir: String.t(),
             watcher_pid: pid() | nil,
-            records: %{String.t() => Record.t()}
+            index: GenServer.server()
           }
 
-    defstruct records_dir: nil, watcher_pid: nil, records: %{}
+    defstruct records_dir: nil, watcher_pid: nil, index: Index
   end
 
   # --- Public API ---
@@ -45,6 +45,7 @@ defmodule Egghead.RecordStore do
 
     * `:records_dir` — path to the directory containing record files (required)
     * `:watch` — whether to watch the filesystem for changes (default: `true`)
+    * `:index` — the Index server to use (default: `Egghead.Index`)
     * `:name` — GenServer registration name (defaults to `__MODULE__`)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -74,7 +75,7 @@ defmodule Egghead.RecordStore do
   end
 
   @doc """
-  Lists all records in the store.
+  Lists all records in the store (lightweight, no body/ast).
   """
   @spec list_records(GenServer.server()) :: [Record.t()]
   def list_records(server \\ __MODULE__) do
@@ -99,10 +100,6 @@ defmodule Egghead.RecordStore do
 
   @doc """
   Finds linked records starting from the given id, traversing `depth` levels.
-
-  Returns a flat list of records reachable from the starting record's links,
-  up to the given depth. Does not include the starting record itself.
-  Avoids cycles.
   """
   @spec find_links(GenServer.server(), String.t(), non_neg_integer()) :: [Record.t()]
   def find_links(server \\ __MODULE__, id, depth \\ 1) do
@@ -110,11 +107,35 @@ defmodule Egghead.RecordStore do
   end
 
   @doc """
-  Reloads all records from the filesystem.
+  Finds records that link TO the given id (reverse graph).
+  """
+  @spec find_backlinks(GenServer.server(), String.t()) :: [Record.t()]
+  def find_backlinks(server \\ __MODULE__, id) do
+    GenServer.call(server, {:find_backlinks, id})
+  end
+
+  @doc """
+  Full-text search across record titles and bodies.
+  """
+  @spec search(GenServer.server(), String.t(), keyword()) :: [Record.t()]
+  def search(server \\ __MODULE__, query, opts \\ []) do
+    GenServer.call(server, {:search, query, opts})
+  end
+
+  @doc """
+  Returns recently modified or created records.
+  """
+  @spec recent(GenServer.server(), keyword()) :: [Record.t()]
+  def recent(server \\ __MODULE__, opts \\ []) do
+    GenServer.call(server, {:recent, opts})
+  end
+
+  @doc """
+  Reloads all records from the filesystem into the index.
   """
   @spec reload(GenServer.server()) :: :ok
   def reload(server \\ __MODULE__) do
-    GenServer.call(server, :reload)
+    GenServer.call(server, :reload, :infinity)
   end
 
   # --- GenServer callbacks ---
@@ -122,8 +143,11 @@ defmodule Egghead.RecordStore do
   @impl true
   def init(opts) do
     records_dir = Keyword.fetch!(opts, :records_dir)
-    watch? = Keyword.get(opts, :watch, true)
     File.mkdir_p!(records_dir)
+    # Resolve symlinks so file watcher paths match (e.g. /tmp -> /private/tmp on macOS)
+    records_dir = records_dir |> Path.expand() |> resolve_symlinks()
+    index = Keyword.get(opts, :index, Index)
+    watch? = Keyword.get(opts, :watch, true)
 
     watcher_pid =
       if watch? do
@@ -139,10 +163,12 @@ defmodule Egghead.RecordStore do
 
     state = %State{
       records_dir: records_dir,
-      watcher_pid: watcher_pid
+      watcher_pid: watcher_pid,
+      index: index
     }
 
-    state = load_records(state)
+    # Build the index from files
+    Index.rebuild(index, records_dir)
 
     {:ok, state}
   end
@@ -152,74 +178,81 @@ defmodule Egghead.RecordStore do
     id = Map.get(attrs, :id) || Map.get(attrs, "id") || generate_id()
     attrs = normalize_attrs(attrs, id)
 
-    content = render_markdown(attrs)
-    filename = "#{id}.md"
-    path = Path.join(state.records_dir, filename)
+    # Check if already exists in index
+    case Index.get_record_meta(state.index, id) do
+      {:ok, _} ->
+        {:reply, {:error, :already_exists}, state}
 
-    if Map.has_key?(state.records, id) or File.exists?(path) do
-      {:reply, {:error, :already_exists}, state}
-    else
-      File.write!(path, content)
+      {:error, :not_found} ->
+        content = render_markdown(attrs)
+        filename = "#{id}.md"
+        path = Path.join(state.records_dir, filename)
 
-      case Parser.parse(content, source_path: path) do
-        {:ok, record} ->
-          state = %{state | records: Map.put(state.records, record.id, to_index(record))}
-          {:reply, {:ok, record}, state}
+        if File.exists?(path) do
+          {:reply, {:error, :already_exists}, state}
+        else
+          File.write!(path, content)
 
-        {:error, reason} ->
-          File.rm(path)
-          {:reply, {:error, reason}, state}
-      end
+          case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
+            {:ok, record} ->
+              Index.upsert_record(state.index, record)
+              {:reply, {:ok, record}, state}
+
+            {:error, reason} ->
+              File.rm(path)
+              {:reply, {:error, reason}, state}
+          end
+        end
     end
   end
 
   def handle_call({:get_record, id}, _from, state) do
-    case Map.fetch(state.records, id) do
-      {:ok, index_record} -> {:reply, hydrate(index_record), state}
-      :error -> {:reply, {:error, :not_found}, state}
+    case Index.get_record_meta(state.index, id) do
+      {:ok, meta} -> {:reply, hydrate(meta.source_path, state.records_dir), state}
+      {:error, :not_found} -> {:reply, {:error, :not_found}, state}
     end
   end
 
   def handle_call(:list_records, _from, state) do
-    {:reply, Map.values(state.records), state}
+    {:reply, Index.list_records(state.index), state}
   end
 
   def handle_call({:search_by_tag, tag}, _from, state) do
-    results =
-      state.records
-      |> Map.values()
-      |> Enum.filter(&(tag in &1.tags))
-
-    {:reply, results, state}
+    {:reply, Index.search_by_tag(state.index, tag), state}
   end
 
   def handle_call({:search_by_class, class}, _from, state) do
-    results =
-      state.records
-      |> Map.values()
-      |> Enum.filter(&(&1.class == class))
-
-    {:reply, results, state}
+    {:reply, Index.search_by_class(state.index, class), state}
   end
 
   def handle_call({:find_links, id, depth}, _from, state) do
-    results = traverse_links(state.records, id, depth, MapSet.new([id]))
-    {:reply, results, state}
+    {:reply, Index.find_links(state.index, id, depth), state}
+  end
+
+  def handle_call({:find_backlinks, id}, _from, state) do
+    {:reply, Index.find_backlinks(state.index, id), state}
+  end
+
+  def handle_call({:search, query, opts}, _from, state) do
+    {:reply, Index.search(state.index, query, opts), state}
+  end
+
+  def handle_call({:recent, opts}, _from, state) do
+    {:reply, Index.recent(state.index, opts), state}
   end
 
   def handle_call(:reload, _from, state) do
-    state = load_records(%{state | records: %{}})
+    Index.rebuild(state.index, state.records_dir)
     {:reply, :ok, state}
   end
 
   @impl true
   def handle_info({:file_event, _pid, {path, _events}}, state) do
     if record_file?(path) do
-      state = reload_file(state, path)
-      {:noreply, state}
-    else
-      {:noreply, state}
+      handle_file_change(state, path)
     end
+
+    {:noreply, state}
   end
 
   def handle_info({:file_event, _pid, :stop}, state) do
@@ -228,56 +261,20 @@ defmodule Egghead.RecordStore do
 
   # --- Private helpers ---
 
-  defp load_records(state) do
-    records =
-      state.records_dir
-      |> list_record_files()
-      |> Enum.reduce(%{}, fn path, acc ->
-        case File.read(path) do
-          {:ok, content} ->
-            case Parser.parse(content, source_path: path) do
-              {:ok, record} -> Map.put(acc, record.id, to_index(record))
-              {:error, _} -> acc
-            end
-
-          {:error, _} ->
-            acc
-        end
-      end)
-
-    %{state | records: records}
-  end
-
-  defp reload_file(state, path) do
+  defp handle_file_change(state, path) do
     if File.exists?(path) do
       case File.read(path) do
         {:ok, content} ->
-          case Parser.parse(content, source_path: path) do
-            {:ok, record} ->
-              # Remove any old record that had this source_path (id may have changed)
-              records =
-                state.records
-                |> Enum.reject(fn {_id, r} -> r.source_path == path end)
-                |> Map.new()
-                |> Map.put(record.id, to_index(record))
-
-              %{state | records: records}
-
-            {:error, _} ->
-              state
+          case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
+            {:ok, record} -> Index.upsert_record(state.index, record)
+            {:error, _} -> :skip
           end
 
         {:error, _} ->
-          state
+          :skip
       end
     else
-      # File was deleted — remove any record from this path
-      records =
-        state.records
-        |> Enum.reject(fn {_id, r} -> r.source_path == path end)
-        |> Map.new()
-
-      %{state | records: records}
+      Index.delete_by_path(state.index, path)
     end
   end
 
@@ -286,39 +283,18 @@ defmodule Egghead.RecordStore do
     ext == ".md" or ext == ".org"
   end
 
-  defp list_record_files(dir) do
-    case File.ls(dir) do
-      {:ok, files} ->
-        files
-        |> Enum.filter(&(String.ends_with?(&1, ".md") or String.ends_with?(&1, ".org")))
-        |> Enum.map(&Path.join(dir, &1))
+  defp hydrate(nil, _records_dir), do: {:error, :not_found}
+
+  defp hydrate(path, records_dir) do
+    case File.read(path) do
+      {:ok, content} ->
+        case Parser.parse(content, source_path: path, records_dir: records_dir) do
+          {:ok, record} -> {:ok, record}
+          {:error, _} -> {:error, :parse_error}
+        end
 
       {:error, _} ->
-        []
-    end
-  end
-
-  defp traverse_links(_records, _id, 0, _visited), do: []
-
-  defp traverse_links(records, id, depth, visited) do
-    case Map.get(records, id) do
-      nil ->
-        []
-
-      record ->
-        record.links
-        |> Enum.reject(&MapSet.member?(visited, &1))
-        |> Enum.flat_map(fn link_id ->
-          new_visited = MapSet.put(visited, link_id)
-
-          case Map.get(records, link_id) do
-            nil ->
-              []
-
-            linked ->
-              [linked | traverse_links(records, link_id, depth - 1, new_visited)]
-          end
-        end)
+        {:error, :file_read_error}
     end
   end
 
@@ -371,24 +347,25 @@ defmodule Egghead.RecordStore do
     "rec_#{:erlang.unique_integer([:positive, :monotonic])}"
   end
 
-  # Strip body and ast for index storage — metadata only
-  defp to_index(record) do
-    %{record | body: nil, ast: nil}
-  end
-
-  # Re-read from disk and parse to get full body + AST
-  defp hydrate(%Record{source_path: nil} = record), do: {:ok, record}
-
-  defp hydrate(%Record{source_path: path} = _index_record) do
-    case File.read(path) do
-      {:ok, content} ->
-        case Parser.parse(content, source_path: path) do
-          {:ok, record} -> {:ok, record}
-          {:error, _} -> {:error, :parse_error}
-        end
+  defp resolve_symlinks(path) do
+    case :file.read_link(String.to_charlist(path)) do
+      {:ok, target} ->
+        resolved = Path.expand(to_string(target), Path.dirname(path))
+        resolve_symlinks(resolved)
 
       {:error, _} ->
-        {:error, :file_read_error}
+        # Not a symlink at the top level, but parent dirs might be.
+        # Walk each segment resolving symlinks.
+        [root | segments] = Path.split(path)
+
+        Enum.reduce(segments, root, fn segment, acc ->
+          candidate = Path.join(acc, segment)
+
+          case :file.read_link(String.to_charlist(candidate)) do
+            {:ok, target} -> Path.expand(to_string(target), acc)
+            {:error, _} -> candidate
+          end
+        end)
     end
   end
 end

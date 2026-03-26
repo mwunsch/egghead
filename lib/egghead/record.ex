@@ -31,12 +31,21 @@ defmodule Egghead.Record do
           links: [String.t()],
           wikilinks: [wikilink()],
           class: class(),
+          meta: %{String.t() => term()},
           body: String.t(),
           ast: list() | nil,
           outline: [%{level: non_neg_integer(), text: String.t()}],
           format: :markdown | :org,
           source_path: String.t() | nil
         }
+
+  @known_keys ~w(id title created updated author tags links class)
+
+  @doc """
+  Returns the list of known/reserved frontmatter keys.
+  """
+  @spec known_keys() :: [String.t()]
+  def known_keys, do: @known_keys
 
   @enforce_keys [:id]
   defstruct [
@@ -49,6 +58,7 @@ defmodule Egghead.Record do
     links: [],
     wikilinks: [],
     class: :durable,
+    meta: %{},
     body: "",
     ast: nil,
     outline: [],

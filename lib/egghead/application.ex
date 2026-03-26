@@ -4,8 +4,9 @@ defmodule Egghead.Application do
 
   Supervision tree layout:
 
-      Egghead.Supervisor (one_for_one)
-      ├── Egghead.RecordStore — filesystem-backed record index
+      Egghead.Supervisor (rest_for_one)
+      ├── Egghead.Index — SQLite-backed graph index (starts first)
+      ├── Egghead.RecordStore — filesystem watcher, delegates queries to Index
       │
       │   Future children (not yet implemented):
       ├── Egghead.AgentSupervisor — dynamic supervisor for agent processes
@@ -22,12 +23,17 @@ defmodule Egghead.Application do
         records_dir =
           Application.get_env(:egghead, :records_dir, Path.join(File.cwd!(), "records"))
 
-        [{Egghead.RecordStore, records_dir: records_dir}]
+        db_path = Path.join(records_dir, ".egghead/index.db")
+
+        [
+          {Egghead.Index, db_path: db_path},
+          {Egghead.RecordStore, records_dir: records_dir}
+        ]
       else
         []
       end
 
-    opts = [strategy: :one_for_one, name: Egghead.Supervisor]
+    opts = [strategy: :rest_for_one, name: Egghead.Supervisor]
     Supervisor.start_link(children, opts)
   end
 end

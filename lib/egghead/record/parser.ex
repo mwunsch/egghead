@@ -151,15 +151,11 @@ defmodule Egghead.Record.Parser do
   end
 
   defp normalize_org_props(props) do
-    %{
-      "id" => Map.get(props, "id"),
-      "created" => Map.get(props, "created"),
-      "updated" => Map.get(props, "updated"),
-      "author" => Map.get(props, "author"),
-      "tags" => parse_space_separated(Map.get(props, "tags", "")),
-      "links" => parse_space_separated(Map.get(props, "links", "")),
-      "class" => Map.get(props, "class")
-    }
+    # Start with all properties (preserves arbitrary keys)
+    # Then override known keys that need special handling
+    props
+    |> Map.put("tags", parse_space_separated(Map.get(props, "tags", "")))
+    |> Map.put("links", parse_space_separated(Map.get(props, "links", "")))
   end
 
   defp parse_space_separated(nil), do: []
@@ -219,6 +215,7 @@ defmodule Egghead.Record.Parser do
 
   defp build_record(meta, body, :markdown, opts) do
     source_path = Keyword.get(opts, :source_path)
+    records_dir = Keyword.get(opts, :records_dir)
     {ast, wikilinks, ast_title, outline} = parse_markdown_ast(body)
 
     title = to_nil_string(meta["title"]) || ast_title
@@ -227,7 +224,7 @@ defmodule Egghead.Record.Parser do
     merged_links = Enum.uniq(frontmatter_links ++ wikilink_targets)
 
     %Record{
-      id: to_string(meta["id"] || derive_id(source_path)),
+      id: to_string(meta["id"] || derive_id(source_path, records_dir)),
       title: title,
       created: normalize_timestamp(meta["created"]) || derive_created(source_path),
       updated: normalize_timestamp(meta["updated"]) || derive_updated(source_path),
@@ -236,6 +233,7 @@ defmodule Egghead.Record.Parser do
       links: merged_links,
       wikilinks: wikilinks,
       class: Record.parse_class(meta["class"]),
+      meta: extract_extra_meta(meta),
       body: body,
       ast: ast,
       outline: outline,
@@ -246,6 +244,7 @@ defmodule Egghead.Record.Parser do
 
   defp build_record(meta, body, :org, opts) do
     source_path = Keyword.get(opts, :source_path)
+    records_dir = Keyword.get(opts, :records_dir)
     {ast, org_wikilinks, org_title, outline} = parse_org_ast(body)
 
     title = to_nil_string(meta["title"]) || org_title
@@ -254,7 +253,7 @@ defmodule Egghead.Record.Parser do
     merged_links = Enum.uniq(frontmatter_links ++ wikilink_targets)
 
     %Record{
-      id: to_string(meta["id"] || derive_id(source_path)),
+      id: to_string(meta["id"] || derive_id(source_path, records_dir)),
       title: title,
       created: normalize_timestamp(meta["created"]) || derive_created(source_path),
       updated: normalize_timestamp(meta["updated"]) || derive_updated(source_path),
@@ -263,6 +262,7 @@ defmodule Egghead.Record.Parser do
       links: merged_links,
       wikilinks: org_wikilinks,
       class: Record.parse_class(meta["class"]),
+      meta: extract_extra_meta(meta),
       body: body,
       ast: ast,
       outline: outline,
@@ -299,10 +299,17 @@ defmodule Egghead.Record.Parser do
     end
   end
 
-  defp derive_id(nil), do: "unknown"
+  defp derive_id(nil, _records_dir), do: "unknown"
 
-  defp derive_id(path) do
-    path |> Path.basename() |> Path.rootname()
+  defp derive_id(path, records_dir) do
+    if records_dir do
+      # Expand both to resolve symlinks (e.g. /tmp -> /private/var on macOS)
+      Path.expand(path)
+      |> Path.relative_to(Path.expand(records_dir))
+      |> Path.rootname()
+    else
+      path |> Path.basename() |> Path.rootname()
+    end
   end
 
   defp derive_author(nil), do: nil
@@ -397,6 +404,14 @@ defmodule Egghead.Record.Parser do
   defp normalize_timestamp(%Date{} = d), do: Date.to_iso8601(d)
   defp normalize_timestamp(val) when is_binary(val), do: val
   defp normalize_timestamp(val), do: to_string(val)
+
+  defp extract_extra_meta(meta) when is_map(meta) do
+    meta
+    |> Map.drop(Record.known_keys())
+    |> Map.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp extract_extra_meta(_), do: %{}
 
   defp to_nil_string(nil), do: nil
   defp to_nil_string(val), do: to_string(val)

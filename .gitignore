@@ -24,3 +24,6 @@ egghead-*.tar
 
 /records/*.md
 /records/*.org
+
+# SQLite index (derived, rebuildable from files)
+.egghead/

@@ -25,7 +25,9 @@ defmodule Egghead.MixProject do
       {:yaml_elixir, "~> 2.11"},
       {:file_system, "~> 1.0"},
       {:earmark, "~> 1.4"},
-      {:nimble_parsec, "~> 1.4"}
+      {:nimble_parsec, "~> 1.4"},
+      {:exqlite, "~> 0.27"},
+      {:jason, "~> 1.4"}
     ]
   end
 end

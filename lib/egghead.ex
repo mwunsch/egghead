@@ -26,13 +26,13 @@ defmodule Egghead do
   defdelegate create_record(attrs), to: RecordStore
 
   @doc """
-  Gets a record by id.
+  Gets a record by id, hydrated with full body and AST from disk.
   """
   @spec get_record(String.t()) :: {:ok, Record.t()} | {:error, :not_found}
   defdelegate get_record(id), to: RecordStore
 
   @doc """
-  Lists all records.
+  Lists all records (lightweight, no body/ast).
   """
   @spec list_records() :: [Record.t()]
   defdelegate list_records(), to: RecordStore
@@ -54,4 +54,22 @@ defmodule Egghead do
   """
   @spec find_links(String.t(), non_neg_integer()) :: [Record.t()]
   def find_links(id, depth \\ 1), do: RecordStore.find_links(RecordStore, id, depth)
+
+  @doc """
+  Finds records that link TO the given id (reverse graph / backlinks).
+  """
+  @spec find_backlinks(String.t()) :: [Record.t()]
+  defdelegate find_backlinks(id), to: RecordStore
+
+  @doc """
+  Full-text search across record titles and bodies.
+  """
+  @spec search(String.t(), keyword()) :: [Record.t()]
+  def search(query, opts \\ []), do: RecordStore.search(RecordStore, query, opts)
+
+  @doc """
+  Returns recently modified or created records.
+  """
+  @spec recent(keyword()) :: [Record.t()]
+  def recent(opts \\ []), do: RecordStore.recent(RecordStore, opts)
 end

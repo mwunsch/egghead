@@ -1,6 +1,7 @@
 defmodule EggheadTest do
   use ExUnit.Case
 
+  alias Egghead.Index
   alias Egghead.Record
   alias Egghead.Record.AST
   alias Egghead.Record.Parser
@@ -22,12 +23,18 @@ defmodule EggheadTest do
   end
 
   defp start_store(dir, opts \\ []) do
-    name = :"store_#{:erlang.unique_integer([:positive])}"
+    suffix = :erlang.unique_integer([:positive])
+    idx_name = :"index_#{suffix}"
+    store_name = :"store_#{suffix}"
+
+    {:ok, _} = Index.start_link(db_path: ":memory:", name: idx_name)
 
     {:ok, pid} =
-      RecordStore.start_link([records_dir: dir, name: name, watch: false] ++ opts)
+      RecordStore.start_link(
+        [records_dir: dir, name: store_name, watch: false, index: idx_name] ++ opts
+      )
 
-    {pid, name}
+    {pid, store_name}
   end
 
   defp write_file(dir, filename, content) do
@@ -699,6 +706,127 @@ defmodule EggheadTest do
     end
   end
 
+  # --- Arbitrary metadata ---
+
+  describe "arbitrary metadata" do
+    test "extra frontmatter keys are preserved in meta map" do
+      content = """
+      ---
+      id: rec_meta
+      tags: [test]
+      status: draft
+      project: egghead
+      priority: high
+      source: email
+      ---
+
+      # A Record With Custom Meta
+
+      Body text.
+      """
+
+      assert {:ok, record} = Parser.parse(content)
+      assert record.meta["status"] == "draft"
+      assert record.meta["project"] == "egghead"
+      assert record.meta["priority"] == "high"
+      assert record.meta["source"] == "email"
+      # Known keys are NOT in meta
+      refute Map.has_key?(record.meta, "id")
+      refute Map.has_key?(record.meta, "tags")
+    end
+
+    test "empty meta when no extra keys" do
+      content = """
+      ---
+      id: rec_plain
+      tags: [test]
+      class: durable
+      ---
+
+      Body.
+      """
+
+      assert {:ok, record} = Parser.parse(content)
+      assert record.meta == %{}
+    end
+
+    test "org-mode extra properties are preserved in meta" do
+      content = """
+      :PROPERTIES:
+      :ID: rec_org_meta
+      :AUTHOR: mark
+      :STATUS: review
+      :SPRINT: 42
+      :END:
+      #+TITLE: Org With Meta
+
+      Body.
+      """
+
+      assert {:ok, record} = Parser.parse(content)
+      assert record.meta["status"] == "review"
+      assert record.meta["sprint"] == "42"
+    end
+
+    test "meta survives round-trip through SQLite index" do
+      idx_name = :"meta_idx_#{:erlang.unique_integer([:positive])}"
+      {:ok, _} = Egghead.Index.start_link(db_path: ":memory:", name: idx_name)
+
+      record = %Egghead.Record{
+        id: "meta_test",
+        title: "Test",
+        tags: [],
+        links: [],
+        wikilinks: [],
+        meta: %{"status" => "draft", "project" => "egghead"},
+        body: "Body.",
+        source_path: "/tmp/meta_test.md"
+      }
+
+      :ok = Egghead.Index.upsert_record(idx_name, record)
+      {:ok, meta} = Egghead.Index.get_record_meta(idx_name, "meta_test")
+
+      assert meta.meta["status"] == "draft"
+      assert meta.meta["project"] == "egghead"
+    end
+
+    test "rich YAML values survive round-trip through SQLite as JSON" do
+      content = """
+      ---
+      id: rec_rich
+      tags: [test]
+      reviewers: [alice, bob]
+      priority: 3
+      approved: true
+      context:
+        team: platform
+        quarter: Q1
+      ---
+
+      # Rich Metadata
+
+      Body.
+      """
+
+      assert {:ok, record} = Parser.parse(content, source_path: "/tmp/rec_rich.md")
+      assert record.meta["reviewers"] == ["alice", "bob"]
+      assert record.meta["priority"] == 3
+      assert record.meta["approved"] == true
+      assert record.meta["context"] == %{"team" => "platform", "quarter" => "Q1"}
+
+      # Round-trip through SQLite
+      idx_name = :"rich_idx_#{:erlang.unique_integer([:positive])}"
+      {:ok, _} = Egghead.Index.start_link(db_path: ":memory:", name: idx_name)
+      :ok = Egghead.Index.upsert_record(idx_name, record)
+      {:ok, meta} = Egghead.Index.get_record_meta(idx_name, "rec_rich")
+
+      assert meta.meta["reviewers"] == ["alice", "bob"]
+      assert meta.meta["priority"] == 3
+      assert meta.meta["approved"] == true
+      assert meta.meta["context"] == %{"team" => "platform", "quarter" => "Q1"}
+    end
+  end
+
   # --- Record struct ---
 
   describe "Record.parse_class/1" do
@@ -1011,8 +1139,13 @@ defmodule EggheadTest do
     @tag :file_watcher
     test "file watcher picks up new files automatically", context do
       dir = tmp_dir(context)
-      name = :"watcher_#{:erlang.unique_integer([:positive])}"
-      {:ok, _pid} = RecordStore.start_link(records_dir: dir, name: name, watch: true)
+      suffix = :erlang.unique_integer([:positive])
+      idx_name = :"watcher_idx_#{suffix}"
+      name = :"watcher_#{suffix}"
+      {:ok, _} = Index.start_link(db_path: ":memory:", name: idx_name)
+
+      {:ok, _pid} =
+        RecordStore.start_link(records_dir: dir, name: name, watch: true, index: idx_name)
 
       assert RecordStore.list_records(name) == []
 
@@ -1031,6 +1164,48 @@ defmodule EggheadTest do
 
       assert length(result) == 1
       assert hd(result).id == "live"
+    end
+
+    test "supports subdirectories in records dir", context do
+      dir = tmp_dir(context)
+      File.mkdir_p!(Path.join(dir, "projects"))
+      File.mkdir_p!(Path.join(dir, "journal/2026"))
+
+      write_file(dir, "top-level.md", "# Top Level\n\nA root note.")
+
+      write_file(dir, "projects/egghead.md", """
+      ---
+      id: projects/egghead
+      tags: [project]
+      ---
+
+      # Egghead Project
+
+      Links to [[top-level]].
+      """)
+
+      write_file(dir, "journal/2026/march.md", "# March 2026\n\nJournal entry.")
+
+      {_pid, name} = start_store(dir)
+      records = RecordStore.list_records(name)
+
+      assert length(records) == 3
+      ids = Enum.map(records, & &1.id) |> Enum.sort()
+      assert "journal/2026/march" in ids
+      assert "projects/egghead" in ids
+      assert "top-level" in ids
+    end
+
+    test "derives id from relative path in subdirectory", context do
+      dir = tmp_dir(context)
+      File.mkdir_p!(Path.join(dir, "notes"))
+      write_file(dir, "notes/idea.md", "# An Idea\n\nNo frontmatter id.")
+
+      {_pid, name} = start_store(dir)
+      records = RecordStore.list_records(name)
+
+      assert length(records) == 1
+      assert hd(records).id == "notes/idea"
     end
 
     test "index stays consistent after creates", context do
@@ -1053,8 +1228,11 @@ defmodule EggheadTest do
   describe "Egghead facade" do
     test "all public functions delegate correctly", context do
       dir = tmp_dir(context)
-      # Start a store registered under the default name the facade expects
-      {:ok, _pid} = RecordStore.start_link(records_dir: dir, name: RecordStore, watch: false)
+      # Start Index and RecordStore under the default names the facade expects
+      {:ok, _} = Index.start_link(db_path: ":memory:", name: Index)
+
+      {:ok, _} =
+        RecordStore.start_link(records_dir: dir, name: RecordStore, watch: false, index: Index)
 
       id1 = "facade_1"
       id2 = "facade_2"
@@ -1081,10 +1259,19 @@ defmodule EggheadTest do
       assert Egghead.find_links(id1) == []
       assert Egghead.find_links(id1, 2) == []
 
+      # New: full-text search
+      assert Enum.any?(Egghead.search("Facade"), &(&1.id == id1))
+
+      # New: backlinks
       Egghead.create_record(%{id: id2, title: "Target"})
       assert [%{id: ^id2}] = Egghead.find_links(id1)
+      assert [%{id: ^id1}] = Egghead.find_backlinks(id2)
+
+      # New: recent
+      assert Enum.any?(Egghead.recent(), &(&1.id == id1))
     after
       if Process.whereis(RecordStore), do: GenServer.stop(RecordStore)
+      if Process.whereis(Index), do: GenServer.stop(Index)
     end
   end
 end

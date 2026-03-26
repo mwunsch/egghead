@@ -26,6 +26,12 @@ defmodule Egghead do
   defdelegate create_record(attrs), to: RecordStore
 
   @doc """
+  Updates an existing record.
+  """
+  @spec update_record(String.t(), map()) :: {:ok, Record.t()} | {:error, term()}
+  defdelegate update_record(id, attrs), to: RecordStore
+
+  @doc """
   Gets a record by id, hydrated with full body and AST from disk.
   """
   @spec get_record(String.t()) :: {:ok, Record.t()} | {:error, :not_found}
@@ -72,4 +78,53 @@ defmodule Egghead do
   """
   @spec recent(keyword()) :: [Record.t()]
   def recent(opts \\ []), do: RecordStore.recent(RecordStore, opts)
+
+  # --- Agent API ---
+
+  @doc """
+  Sends a prompt to a named agent. Returns `{:ok, %Egghead.Agent.Response{}}`.
+
+  The response includes the text, token usage, tool calls made, records
+  created/updated, model info, and timing.
+
+  ## Options
+
+    * `:on_chunk` — callback for streaming: `fn {:text, chunk} -> IO.write(chunk) end`
+    * `:max_tokens`, `:temperature` — LLM parameters
+  """
+  @spec prompt(String.t(), String.t(), keyword()) ::
+          {:ok, Egghead.Agent.Response.t()} | {:error, term()}
+  defdelegate prompt(agent_id, message, opts \\ []), to: Egghead.Agent
+
+  @doc """
+  Lists all running agents with their capabilities and usage.
+  """
+  @spec list_agents() :: [map()]
+  defdelegate list_agents(), to: Egghead.Agent
+
+  @doc """
+  Clears an agent's conversation history.
+  """
+  @spec clear_history(String.t()) :: :ok | {:error, :agent_not_found}
+  defdelegate clear_history(agent_id), to: Egghead.Agent
+
+  @doc """
+  Handoff: summarize conversation to a deliberation record and optionally
+  continue with a new prompt. Returns `{:ok, deliberation_id}`.
+  """
+  @spec handoff(String.t(), String.t() | nil) :: {:ok, String.t()} | {:error, term()}
+  defdelegate handoff(agent_id, next_prompt \\ nil), to: Egghead.Agent
+
+  @doc """
+  Save: ask the agent to extract key insights from the conversation
+  and create durable records. Does not clear the session.
+  """
+  @spec save_insights(String.t()) :: {:ok, String.t()} | {:error, term()}
+  defdelegate save_insights(agent_id), to: Egghead.Agent, as: :save
+
+  @doc """
+  Returns an agent's token usage and context info.
+  """
+  @spec agent_usage(String.t()) :: {:ok, map()} | {:error, :agent_not_found}
+  defdelegate agent_usage(agent_id), to: Egghead.Agent, as: :usage
 end

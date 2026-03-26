@@ -258,13 +258,14 @@ defmodule Egghead.Index do
       query_all(
         state.conn,
         """
-        SELECT r.* FROM records_fts fts
-        JOIN records r ON r.id = fts.id
-        WHERE records_fts MATCH ?1
-        ORDER BY rank
-        LIMIT ?2
+        SELECT r.* FROM records r
+        WHERE r.id IN (
+          SELECT id FROM records_fts WHERE records_fts MATCH ?1
+          ORDER BY rank
+          LIMIT ?2
+        )
         """,
-        [query, limit]
+        [escape_fts(query), limit]
       )
 
     {:reply, Enum.map(rows, &row_to_record(state.conn, &1)), state}
@@ -631,6 +632,16 @@ defmodule Egghead.Index do
 
   defp parse_format("org"), do: :org
   defp parse_format(_), do: :markdown
+
+  # Escape user input for FTS5 MATCH.
+  #
+  # FTS5 has its own query syntax. Double-quoting a string makes FTS5
+  # treat it as a literal phrase. We escape any internal double quotes
+  # by doubling them (FTS5's escape convention).
+  defp escape_fts(query) do
+    escaped = String.replace(query, "\"", "\"\"")
+    "\"#{escaped}\""
+  end
 
   # --- SQLite helpers ---
 

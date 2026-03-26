@@ -180,6 +180,53 @@ defmodule Egghead.MCP.Handler do
             }
           }
         }
+      },
+      %{
+        name: "egghead_prompt",
+        description:
+          "Send a prompt to a named Egghead agent. The agent gathers relevant records, reasons through its disposition (personality/expertise), and responds. Agents with record_append capability may create new records.",
+        inputSchema: %{
+          type: "object",
+          properties: %{
+            agent: %{type: "string", description: "Agent id (e.g. agents/scout)"},
+            message: %{type: "string", description: "The prompt to send to the agent"}
+          },
+          required: ["agent", "message"]
+        }
+      },
+      %{
+        name: "egghead_agents",
+        description:
+          "List all running Egghead agents with their capabilities, model, and token usage.",
+        inputSchema: %{type: "object", properties: %{}}
+      },
+      %{
+        name: "egghead_handoff",
+        description:
+          "Summarize the agent's current conversation into a deliberation record and clear history. Optionally provide a new prompt to continue with. Returns the deliberation record id.",
+        inputSchema: %{
+          type: "object",
+          properties: %{
+            agent: %{type: "string", description: "Agent id"},
+            next_prompt: %{
+              type: "string",
+              description: "Optional new prompt to start the fresh session with"
+            }
+          },
+          required: ["agent"]
+        }
+      },
+      %{
+        name: "egghead_save",
+        description:
+          "Ask the agent to extract key insights from the current conversation and save them as durable records. Does not clear the conversation.",
+        inputSchema: %{
+          type: "object",
+          properties: %{
+            agent: %{type: "string", description: "Agent id"}
+          },
+          required: ["agent"]
+        }
       }
     ]
   end
@@ -261,6 +308,80 @@ defmodule Egghead.MCP.Handler do
     {:ok, format_record_list(records, "Recent records")}
   end
 
+  defp call_tool("egghead_prompt", %{"agent" => agent_id, "message" => message}) do
+    case Egghead.prompt(agent_id, message) do
+      {:ok, %{text: text} = resp} ->
+        footer = format_response_footer(resp)
+        {:ok, "#{text}\n\n---\n#{footer}"}
+
+      {:error, :agent_not_found} ->
+        {:error, "Agent not found: #{agent_id}. Use egghead_agents to see running agents."}
+
+      {:error, :missing_api_key} ->
+        {:error, "ANTHROPIC_API_KEY environment variable is not set."}
+
+      {:error, reason} ->
+        {:error, "Agent error: #{inspect(reason)}"}
+    end
+  end
+
+  defp call_tool("egghead_agents", _args) do
+    agents = Egghead.list_agents()
+
+    if agents == [] do
+      {:ok, "No agents running. Create a record with class: agent to define one."}
+    else
+      lines =
+        Enum.map(agents, fn a ->
+          caps = Enum.join(a.capabilities, ", ")
+
+          ctx_pct =
+            if a.context_window,
+              do: " | context: #{Float.round(a.session_tokens / a.context_window * 100, 1)}%",
+              else: ""
+
+          tokens = "#{a.usage.input_tokens + a.usage.output_tokens} tokens"
+
+          "- #{a.id}: #{a.name} [#{caps}] (#{a.model}, #{tokens}#{ctx_pct}, #{a.history_length} turns)"
+        end)
+
+      {:ok, "Running agents (#{length(agents)}):\n#{Enum.join(lines, "\n")}"}
+    end
+  end
+
+  defp call_tool("egghead_handoff", %{"agent" => agent_id} = args) do
+    next_prompt = args["next_prompt"]
+
+    case Egghead.handoff(agent_id, next_prompt) do
+      {:ok, delib_id} ->
+        {:ok, "Deliberation saved: #{delib_id}\nConversation cleared."}
+
+      {:ok, delib_id, {:ok, response}} ->
+        {:ok, "Deliberation saved: #{delib_id}\n\n---\n\n#{response}"}
+
+      {:ok, delib_id, {:error, reason}} ->
+        {:ok, "Deliberation saved: #{delib_id}\nBut next prompt failed: #{inspect(reason)}"}
+
+      {:error, :agent_not_found} ->
+        {:error, "Agent not found: #{agent_id}"}
+
+      {:error, :no_history} ->
+        {:error, "No conversation to summarize."}
+
+      {:error, reason} ->
+        {:error, "Handoff failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp call_tool("egghead_save", %{"agent" => agent_id}) do
+    case Egghead.save_insights(agent_id) do
+      {:ok, summary} -> {:ok, summary}
+      {:error, :agent_not_found} -> {:error, "Agent not found: #{agent_id}"}
+      {:error, :no_history} -> {:error, "No conversation to save from."}
+      {:error, reason} -> {:error, "Save failed: #{inspect(reason)}"}
+    end
+  end
+
   defp call_tool(name, _args) do
     {:error, "Unknown tool: #{name}"}
   end
@@ -306,6 +427,19 @@ defmodule Egghead.MCP.Handler do
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
+  end
+
+  defp format_response_footer(resp) do
+    parts = [
+      resp.model,
+      "#{resp.usage.input_tokens + resp.usage.output_tokens} tokens",
+      if(resp.tool_calls != [], do: "#{length(resp.tool_calls)} tool calls"),
+      if(resp.records_created != [], do: "#{length(resp.records_created)} created"),
+      if(resp.records_updated != [], do: "#{length(resp.records_updated)} updated"),
+      "#{resp.duration_ms}ms"
+    ]
+
+    parts |> Enum.reject(&is_nil/1) |> Enum.join(" | ")
   end
 
   defp format_record_list([], label), do: "#{label}: (none)"

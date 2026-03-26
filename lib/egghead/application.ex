@@ -7,10 +7,10 @@ defmodule Egghead.Application do
       Egghead.Supervisor (rest_for_one)
       ├── Egghead.Index — SQLite-backed graph index (starts first)
       ├── Egghead.RecordStore — filesystem watcher, delegates queries to Index
+      ├── Egghead.Agent.Supervisor — dynamic supervisor for agent processes
       │
       │   Future children (not yet implemented):
-      ├── Egghead.AgentSupervisor — dynamic supervisor for agent processes
-      ├── Egghead.MCP.Server — MCP protocol endpoint
+      ├── Egghead.MCP.Server — MCP protocol endpoint (auto-start)
       └── Egghead.TUI — terminal interface process
   """
 
@@ -27,13 +27,21 @@ defmodule Egghead.Application do
 
         [
           {Egghead.Index, db_path: db_path},
-          {Egghead.RecordStore, records_dir: records_dir}
+          {Egghead.RecordStore, records_dir: records_dir},
+          {Egghead.Agent.Supervisor, []}
         ]
       else
         []
       end
 
     opts = [strategy: :rest_for_one, name: Egghead.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    # After the tree is up, sync agents from the record store
+    if Application.get_env(:egghead, :start_record_store, true) do
+      Task.start(fn -> Egghead.Agent.Supervisor.sync_agents() end)
+    end
+
+    result
   end
 end

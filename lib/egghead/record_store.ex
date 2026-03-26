@@ -65,6 +65,17 @@ defmodule Egghead.RecordStore do
   end
 
   @doc """
+  Updates an existing record by overwriting its Markdown file.
+
+  Returns `{:ok, record}` or `{:error, :not_found}`.
+  """
+  @spec update_record(GenServer.server(), String.t(), map()) ::
+          {:ok, Record.t()} | {:error, term()}
+  def update_record(server \\ __MODULE__, id, attrs) do
+    GenServer.call(server, {:update_record, id, attrs})
+  end
+
+  @doc """
   Gets a record by its id, hydrated with full body and AST from disk.
 
   Returns `{:ok, record}` or `{:error, :not_found}`.
@@ -206,6 +217,39 @@ defmodule Egghead.RecordStore do
     end
   end
 
+  def handle_call({:update_record, id, attrs}, _from, state) do
+    case Index.get_record_meta(state.index, id) do
+      {:ok, meta} ->
+        path = meta.source_path
+
+        # Hydrate existing record to get all current fields
+        case hydrate(path, state.records_dir) do
+          {:ok, existing} ->
+            # Merge: caller's attrs overlay existing fields
+            merged = merge_record_attrs(existing, normalize_attrs(attrs, id))
+            content = render_markdown(merged)
+
+            File.write!(path, content)
+
+            case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
+              {:ok, record} ->
+                Index.upsert_record(state.index, record)
+                maybe_restart_agent(record)
+                {:reply, {:ok, record}, state}
+
+              {:error, reason} ->
+                {:reply, {:error, reason}, state}
+            end
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, :not_found} ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
   def handle_call({:get_record, id}, _from, state) do
     case Index.get_record_meta(state.index, id) do
       {:ok, meta} -> {:reply, hydrate(meta.source_path, state.records_dir), state}
@@ -266,8 +310,12 @@ defmodule Egghead.RecordStore do
       case File.read(path) do
         {:ok, content} ->
           case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
-            {:ok, record} -> Index.upsert_record(state.index, record)
-            {:error, _} -> :skip
+            {:ok, record} ->
+              Index.upsert_record(state.index, record)
+              maybe_restart_agent(record)
+
+            {:error, _} ->
+              :skip
           end
 
         {:error, _} ->
@@ -275,6 +323,22 @@ defmodule Egghead.RecordStore do
       end
     else
       Index.delete_by_path(state.index, path)
+      # A deleted file might have been an agent — sync
+      sync_agents_async()
+    end
+  end
+
+  defp maybe_restart_agent(%{class: :agent} = record) do
+    if Process.whereis(Egghead.Agent.Supervisor) do
+      Task.start(fn -> Egghead.Agent.Supervisor.start_agent(record) end)
+    end
+  end
+
+  defp maybe_restart_agent(_), do: :ok
+
+  defp sync_agents_async do
+    if Process.whereis(Egghead.Agent.Supervisor) do
+      Task.start(fn -> Egghead.Agent.Supervisor.sync_agents() end)
     end
   end
 
@@ -307,18 +371,61 @@ defmodule Egghead.RecordStore do
     |> Map.put("id", id)
   end
 
+  # Merge caller-provided attrs onto existing record, keeping existing values
+  # for any field the caller didn't provide.
+  defp merge_record_attrs(existing, new_attrs) do
+    known_fields = %{
+      "id" => existing.id,
+      "title" => existing.title,
+      "created" => existing.created,
+      "updated" => existing.updated,
+      "author" => existing.author,
+      "tags" => existing.tags,
+      "links" => existing.links,
+      "class" => to_string(existing.class),
+      "body" => existing.body
+    }
+
+    # Start with all known fields from existing record
+    base = known_fields
+
+    # Add existing arbitrary meta fields
+    base = Map.merge(base, existing.meta || %{})
+
+    # Overlay with non-nil values from caller
+    new_attrs
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Enum.into(base)
+  end
+
+  @known_frontmatter_keys ~w(id created updated author tags links class)
+
   defp render_markdown(attrs) do
-    frontmatter =
+    # Known fields in a stable order
+    known_lines =
       [
         "---",
         "id: #{attrs["id"]}",
         maybe_field("created", attrs["created"]),
+        maybe_field("updated", attrs["updated"]),
         maybe_field("author", attrs["author"]),
         render_list("tags", attrs["tags"]),
         render_list("links", attrs["links"]),
-        "class: #{attrs["class"] || "durable"}",
-        "---"
+        "class: #{attrs["class"] || "durable"}"
       ]
+
+    # Arbitrary meta fields (anything not in known keys, not body/title)
+    skip_keys = MapSet.new(@known_frontmatter_keys ++ ["body", "title"])
+
+    meta_lines =
+      attrs
+      |> Enum.reject(fn {k, _v} -> MapSet.member?(skip_keys, k) end)
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Enum.sort_by(fn {k, _} -> k end)
+      |> Enum.map(fn {k, v} -> render_meta_field(k, v) end)
+
+    frontmatter =
+      (known_lines ++ meta_lines ++ ["---"])
       |> List.flatten()
       |> Enum.reject(&is_nil/1)
       |> Enum.join("\n")
@@ -326,14 +433,36 @@ defmodule Egghead.RecordStore do
     title = attrs["title"]
     body = attrs["body"] || ""
 
+    # Don't duplicate the heading if the body already starts with it
+    body_has_heading =
+      title != nil and String.starts_with?(String.trim(body), "# ")
+
     content =
-      if title do
-        "#{frontmatter}\n\n# #{title}\n\n#{body}"
-      else
-        "#{frontmatter}\n\n#{body}"
+      cond do
+        body_has_heading ->
+          "#{frontmatter}\n\n#{body}"
+
+        title ->
+          "#{frontmatter}\n\n# #{title}\n\n#{body}"
+
+        true ->
+          "#{frontmatter}\n\n#{body}"
       end
 
     String.trim_trailing(content) <> "\n"
+  end
+
+  defp render_meta_field(key, value) when is_list(value) do
+    "#{key}: [#{Enum.join(value, ", ")}]"
+  end
+
+  defp render_meta_field(key, value) when is_map(value) do
+    # For nested maps, use inline JSON-ish representation
+    "#{key}: #{Jason.encode!(value)}"
+  end
+
+  defp render_meta_field(key, value) do
+    "#{key}: #{value}"
   end
 
   defp maybe_field(_key, nil), do: nil

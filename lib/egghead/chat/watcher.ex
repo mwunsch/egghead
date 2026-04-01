@@ -30,14 +30,20 @@ defmodule Egghead.Chat.Watcher do
 
   defp loop(room_id) do
     receive do
-      {:human_message, msg} ->
+      {:user_message, msg} ->
         IO.puts("")
-        IO.puts(IO.ANSI.green() <> "#{msg.sender}" <> IO.ANSI.reset() <> ": #{msg.content}")
+        IO.puts(IO.ANSI.green() <> "#{msg.sender.name}" <> IO.ANSI.reset() <> ": #{msg.content}")
         loop(room_id)
 
       {:agent_message, msg} ->
         IO.puts("")
-        IO.puts(IO.ANSI.yellow() <> "#{msg.sender}" <> IO.ANSI.reset() <> ": #{msg.content}")
+        usage_info = format_usage(msg.usage)
+
+        IO.puts(
+          IO.ANSI.yellow() <>
+            "#{msg.sender.name}" <> IO.ANSI.reset() <> usage_info <> ": #{msg.content}"
+        )
+
         loop(room_id)
 
       {:agent_joined, agent_id} ->
@@ -75,6 +81,22 @@ defmodule Egghead.Chat.Watcher do
 
       _other ->
         loop(room_id)
+    end
+  end
+
+  defp format_usage(nil), do: ""
+
+  defp format_usage(usage) do
+    ctx =
+      case usage[:context_pct] do
+        nil -> nil
+        pct -> "ctx:#{pct}%"
+      end
+
+    if ctx do
+      IO.ANSI.faint() <> " [#{ctx}]" <> IO.ANSI.reset()
+    else
+      ""
     end
   end
 end

@@ -409,7 +409,8 @@ defmodule Egghead.Agent do
   @max_tool_rounds 20
 
   defp do_prompt(state, message, opts) do
-    system_prompt = build_system_prompt(state)
+    room = Keyword.get(opts, :room)
+    system_prompt = build_system_prompt(state, room)
 
     # Append user message to history
     history = state.history ++ [%{role: "user", content: message}]
@@ -457,11 +458,21 @@ defmodule Egghead.Agent do
             referenced_records: MapSet.union(state.referenced_records, refs)
         }
 
+        context_pct =
+          if state.context_window && state.context_window > 0,
+            do: Float.round(state.session_tokens / state.context_window * 100, 1),
+            else: nil
+
         response = %Egghead.Agent.Response{
           text: final_text,
           agent_id: state.id,
           model: state.model,
-          usage: total_usage,
+          usage:
+            Map.merge(total_usage, %{
+              session_tokens: state.session_tokens,
+              context_window: state.context_window,
+              context_pct: context_pct
+            }),
           tool_calls: tool_log,
           records_created: created,
           records_updated: updated,
@@ -680,25 +691,51 @@ defmodule Egghead.Agent do
 
   # --- System prompt ---
 
-  defp build_system_prompt(state) do
-    """
+  defp build_system_prompt(state, room \\ nil) do
+    base = """
     #{@base_system_prompt}
 
     ## Your Identity
 
     You are **#{state.name}**.
     Your configuration is defined in record `#{state.id}`.
-    You are running model `#{state.model}` via `#{state.provider}`.
     Your capabilities: #{Enum.join(state.capabilities, ", ")}.
-
-    If asked to change your own configuration (model, capabilities, disposition),
-    you can update your own record at `#{state.id}` using the `update_record` tool.
-    Changes take effect immediately — the system will restart you with the new config.
 
     ## Your Disposition
 
     #{state.disposition}
     """
+
+    if room do
+      agents_list = room.agents |> Enum.join(", ")
+
+      transcript =
+        room.transcript
+        |> Enum.take(-30)
+        |> Enum.map_join("\n", fn m ->
+          label =
+            case m.sender do
+              %{type: :user, name: name} -> "[#{name}]"
+              %{type: :agent, id: id} -> "[#{id}]"
+              _ -> "[unknown]"
+            end
+
+          "#{label} #{m.content}"
+        end)
+
+      base <>
+        """
+
+        ## Chat Room
+
+        You are in room "#{room.id}" with: #{agents_list}.
+
+        Recent conversation:
+        #{transcript}
+        """
+    else
+      base
+    end
   end
 
   # --- LLM dispatch ---

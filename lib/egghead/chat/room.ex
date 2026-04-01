@@ -18,9 +18,23 @@ defmodule Egghead.Chat.Room do
   @default_round_budget 5
   @pubsub Egghead.PubSub
 
+  defmodule Sender do
+    @moduledoc "Identifies who sent a message — human or agent."
+    @type t :: %__MODULE__{type: :user | :agent, id: String.t(), name: String.t()}
+    defstruct [:type, :id, :name]
+  end
+
   defmodule Message do
-    @moduledoc false
-    defstruct [:id, :role, :sender, :content, :timestamp, :mentions]
+    @moduledoc "A single message in a chat room transcript."
+    defstruct [
+      :id,
+      :sender,
+      :content,
+      :timestamp,
+      :mentions,
+      # Agent context tracking (nil for user messages)
+      usage: nil
+    ]
   end
 
   defmodule State do
@@ -49,20 +63,27 @@ defmodule Egghead.Chat.Room do
   end
 
   @doc """
-  Human sends a message to the room. Resets the turn budget and
-  broadcasts to all subscribers.
+  User sends a message to the room. Resets the round budget.
   """
-  @spec send_message(String.t(), String.t(), String.t()) :: :ok
-  def send_message(room_id, sender, content) do
+  @spec send_message(String.t(), String.t()) :: :ok
+  def send_message(room_id, content) do
+    user = Egghead.User.current()
+    sender = %Sender{type: :user, id: user.id, name: user.name}
     GenServer.call(room_name(room_id), {:send_message, sender, content})
   end
 
   @doc """
-  Agent sends a response to the room. Decrements the turn budget.
+  Agent sends a response to the room.
+
+  `opts` can include:
+  - `:usage` — `%{input_tokens: n, output_tokens: n, session_tokens: n, context_window: n}`
   """
-  @spec agent_respond(String.t(), String.t(), String.t()) :: :ok | {:error, :budget_exhausted}
-  def agent_respond(room_id, agent_id, content) do
-    GenServer.call(room_name(room_id), {:agent_respond, agent_id, content})
+  @spec agent_respond(String.t(), String.t(), String.t(), keyword()) :: :ok
+  def agent_respond(room_id, agent_id, content, opts \\ []) do
+    name = agent_id |> String.split("/") |> List.last() |> String.capitalize()
+    sender = %Sender{type: :agent, id: agent_id, name: name}
+    usage = Keyword.get(opts, :usage)
+    GenServer.call(room_name(room_id), {:agent_respond, sender, content, usage})
   end
 
   @doc """
@@ -71,6 +92,15 @@ defmodule Egghead.Chat.Room do
   @spec continue(String.t()) :: :ok
   def continue(room_id) do
     GenServer.call(room_name(room_id), :continue)
+  end
+
+  @doc """
+  Save the room transcript as a deliberation record in the store.
+  Returns `{:ok, record_id}`.
+  """
+  @spec save_transcript(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def save_transcript(room_id) do
+    GenServer.call(room_name(room_id), :save_transcript)
   end
 
   @doc """
@@ -137,12 +167,11 @@ defmodule Egghead.Chat.Room do
   end
 
   @impl true
-  def handle_call({:send_message, sender, content}, _from, state) do
+  def handle_call({:send_message, %Sender{} = sender, content}, _from, state) do
     mentions = extract_mentions(content)
 
     msg = %Message{
       id: generate_id(),
-      role: :human,
       sender: sender,
       content: content,
       timestamp: DateTime.utc_now(),
@@ -158,28 +187,27 @@ defmodule Egghead.Chat.Room do
         status: :active
     }
 
-    broadcast(state.id, {:human_message, msg})
+    broadcast(state.id, {:user_message, msg})
 
     {:reply, :ok, state}
   end
 
-  def handle_call({:agent_respond, agent_id, content}, _from, state) do
+  def handle_call({:agent_respond, %Sender{} = sender, content, usage}, _from, state) do
     mentions = extract_mentions(content)
 
     msg = %Message{
       id: generate_id(),
-      role: :agent,
-      sender: agent_id,
+      sender: sender,
       content: content,
       timestamp: DateTime.utc_now(),
-      mentions: mentions
+      mentions: mentions,
+      usage: usage
     }
 
-    # Track which agents have responded in this round
     state = %{
       state
       | transcript: state.transcript ++ [msg],
-        current_round_responded: MapSet.put(state.current_round_responded, agent_id)
+        current_round_responded: MapSet.put(state.current_round_responded, sender.id)
     }
 
     broadcast(state.id, {:agent_message, msg})
@@ -199,7 +227,7 @@ defmodule Egghead.Chat.Room do
               current_round_responded: MapSet.new()
           }
 
-          broadcast(state.id, {:agent_mentions, agent_id, agent_mentions})
+          broadcast(state.id, {:agent_mentions, sender.id, agent_mentions})
           state
         else
           # Budget exhausted — queue the mentions
@@ -207,7 +235,7 @@ defmodule Egghead.Chat.Room do
             state
             | rounds_remaining: 0,
               status: :waiting,
-              pending_mentions: state.pending_mentions ++ [{agent_id, agent_mentions}]
+              pending_mentions: state.pending_mentions ++ [{sender.id, agent_mentions}]
           }
 
           broadcast(state.id, :budget_exhausted)
@@ -218,6 +246,11 @@ defmodule Egghead.Chat.Room do
       end
 
     {:reply, :ok, state}
+  end
+
+  def handle_call(:save_transcript, _from, state) do
+    result = persist_transcript(state)
+    {:reply, result, state}
   end
 
   def handle_call(:continue, _from, state) do
@@ -258,11 +291,15 @@ defmodule Egghead.Chat.Room do
       Enum.map(state.transcript, fn msg ->
         %{
           id: msg.id,
-          role: msg.role,
-          sender: msg.sender,
+          sender: %{
+            type: msg.sender.type,
+            id: msg.sender.id,
+            name: msg.sender.name
+          },
           content: msg.content,
           timestamp: msg.timestamp,
-          mentions: msg.mentions
+          mentions: msg.mentions,
+          usage: msg.usage
         }
       end)
 
@@ -284,6 +321,65 @@ defmodule Egghead.Chat.Room do
   end
 
   # --- Private helpers ---
+
+  defp persist_transcript(state) do
+    if state.transcript == [] do
+      {:error, :empty_transcript}
+    else
+      record_id = "chat/#{state.id}"
+
+      # Build markdown body from transcript
+      body =
+        state.transcript
+        |> Enum.map_join("\n\n", fn msg ->
+          sender_label =
+            case msg.sender do
+              %{type: :user, name: name} -> "**#{name}**"
+              %{type: :agent, name: name, id: id} -> "**#{name}** (`#{id}`)"
+              _ -> "**unknown**"
+            end
+
+          timestamp = DateTime.to_iso8601(msg.timestamp)
+          "#{sender_label} — #{timestamp}\n\n#{msg.content}"
+        end)
+
+      # Collect all agent ids and mentioned record ids
+      agent_ids =
+        state.transcript
+        |> Enum.filter(&(&1.sender.type == :agent))
+        |> Enum.map(& &1.sender.id)
+        |> Enum.uniq()
+
+      attrs = %{
+        "id" => record_id,
+        "title" => "Chat: #{state.id}",
+        "tags" => ["chat", "deliberation"],
+        "links" => agent_ids,
+        "class" => "deliberation",
+        "body" => body
+      }
+
+      case Egghead.create_record(attrs) do
+        {:ok, record} ->
+          Logger.info("Room #{state.id}: transcript saved as #{record.id}")
+          {:ok, record.id}
+
+        {:error, :already_exists} ->
+          # Update existing transcript
+          case Egghead.update_record(record_id, %{"body" => body, "links" => agent_ids}) do
+            {:ok, record} ->
+              Logger.info("Room #{state.id}: transcript updated at #{record.id}")
+              {:ok, record.id}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
 
   defp broadcast(room_id, event) do
     Phoenix.PubSub.broadcast(@pubsub, topic(room_id), event)

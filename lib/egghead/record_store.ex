@@ -202,6 +202,8 @@ defmodule Egghead.RecordStore do
         if File.exists?(path) do
           {:reply, {:error, :already_exists}, state}
         else
+          # Ensure intermediate directories exist (e.g. records/chat/)
+          path |> Path.dirname() |> File.mkdir_p!()
           File.write!(path, content)
 
           case Parser.parse(content, source_path: path, records_dir: state.records_dir) do

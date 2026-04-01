@@ -128,13 +128,13 @@ defmodule Egghead.Chat.Coordinator do
   # --- Room event handling ---
 
   @impl true
-  def handle_info({:human_message, %{room_id: room_id} = msg}, state) do
+  def handle_info({:user_message, %{room_id: room_id} = msg}, state) do
     agents_to_activate = tier1_filter(msg, state.agents)
     activate(agents_to_activate, msg, room_id, state)
     {:noreply, state}
   end
 
-  def handle_info({:human_message, msg}, state) do
+  def handle_info({:user_message, msg}, state) do
     room_id = state.rooms |> MapSet.to_list() |> List.first()
 
     if room_id do
@@ -167,9 +167,11 @@ defmodule Egghead.Chat.Coordinator do
     if agents != [] and room_id do
       Logger.info("Coordinator: #{from_agent} mentioned #{Enum.map_join(agents, ", ", & &1.id)}")
 
+      # The message is just "you were mentioned" — the agent gets the full
+      # transcript via room context and can see what was said
       Enum.each(agents, fn agent_info ->
         Task.start(fn ->
-          prompt_agent_in_room(agent_info.id, room_id)
+          prompt_agent_in_room(agent_info.id, room_id, "(You were @-mentioned by #{from_agent})")
         end)
       end)
     end
@@ -258,80 +260,47 @@ defmodule Egghead.Chat.Coordinator do
   defp activate([], _msg, _room_id, _state), do: :ok
 
   defp activate(agents, msg, room_id, _state) do
-    # Separate egghead from other agents
     {egghead_agents, other_agents} = Enum.split_with(agents, &(&1.id == "egghead"))
 
-    if other_agents == [] and egghead_agents != [] do
-      # No other agents — egghead responds as the fallback
-      Logger.info("Coordinator: no other agents, egghead responding")
+    agents_to_prompt =
+      if other_agents == [] and egghead_agents != [] do
+        Logger.info("Coordinator: no other agents, egghead responding")
+        egghead_agents
+      else
+        agent_names = Enum.map_join(other_agents, ", ", & &1.id)
+        Logger.info("Coordinator: activating agents: #{agent_names}")
+        other_agents
+      end
 
+    Enum.each(agents_to_prompt, fn agent_info ->
       Task.start(fn ->
-        prompt_agent_in_room("egghead", room_id, msg.content)
+        prompt_agent_in_room(agent_info.id, room_id, msg.content)
       end)
-    else
-      # Other agents handle it — egghead stays out
-      agent_names = Enum.map_join(other_agents, ", ", & &1.id)
-      Logger.info("Coordinator: activating agents: #{agent_names}")
-
-      Enum.each(other_agents, fn agent_info ->
-        Task.start(fn ->
-          prompt_agent_in_room(agent_info.id, room_id, msg.content)
-        end)
-      end)
-    end
+    end)
   end
 
-  defp prompt_agent_in_room(agent_id, room_id) do
-    # Activated via @-mention — build context from transcript
-    transcript = Room.get_transcript(room_id)
-
-    context =
-      transcript
-      |> Enum.take(-10)
-      |> Enum.map_join("\n", fn m -> "#{m.sender}: #{m.content}" end)
-
-    prompt_agent_in_room(
-      agent_id,
-      room_id,
-      "You were mentioned in a conversation. Recent transcript:\n\n#{context}"
-    )
-  end
-
+  # The Coordinator's only job: pass the message and room context to the agent.
+  # The agent handles its own context building, usage tracking, and handoff.
   defp prompt_agent_in_room(agent_id, room_id, message) do
-    # Build context from room transcript
     transcript = Room.get_transcript(room_id)
     room_state = Room.get_state(room_id)
-    other_agents = Enum.join(room_state.agents, ", ")
 
-    context_prefix = """
-    You are in chat room "#{room_id}" with agents: #{other_agents}.
-    Recent conversation:
-    #{format_transcript(transcript)}
+    room_context = %{
+      id: room_id,
+      transcript: transcript,
+      agents: room_state.agents
+    }
 
-    Respond to this message:
-    """
-
-    full_message = context_prefix <> message
-
-    case Egghead.Agent.prompt(agent_id, full_message) do
-      {:ok, %{text: text}} ->
+    case Egghead.Agent.prompt(agent_id, message, room: room_context) do
+      {:ok, %{text: text, usage: usage}} ->
         if String.trim(text) == "[PASS]" do
           Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
         else
-          Room.agent_respond(room_id, agent_id, text)
+          Room.agent_respond(room_id, agent_id, text, usage: usage)
         end
 
       {:error, reason} ->
         Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
     end
-  end
-
-  defp format_transcript(transcript) do
-    transcript
-    |> Enum.take(-20)
-    |> Enum.map_join("\n", fn m ->
-      role = if m.role == :human, do: "[human]", else: "[#{m.sender}]"
-      "#{role} #{m.content}"
-    end)
   end
 end

@@ -201,8 +201,7 @@ defmodule Egghead do
   """
   @spec chat(String.t(), String.t()) :: :ok
   def chat(room_id \\ default_room(), message) do
-    sender = System.get_env("USER") || "human"
-    Egghead.Chat.Room.send_message(room_id, sender, message)
+    Egghead.Chat.Room.send_message(room_id, message)
   end
 
   @doc """
@@ -223,10 +222,18 @@ defmodule Egghead do
   end
 
   @doc """
-  Grants more turns in a chat room (like /continue).
+  Grants more rounds in a chat room (like /continue).
   """
   @spec chat_continue(String.t()) :: :ok
   def chat_continue(room_id \\ default_room()) do
     Egghead.Chat.Room.continue(room_id)
+  end
+
+  @doc """
+  Saves the chat room transcript as a deliberation record in the store.
+  """
+  @spec chat_save(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def chat_save(room_id \\ default_room()) do
+    Egghead.Chat.Room.save_transcript(room_id)
   end
 end

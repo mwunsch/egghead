@@ -127,4 +127,18 @@ defmodule Egghead do
   """
   @spec agent_usage(String.t()) :: {:ok, map()} | {:error, :agent_not_found}
   defdelegate agent_usage(agent_id), to: Egghead.Agent, as: :usage
+
+  # --- Provider API ---
+
+  @doc """
+  Lists configured LLM providers.
+  """
+  @spec list_providers() :: [map()]
+  defdelegate list_providers(), to: Egghead.LLM.Registry
+
+  @doc """
+  Lists available models across all configured providers.
+  """
+  @spec list_models() :: [map()]
+  defdelegate list_models(), to: Egghead.LLM.Registry
 end

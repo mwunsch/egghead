@@ -28,6 +28,7 @@ defmodule Egghead.LLM.Anthropic do
   Streaming chat. Calls `on_chunk` with each text delta as it arrives.
   Returns the same `{:ok, response}` as `chat/2` when complete.
   """
+  @impl true
   @spec chat_stream(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat_stream(messages, opts \\ []) do
     api_key = Keyword.get(opts, :api_key) || System.get_env("ANTHROPIC_API_KEY")
@@ -42,6 +43,7 @@ defmodule Egghead.LLM.Anthropic do
   @doc """
   Fetches model metadata from the Anthropic Models API.
   """
+  @impl true
   @spec get_model_info(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def get_model_info(model_id, opts \\ []) do
     api_key = Keyword.get(opts, :api_key) || System.get_env("ANTHROPIC_API_KEY")
@@ -56,6 +58,43 @@ defmodule Egghead.LLM.Anthropic do
         {:ok, %{status: 200, body: body}} -> {:ok, body}
         {:ok, %{status: status, body: body}} -> {:error, {:api_error, status, body}}
         {:error, reason} -> {:error, {:request_error, reason}}
+      end
+    end
+  end
+
+  @doc """
+  Lists available models from the Anthropic Models API.
+  """
+  @impl true
+  @spec list_models(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_models(opts \\ []) do
+    api_key = Keyword.get(opts, :api_key) || System.get_env("ANTHROPIC_API_KEY")
+
+    if is_nil(api_key) do
+      {:error, :missing_api_key}
+    else
+      case Req.get("#{@models_url}?limit=100",
+             headers: headers(api_key),
+             receive_timeout: 10_000
+           ) do
+        {:ok, %{status: 200, body: %{"data" => models}}} ->
+          parsed =
+            models
+            |> Enum.map(fn m ->
+              %{
+                id: m["id"],
+                context_window: m["max_input_tokens"],
+                max_tokens: m["max_tokens"]
+              }
+            end)
+
+          {:ok, parsed}
+
+        {:ok, %{status: status, body: body}} ->
+          {:error, {:api_error, status, body}}
+
+        {:error, reason} ->
+          {:error, {:request_error, reason}}
       end
     end
   end

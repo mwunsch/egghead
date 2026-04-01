@@ -227,6 +227,16 @@ defmodule Egghead.MCP.Handler do
           },
           required: ["agent"]
         }
+      },
+      %{
+        name: "egghead_providers",
+        description: "List configured LLM providers and their status.",
+        inputSchema: %{type: "object", properties: %{}}
+      },
+      %{
+        name: "egghead_models",
+        description: "List available models across all configured providers.",
+        inputSchema: %{type: "object", properties: %{}}
       }
     ]
   end
@@ -379,6 +389,40 @@ defmodule Egghead.MCP.Handler do
       {:error, :agent_not_found} -> {:error, "Agent not found: #{agent_id}"}
       {:error, :no_history} -> {:error, "No conversation to save from."}
       {:error, reason} -> {:error, "Save failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp call_tool("egghead_providers", _args) do
+    providers = Egghead.list_providers()
+
+    if providers == [] do
+      {:ok,
+       "No providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY, or create ~/.egghead/providers.yml"}
+    else
+      lines =
+        Enum.map(providers, fn p ->
+          auth = if p.has_key, do: "authenticated", else: "no key"
+          url = if p.base_url, do: " (#{p.base_url})", else: ""
+          "- #{p.name}: #{p.api}#{url} [#{auth}]"
+        end)
+
+      {:ok, "Configured providers (#{length(providers)}):\n#{Enum.join(lines, "\n")}"}
+    end
+  end
+
+  defp call_tool("egghead_models", _args) do
+    models = Egghead.list_models()
+
+    if models == [] do
+      {:ok, "No models available. Configure a provider first."}
+    else
+      lines =
+        Enum.map(models, fn m ->
+          ctx = if m[:context_window], do: " (#{m.context_window} ctx)", else: ""
+          "- #{m.full_id}#{ctx}"
+        end)
+
+      {:ok, "Available models (#{length(models)}):\n#{Enum.join(lines, "\n")}"}
     end
   end
 

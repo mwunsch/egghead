@@ -5,7 +5,8 @@ defmodule Egghead.Application do
   Supervision tree layout:
 
       Egghead.Supervisor (rest_for_one)
-      ├── Egghead.Index — SQLite-backed graph index (starts first)
+      ├── Egghead.LLM.Registry — provider configuration and model resolution
+      ├── Egghead.Index — SQLite-backed graph index
       ├── Egghead.RecordStore — filesystem watcher, delegates queries to Index
       ├── Egghead.Agent.Supervisor — dynamic supervisor for agent processes
       │
@@ -26,6 +27,7 @@ defmodule Egghead.Application do
         db_path = Path.join(records_dir, ".egghead/index.db")
 
         [
+          {Egghead.LLM.Registry, records_dir: records_dir},
           {Egghead.Index, db_path: db_path},
           {Egghead.RecordStore, records_dir: records_dir},
           {Egghead.Agent.Supervisor, []}

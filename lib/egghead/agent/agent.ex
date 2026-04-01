@@ -51,7 +51,7 @@ defmodule Egghead.Agent do
 
   require Logger
 
-  alias Egghead.LLM.Anthropic
+  alias Egghead.LLM.Registry
 
   @valid_capabilities ~w(record_read record_append record_modify search)
   @default_context_threshold 0.75
@@ -255,8 +255,6 @@ defmodule Egghead.Agent do
   @impl true
   def init(record) do
     capabilities = parse_capabilities(record)
-    model = get_meta_string(record, "model", "claude-sonnet-4-6")
-    provider = get_meta_string(record, "provider", "anthropic") |> String.to_atom()
     thinking = get_meta_string(record, "thinking", nil)
     max_tokens = get_meta_int(record, "max_tokens", 4096)
     temperature = get_meta_float(record, "temperature", nil)
@@ -264,12 +262,36 @@ defmodule Egghead.Agent do
     context_threshold =
       get_meta_float(record, "context_threshold", @default_context_threshold)
 
+    # Resolve model via registry — supports "provider/model" or bare model names
+    # Falls back to old "model" + "provider" fields for backwards compat
+    raw_model = get_meta_string(record, "model", nil)
+    fallback_provider = get_meta_string(record, "provider", nil)
+
+    model =
+      cond do
+        raw_model && String.contains?(raw_model, "/") ->
+          raw_model
+
+        raw_model && fallback_provider ->
+          "#{fallback_provider}/#{raw_model}"
+
+        raw_model ->
+          raw_model
+
+        true ->
+          try do
+            Registry.default_model()
+          catch
+            :exit, _ -> "anthropic/claude-sonnet-4-6"
+          end
+      end
+
     state = %State{
       id: record.id,
       name: record.title || record.id,
       disposition: record.body || "",
       model: model,
-      provider: provider,
+      provider: nil,
       capabilities: capabilities,
       thinking: thinking,
       max_tokens: max_tokens,
@@ -348,17 +370,22 @@ defmodule Egghead.Agent do
   @impl true
   def handle_info(:fetch_model_info, state) do
     context_window =
-      case Anthropic.get_model_info(state.model) do
-        {:ok, %{"max_input_tokens" => max_input}} ->
-          Logger.info(
-            "Agent #{state.name}: model #{state.model} context window = #{max_input} tokens"
-          )
+      try do
+        case Registry.get_model_info(state.model) do
+          {:ok, %{"max_input_tokens" => max_input}} when is_integer(max_input) ->
+            Logger.info(
+              "Agent #{state.name}: model #{state.model} context window = #{max_input} tokens"
+            )
 
-          max_input
+            max_input
 
-        {:error, reason} ->
-          Logger.warning("Agent #{state.name}: could not fetch model info: #{inspect(reason)}")
-          # Fallback defaults
+          {:error, reason} ->
+            Logger.warning("Agent #{state.name}: could not fetch model info: #{inspect(reason)}")
+            fallback_context_window(state.model)
+        end
+      catch
+        :exit, _ ->
+          Logger.warning("Agent #{state.name}: LLM Registry not available")
           fallback_context_window(state.model)
       end
 
@@ -444,13 +471,7 @@ defmodule Egghead.Agent do
   end
 
   defp agent_loop(state, history, opts, round) do
-    # Use streaming if on_chunk callback is provided
-    chat_fn =
-      if Keyword.has_key?(opts, :on_chunk),
-        do: &Anthropic.chat_stream/2,
-        else: &Anthropic.chat/2
-
-    case chat_fn.(history, opts) do
+    case call_llm(state.model, history, opts) do
       {:ok, %{content: content, stop_reason: stop_reason, usage: usage}} ->
         input_tokens = usage[:input_tokens] || 0
         output_tokens = usage[:output_tokens] || 0
@@ -561,7 +582,7 @@ defmodule Egghead.Agent do
         max_tokens: state.max_tokens
       ]
 
-      case call_llm(state.provider, messages, llm_opts) do
+      case call_llm(state.model, messages, llm_opts) do
         {:ok, %{content: content}} ->
           summary =
             content
@@ -670,12 +691,21 @@ defmodule Egghead.Agent do
 
   # --- LLM dispatch ---
 
-  defp call_llm(:anthropic, messages, opts) do
-    Anthropic.chat(messages, opts)
-  end
+  defp call_llm(model_str, messages, opts) do
+    case Registry.resolve(model_str) do
+      {:ok, {module, provider_opts}} ->
+        # Merge provider config (api_key, base_url) with call opts
+        merged = Keyword.merge(provider_opts, opts)
 
-  defp call_llm(provider, _messages, _opts) do
-    {:error, {:unsupported_provider, provider}}
+        if Keyword.has_key?(opts, :on_chunk) and function_exported?(module, :chat_stream, 2) do
+          module.chat_stream(messages, merged)
+        else
+          module.chat(messages, merged)
+        end
+
+      {:error, reason} ->
+        {:error, {:provider_error, reason}}
+    end
   end
 
   # --- Tool log helpers ---

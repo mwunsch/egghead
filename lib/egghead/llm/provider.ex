@@ -2,26 +2,41 @@ defmodule Egghead.LLM.Provider do
   @moduledoc """
   Behaviour for LLM providers.
 
-  Providers handle the actual API communication with an LLM service.
-  Each provider implements a single callback: `chat/2`, which sends
-  messages and returns a response.
+  Each provider module implements communication with a specific LLM API
+  (Anthropic, OpenAI, Google, or OpenAI-compatible). The Registry resolves
+  `provider/model` strings to the right module and config.
   """
 
-  @type message :: %{role: String.t(), content: String.t()}
+  @type message :: %{role: String.t(), content: term()}
   @type opts :: keyword()
   @type token_usage :: keyword()
-  @type response :: {:ok, String.t(), token_usage()} | {:error, term()}
 
   @doc """
-  Sends a list of messages to the LLM and returns the response text.
+  Sends messages to the LLM. Returns `{:ok, response_map}` or `{:error, reason}`.
 
-  ## Options
-
-    * `:model` — model identifier (provider-specific)
-    * `:max_tokens` — maximum response tokens
-    * `:temperature` — sampling temperature
-    * `:system` — system prompt
+  The response map contains `:content` (list of content blocks), `:stop_reason`,
+  and `:usage` (keyword list with `:input_tokens` and `:output_tokens`).
   """
-  @callback chat(messages :: [message()], opts :: opts()) :: response()
-  @optional_callbacks [chat: 2]
+  @callback chat(messages :: [message()], opts :: opts()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc """
+  Streaming chat. Same as `chat/2` but calls `opts[:on_chunk]` with deltas.
+  """
+  @callback chat_stream(messages :: [message()], opts :: opts()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc """
+  Fetches metadata for a specific model (context window, capabilities).
+  """
+  @callback get_model_info(model_id :: String.t(), opts :: opts()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc """
+  Lists available models from the provider.
+  """
+  @callback list_models(opts :: opts()) ::
+              {:ok, [map()]} | {:error, term()}
+
+  @optional_callbacks [chat_stream: 2, list_models: 1, get_model_info: 2]
 end

@@ -386,7 +386,7 @@ defmodule Egghead.Chat.Room do
   end
 
   defp extract_mentions(content) do
-    ~r/@(\w[\w\/]*)/
+    ~r/@([\w][\w\/\-]*)/
     |> Regex.scan(content)
     |> Enum.map(fn [_, name] -> name end)
   end

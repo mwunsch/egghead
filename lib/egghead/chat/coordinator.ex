@@ -260,17 +260,33 @@ defmodule Egghead.Chat.Coordinator do
   defp activate([], _msg, _room_id, _state), do: :ok
 
   defp activate(agents, msg, room_id, _state) do
+    # Egghead (coordinator) only participates when:
+    # 1. Directly @-mentioned
+    # 2. No other agents available (fallback)
+    # Otherwise it stays out and lets the specialist agents work
+    mentions = msg.mentions || []
+    egghead_mentioned = "egghead" in mentions
+
     {egghead_agents, other_agents} = Enum.split_with(agents, &(&1.id == "egghead"))
 
     agents_to_prompt =
-      if other_agents == [] and egghead_agents != [] do
-        Logger.info("Coordinator: no other agents, egghead responding")
-        egghead_agents
-      else
-        agent_names = Enum.map_join(other_agents, ", ", & &1.id)
-        Logger.info("Coordinator: activating agents: #{agent_names}")
-        other_agents
+      cond do
+        egghead_mentioned ->
+          # Egghead was directly addressed — include it alongside others
+          agents
+
+        other_agents == [] and egghead_agents != [] ->
+          # No specialists available — egghead responds as fallback
+          Logger.info("Coordinator: no other agents, egghead responding")
+          egghead_agents
+
+        true ->
+          # Normal case — specialists only
+          other_agents
       end
+
+    agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)
+    Logger.info("Coordinator: activating agents: #{agent_names}")
 
     Enum.each(agents_to_prompt, fn agent_info ->
       Task.start(fn ->

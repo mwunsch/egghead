@@ -62,11 +62,24 @@ defmodule Egghead.Agent.Tools do
         name: "get_record",
         capability: "record_read",
         description:
-          "Read a record by its id. Returns full body, metadata, tags, links, backlinks, and outline.",
+          "Read a record's metadata and a preview of its body. Returns id, title, tags, links, backlinks, and a body preview. Use get_record_body to read the full content if needed.",
         input_schema: %{
           type: "object",
           properties: %{
             id: %{type: "string", description: "Record id (e.g. architecture/record-store)"}
+          },
+          required: ["id"]
+        }
+      },
+      %{
+        name: "get_record_body",
+        capability: "record_read",
+        description:
+          "Read the full body of a record. Only use this when you need the complete content — check get_record preview first. Be mindful of your context window.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            id: %{type: "string", description: "Record id"}
           },
           required: ["id"]
         }
@@ -208,7 +221,14 @@ defmodule Egghead.Agent.Tools do
 
   defp do_execute("get_record", %{"id" => id}, _ctx) do
     case Egghead.get_record(id) do
-      {:ok, record} -> {:ok, format_full_record(record)}
+      {:ok, record} -> {:ok, format_record_preview(record)}
+      {:error, :not_found} -> {:error, "Record not found: #{id}"}
+    end
+  end
+
+  defp do_execute("get_record_body", %{"id" => id}, _ctx) do
+    case Egghead.get_record(id) do
+      {:ok, record} -> {:ok, record.body || "(empty)"}
       {:error, :not_found} -> {:error, "Record not found: #{id}"}
     end
   end
@@ -294,14 +314,12 @@ defmodule Egghead.Agent.Tools do
     |> Enum.join("\n")
   end
 
-  defp format_full_record(record) do
+  defp format_record_preview(record) do
     meta =
       [
         "id: #{record.id}",
         if(record.title, do: "title: #{record.title}"),
         if(record.author, do: "author: #{record.author}"),
-        if(record.created, do: "created: #{record.created}"),
-        if(record.updated, do: "updated: #{record.updated}"),
         "class: #{record.class}",
         if(record.tags != [], do: "tags: #{Enum.join(record.tags, ", ")}"),
         if(record.links != [], do: "links: #{Enum.join(record.links, ", ")}")
@@ -313,11 +331,22 @@ defmodule Egghead.Agent.Tools do
 
     backlinks_str =
       if backlinks != [] do
-        "\n\nBacklinks:\n#{Enum.map_join(backlinks, "\n", &"- #{&1.id}: #{&1.title}")}"
+        "\nBacklinks: #{Enum.map_join(backlinks, ", ", &"#{&1.id}")}"
       else
         ""
       end
 
-    "#{meta}\n\n#{record.body || "(empty)"}#{backlinks_str}"
+    body = record.body || ""
+    body_tokens = div(String.length(body), 4)
+
+    preview =
+      if String.length(body) > 500 do
+        String.slice(body, 0, 500) <>
+          "...\n\n(~#{body_tokens} tokens total — use get_record_body to read full content)"
+      else
+        body
+      end
+
+    "#{meta}#{backlinks_str}\n\n#{preview}"
   end
 end

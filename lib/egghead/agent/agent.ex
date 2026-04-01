@@ -57,43 +57,23 @@ defmodule Egghead.Agent do
   @default_context_threshold 0.75
 
   @base_system_prompt """
-  You are an agent in the Egghead record store — a consultable knowledge base
-  built on Elixir/OTP. The store contains Markdown and org-mode records with
-  YAML frontmatter, organized as a Zettelkasten: atomic notes, linked by
-  explicit references, attributed with author and timestamps.
+  You are an agent in Egghead, a shared knowledge base. Records are Markdown
+  (with YAML frontmatter) or org-mode files, each with an id, title, tags,
+  links to other records, a class (durable, inbox, deliberation, agent), and
+  a body. Records are linked with [[wikilinks]].
 
-  ## How records work
-
-  - Every record has an `id` (e.g. `architecture/record-store`), a `title`,
-    `tags`, `links` to other records, a `class` (durable, inbox, deliberation),
-    and a body.
-  - Reference records by their id when relevant.
-  - Records are the persistent memory. Valuable insights should be captured
-    as records using your tools.
-
-  ## Your tools
-
-  You have tools to interact with the record store. Use them when you need
-  information — don't guess about what's in the store, look it up. Use
-  `search_records` to find relevant records, `get_record` to read one in
-  full, and `create_record` to persist new knowledge.
-
-  When creating records, use meaningful ids (like `patterns/error-retry`),
-  link them to related records, and tag them appropriately.
-
-  ## Chat rooms
-
-  You may be in a shared chat room with other agents and a human. When
-  addressing another agent, use the @-mention syntax with their full id:
-  `@agents/scout` or `@agents/archivist`. This activates them to respond.
-  Do NOT use bold names like **Scout** — only @-mentions trigger activation.
-
-  If you don't have something substantive to add to the conversation,
-  respond with exactly `[PASS]` and nothing else. Not every message needs
-  a response from every agent. Stay silent rather than restating what
-  others have already said.
+  Use your tools to search and read records — don't guess about what's in
+  the store. Reference records by their id. Create records to persist
+  valuable knowledge, using meaningful ids and linking to related records.
 
   Be concise and substantive.
+  """
+
+  @chat_addendum """
+  You are in a shared chat room with other agents and a human. Address other
+  agents with @agents/id syntax — only @-mentions trigger activation. Respond
+  [PASS] if you have nothing substantive to add. Don't restate what others
+  already said. Keep responses brief — context is shared with conversation history.
   """
 
   defmodule State do
@@ -412,8 +392,11 @@ defmodule Egghead.Agent do
     room = Keyword.get(opts, :room)
     system_prompt = build_system_prompt(state, room)
 
-    # Append user message to history
-    history = state.history ++ [%{role: "user", content: message}]
+    # Compact old tool results before adding new message
+    compacted = compact_history(state.history)
+
+    # Append user message to compacted history
+    history = compacted ++ [%{role: "user", content: message}]
 
     # Get tools for this agent's capabilities
     tools = Egghead.Agent.Tools.definitions_for(state.capabilities)
@@ -692,16 +675,12 @@ defmodule Egghead.Agent do
   # --- System prompt ---
 
   defp build_system_prompt(state, room \\ nil) do
+    context_status = format_context_status(state)
+
     base = """
     #{@base_system_prompt}
 
-    ## Your Identity
-
-    You are **#{state.name}**.
-    Your configuration is defined in record `#{state.id}`.
-    Your capabilities: #{Enum.join(state.capabilities, ", ")}.
-
-    ## Your Disposition
+    You are **#{state.name}** (#{state.id}). #{context_status}
 
     #{state.disposition}
     """
@@ -709,28 +688,15 @@ defmodule Egghead.Agent do
     if room do
       agents_list = room.agents |> Enum.join(", ")
 
-      transcript =
-        room.transcript
-        |> Enum.take(-30)
-        |> Enum.map_join("\n", fn m ->
-          label =
-            case m.sender do
-              %{type: :user, name: name} -> "[#{name}]"
-              %{type: :agent, id: id} -> "[#{id}]"
-              _ -> "[unknown]"
-            end
-
-          "#{label} #{m.content}"
-        end)
+      # Only include new messages since agent's last response (diff)
+      transcript = format_room_diff(room, state.id)
 
       base <>
+        @chat_addendum <>
         """
 
-        ## Chat Room
+        Room: #{room.id} | Agents: #{agents_list}
 
-        You are in room "#{room.id}" with: #{agents_list}.
-
-        Recent conversation:
         #{transcript}
         """
     else
@@ -739,6 +705,145 @@ defmodule Egghead.Agent do
   end
 
   # --- LLM dispatch ---
+
+  # Compact old tool results in history. Keeps the last turn's tool results
+  # intact (the agent may still be reasoning about them). Earlier tool results
+  # are replaced with a brief summary showing what was fetched and how large it was.
+  defp compact_history(history) do
+    # Find where the last complete turn starts (last user message that isn't tool results)
+    last_turn_start =
+      history
+      |> Enum.with_index()
+      |> Enum.reverse()
+      |> Enum.find_value(fn {entry, idx} ->
+        case entry do
+          %{role: "user", content: content} when is_binary(content) -> idx
+          _ -> nil
+        end
+      end) || 0
+
+    history
+    |> Enum.with_index()
+    |> Enum.map(fn {entry, idx} ->
+      if idx < last_turn_start do
+        compact_entry(entry)
+      else
+        entry
+      end
+    end)
+  end
+
+  defp compact_entry(%{role: "user", content: content} = entry) when is_list(content) do
+    # Tool results — compact them
+    compacted =
+      Enum.map(content, fn
+        %{type: "tool_result", content: result_text} = result when is_binary(result_text) ->
+          if String.length(result_text) > 200 do
+            token_est = div(String.length(result_text), 4)
+            preview = String.slice(result_text, 0, 100)
+            %{result | content: "[Compacted ~#{token_est}tok] #{preview}..."}
+          else
+            result
+          end
+
+        other ->
+          other
+      end)
+
+    %{entry | content: compacted}
+  end
+
+  defp compact_entry(entry), do: entry
+
+  defp format_context_status(state) do
+    case {state.session_tokens, state.context_window} do
+      {_, nil} ->
+        ""
+
+      {tokens, window} when window > 0 ->
+        pct = Float.round(tokens / window * 100, 1)
+
+        cond do
+          pct > 70.0 ->
+            """
+            ## Context Status: #{pct}% (#{tokens}/#{window} tokens)
+            Context pressure is HIGH. Summarize rather than quote. Avoid fetching large records.
+            Prefer search_records over get_record. If you need a record, use get_record_body for specific sections only.
+            """
+
+          pct > 40.0 ->
+            """
+            ## Context Status: #{pct}% (#{tokens}/#{window} tokens)
+            Be selective about which records you fetch. Search first, read only what's necessary.
+            """
+
+          true ->
+            "## Context Status: #{pct}% used"
+        end
+
+      _ ->
+        ""
+    end
+  end
+
+  defp format_room_diff(room, agent_id) do
+    transcript = room.transcript || []
+
+    # Find the last message from this agent
+    last_own_idx =
+      transcript
+      |> Enum.reverse()
+      |> Enum.find_index(fn m ->
+        case m.sender do
+          %{id: ^agent_id} -> true
+          _ -> false
+        end
+      end)
+
+    messages =
+      case last_own_idx do
+        nil ->
+          # First activation — show last 10 messages as catch-up
+          Enum.take(transcript, -10)
+
+        idx ->
+          # Messages since our last response
+          since_idx = length(transcript) - idx
+          diff = Enum.drop(transcript, since_idx)
+
+          # Always include at least the last 5 messages so the agent
+          # has context even if re-activated immediately after speaking
+          if length(diff) < 3 do
+            Enum.take(transcript, -5)
+          else
+            diff
+          end
+      end
+
+    if messages == [] do
+      "(no new messages)"
+    else
+      messages
+      |> Enum.map_join("\n", fn m ->
+        label =
+          case m.sender do
+            %{type: :user, name: name} -> "[#{name}]"
+            %{type: :agent, id: id} -> "[#{id}]"
+            _ -> "[unknown]"
+          end
+
+        # Truncate long messages in the transcript view
+        content =
+          if String.length(m.content) > 500 do
+            String.slice(m.content, 0, 500) <> "..."
+          else
+            m.content
+          end
+
+        "#{label} #{content}"
+      end)
+    end
+  end
 
   defp call_llm(model_str, messages, opts) do
     result =

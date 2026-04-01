@@ -141,4 +141,92 @@ defmodule Egghead do
   """
   @spec list_models() :: [map()]
   defdelegate list_models(), to: Egghead.LLM.Registry
+
+  # --- Chat API ---
+
+  @doc """
+  Creates a chat room and returns the room id.
+  """
+  @spec create_room(keyword()) :: {:ok, String.t()} | {:error, term()}
+  def create_room(opts \\ []) do
+    id =
+      Keyword.get(
+        opts,
+        :id,
+        "chat-#{Date.to_iso8601(Date.utc_today())}-#{:erlang.unique_integer([:positive])}"
+      )
+
+    round_budget = Keyword.get(opts, :round_budget, 5)
+    is_default = Keyword.get(opts, :default, false)
+
+    case Egghead.Chat.Room.start_link(id: id, round_budget: round_budget) do
+      {:ok, _pid} ->
+        Enum.each(list_agents(), fn agent ->
+          Egghead.Chat.Room.join(id, agent.id)
+
+          Egghead.Chat.Coordinator.register_agent(agent.id, %{
+            name: agent.name,
+            capabilities: agent.capabilities
+          })
+        end)
+
+        Egghead.Chat.Coordinator.watch_room(id)
+
+        if is_default do
+          :persistent_term.put(:egghead_default_room, id)
+        end
+
+        {:ok, id}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Returns the default room id.
+  """
+  @spec default_room() :: String.t() | nil
+  def default_room do
+    try do
+      :persistent_term.get(:egghead_default_room)
+    rescue
+      ArgumentError -> nil
+    end
+  end
+
+  @doc """
+  Sends a message to a chat room. The coordinator decides which agents respond.
+  Defaults to the default room if no room_id given.
+  """
+  @spec chat(String.t(), String.t()) :: :ok
+  def chat(room_id \\ default_room(), message) do
+    sender = System.get_env("USER") || "human"
+    Egghead.Chat.Room.send_message(room_id, sender, message)
+  end
+
+  @doc """
+  Watch a chat room — prints messages to stdout as they arrive.
+  With no argument, watches the default room.
+  """
+  @spec watch(String.t()) :: pid()
+  def watch(room_id \\ default_room()) do
+    Egghead.Chat.Watcher.start(room_id)
+  end
+
+  @doc """
+  Gets the chat room transcript.
+  """
+  @spec chat_transcript(String.t()) :: [map()]
+  def chat_transcript(room_id \\ default_room()) do
+    Egghead.Chat.Room.get_transcript(room_id)
+  end
+
+  @doc """
+  Grants more turns in a chat room (like /continue).
+  """
+  @spec chat_continue(String.t()) :: :ok
+  def chat_continue(room_id \\ default_room()) do
+    Egghead.Chat.Room.continue(room_id)
+  end
 end

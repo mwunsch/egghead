@@ -81,6 +81,18 @@ defmodule Egghead.Agent do
   When creating records, use meaningful ids (like `patterns/error-retry`),
   link them to related records, and tag them appropriately.
 
+  ## Chat rooms
+
+  You may be in a shared chat room with other agents and a human. When
+  addressing another agent, use the @-mention syntax with their full id:
+  `@agents/scout` or `@agents/archivist`. This activates them to respond.
+  Do NOT use bold names like **Scout** — only @-mentions trigger activation.
+
+  If you don't have something substantive to add to the conversation,
+  respond with exactly `[PASS]` and nothing else. Not every message needs
+  a response from every agent. Stay silent rather than restating what
+  others have already said.
+
   Be concise and substantive.
   """
 

@@ -1,6 +1,6 @@
 defmodule Egghead.Agent.LayerSupervisor do
   @moduledoc """
-  Supervisor for the agent layer: LLM Registry + Agent DynamicSupervisor.
+  Supervisor for the agent layer: LLM Registry, Coordinator, Agent DynamicSupervisor.
 
   Independent of the record store layer. If this crashes, the record
   store keeps running. When Registry restarts, agents re-sync.
@@ -18,6 +18,7 @@ defmodule Egghead.Agent.LayerSupervisor do
 
     children = [
       {Egghead.LLM.Registry, records_dir: records_dir},
+      {Egghead.Chat.Coordinator, []},
       {Egghead.Agent.Supervisor, []}
     ]
 

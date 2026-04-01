@@ -16,6 +16,7 @@ defmodule Egghead.Chat.Room do
   require Logger
 
   @default_round_budget 5
+  @idle_timeout :timer.minutes(5)
   @pubsub Egghead.PubSub
 
   defmodule Sender do
@@ -28,6 +29,7 @@ defmodule Egghead.Chat.Room do
     @moduledoc "A single message in a chat room transcript."
     defstruct [
       :id,
+      :room_id,
       :sender,
       :content,
       :timestamp,
@@ -47,6 +49,7 @@ defmodule Egghead.Chat.Room do
       rounds_remaining: 0,
       current_round_responded: MapSet.new(),
       pending_mentions: [],
+      idle_timeout: nil,
       status: :waiting
     ]
   end
@@ -155,15 +158,18 @@ defmodule Egghead.Chat.Room do
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
     round_budget = Keyword.get(opts, :round_budget, @default_round_budget)
+    idle_timeout = if Keyword.get(opts, :idle_timeout), do: @idle_timeout
 
     Logger.info("Chat room started: #{id}")
 
-    {:ok,
-     %State{
-       id: id,
-       round_budget: round_budget,
-       rounds_remaining: round_budget
-     }}
+    state = %State{
+      id: id,
+      round_budget: round_budget,
+      rounds_remaining: round_budget,
+      idle_timeout: idle_timeout
+    }
+
+    if idle_timeout, do: {:ok, state, idle_timeout}, else: {:ok, state}
   end
 
   @impl true
@@ -172,6 +178,7 @@ defmodule Egghead.Chat.Room do
 
     msg = %Message{
       id: generate_id(),
+      room_id: state.id,
       sender: sender,
       content: content,
       timestamp: DateTime.utc_now(),
@@ -189,7 +196,7 @@ defmodule Egghead.Chat.Room do
 
     broadcast(state.id, {:user_message, msg})
 
-    {:reply, :ok, state}
+    reply_with_timeout(:ok, state)
   end
 
   def handle_call({:agent_respond, %Sender{} = sender, content, usage}, _from, state) do
@@ -197,6 +204,7 @@ defmodule Egghead.Chat.Room do
 
     msg = %Message{
       id: generate_id(),
+      room_id: state.id,
       sender: sender,
       content: content,
       timestamp: DateTime.utc_now(),
@@ -227,7 +235,7 @@ defmodule Egghead.Chat.Room do
               current_round_responded: MapSet.new()
           }
 
-          broadcast(state.id, {:agent_mentions, sender.id, agent_mentions})
+          broadcast(state.id, {:agent_mentions, state.id, sender.id, agent_mentions})
           state
         else
           # Budget exhausted — queue the mentions
@@ -245,7 +253,7 @@ defmodule Egghead.Chat.Room do
         state
       end
 
-    {:reply, :ok, state}
+    reply_with_timeout(:ok, state)
   end
 
   def handle_call(:save_transcript, _from, state) do
@@ -268,10 +276,10 @@ defmodule Egghead.Chat.Room do
 
     # Replay pending @-mentions that were queued when budget ran out
     Enum.each(pending, fn {from_agent, mentioned} ->
-      broadcast(state.id, {:agent_mentions, from_agent, mentioned})
+      broadcast(state.id, {:agent_mentions, state.id, from_agent, mentioned})
     end)
 
-    {:reply, :ok, state}
+    reply_with_timeout(:ok, state)
   end
 
   def handle_call({:join, agent_id}, _from, state) do
@@ -291,6 +299,7 @@ defmodule Egghead.Chat.Room do
       Enum.map(state.transcript, fn msg ->
         %{
           id: msg.id,
+          room_id: msg.room_id,
           sender: %{
             type: msg.sender.type,
             id: msg.sender.id,
@@ -320,7 +329,21 @@ defmodule Egghead.Chat.Room do
     {:reply, info, state}
   end
 
+  @impl true
+  def handle_info(:timeout, state) do
+    Logger.info("Room #{state.id}: idle timeout, shutting down")
+    {:stop, :normal, state}
+  end
+
   # --- Private helpers ---
+
+  defp reply_with_timeout(reply, state) do
+    if state.idle_timeout do
+      {:reply, reply, state, state.idle_timeout}
+    else
+      {:reply, reply, state}
+    end
+  end
 
   defp persist_transcript(state) do
     if state.transcript == [] do

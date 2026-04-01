@@ -71,9 +71,9 @@ defmodule Egghead.Agent do
 
   @chat_addendum """
   You are in a shared chat room with other agents and a human. Address other
-  agents with @agents/id syntax — only @-mentions trigger activation. Respond
-  [PASS] if you have nothing substantive to add. Don't restate what others
-  already said. Keep responses brief — context is shared with conversation history.
+  agents with @agents/id syntax — only @-mentions trigger activation. If you
+  have nothing substantive to add, respond with exactly [PASS] — nothing else,
+  no addendum. Don't restate what others already said. Keep responses brief.
   """
 
   defmodule State do

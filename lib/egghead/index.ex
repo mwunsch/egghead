@@ -633,14 +633,21 @@ defmodule Egghead.Index do
   defp parse_format("org"), do: :org
   defp parse_format(_), do: :markdown
 
-  # Escape user input for FTS5 MATCH.
+  # Prepare user input for FTS5 MATCH.
   #
-  # FTS5 has its own query syntax. Double-quoting a string makes FTS5
-  # treat it as a literal phrase. We escape any internal double quotes
-  # by doubling them (FTS5's escape convention).
+  # Splits the query into individual terms and joins with OR so that
+  # records containing any of the terms are returned. FTS5 ranks results
+  # by how many terms match (via bm25), so records matching all terms
+  # sort higher. Each term is double-quoted to prevent FTS5 syntax
+  # injection (operators like AND, OR, NOT, *, NEAR).
   defp escape_fts(query) do
-    escaped = String.replace(query, "\"", "\"\"")
-    "\"#{escaped}\""
+    query
+    |> String.split(~r/\s+/, trim: true)
+    |> Enum.map(fn term ->
+      escaped = String.replace(term, "\"", "\"\"")
+      "\"#{escaped}\""
+    end)
+    |> Enum.join(" OR ")
   end
 
   # --- SQLite helpers ---

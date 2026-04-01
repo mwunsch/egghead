@@ -182,6 +182,19 @@ defmodule Egghead.MCP.Handler do
         }
       },
       %{
+        name: "egghead_consult",
+        description:
+          "Consult the Egghead agent swarm. Creates an ephemeral room, sends your question to all agents, and returns their aggregated responses. Use this for questions that benefit from multiple perspectives.",
+        inputSchema: %{
+          type: "object",
+          properties: %{
+            question: %{type: "string", description: "The question to consult the swarm about"},
+            timeout: %{type: "integer", description: "Max wait in seconds (default 120)"}
+          },
+          required: ["question"]
+        }
+      },
+      %{
         name: "egghead_prompt",
         description:
           "Send a prompt to a named Egghead agent. The agent gathers relevant records, reasons through its disposition (personality/expertise), and responds. Agents with record_append capability may create new records.",
@@ -316,6 +329,29 @@ defmodule Egghead.MCP.Handler do
 
     records = Egghead.recent(opts)
     {:ok, format_record_list(records, "Recent records")}
+  end
+
+  defp call_tool("egghead_consult", %{"question" => question} = args) do
+    timeout = (args["timeout"] || 120) * 1000
+
+    case Egghead.consult(question, timeout: timeout) do
+      {:ok, %{responses: responses, transcript_id: transcript_id}} ->
+        formatted =
+          responses
+          |> Enum.map_join("\n\n---\n\n", fn r ->
+            "**#{r.agent}**:\n#{r.text}"
+          end)
+
+        footer =
+          if transcript_id,
+            do: "\n\n---\n_Transcript saved: #{transcript_id}_",
+            else: ""
+
+        {:ok, "#{formatted}#{footer}"}
+
+      {:error, reason} ->
+        {:error, "Consultation failed: #{inspect(reason)}"}
+    end
   end
 
   defp call_tool("egghead_prompt", %{"agent" => agent_id, "message" => message}) do

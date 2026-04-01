@@ -157,9 +157,12 @@ defmodule Egghead do
       )
 
     round_budget = Keyword.get(opts, :round_budget, 5)
+    idle_timeout = Keyword.get(opts, :idle_timeout, false)
     is_default = Keyword.get(opts, :default, false)
 
-    case Egghead.Chat.Room.start_link(id: id, round_budget: round_budget) do
+    room_opts = [id: id, round_budget: round_budget, idle_timeout: idle_timeout]
+
+    case Egghead.Chat.Room.start_link(room_opts) do
       {:ok, _pid} ->
         Enum.each(list_agents(), fn agent ->
           Egghead.Chat.Room.join(id, agent.id)
@@ -235,5 +238,98 @@ defmodule Egghead do
   @spec chat_save(String.t()) :: {:ok, String.t()} | {:error, term()}
   def chat_save(room_id \\ default_room()) do
     Egghead.Chat.Room.save_transcript(room_id)
+  end
+
+  # --- Consultation API ---
+
+  @doc """
+  Consult the agent swarm. Creates an ephemeral room, sends the question,
+  waits for all agents to respond or pass, then returns the aggregated result.
+
+  ## Options
+
+    * `:timeout` — max wait in ms (default: 120_000)
+    * `:round_budget` — max agent-to-agent rounds (default: 2)
+  """
+  @spec consult(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def consult(question, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 120_000)
+    round_budget = Keyword.get(opts, :round_budget, 2)
+
+    room_id = "consult-#{:erlang.unique_integer([:positive])}"
+
+    case create_room(id: room_id, round_budget: round_budget, idle_timeout: true) do
+      {:ok, ^room_id} ->
+        # Subscribe before sending so we don't miss events
+        Egghead.Chat.Room.subscribe(room_id)
+        Egghead.Chat.Room.send_message(room_id, question)
+
+        responses = collect_responses(timeout)
+
+        transcript_id =
+          case Egghead.Chat.Room.save_transcript(room_id) do
+            {:ok, id} -> id
+            {:error, _} -> nil
+          end
+
+        GenServer.stop(:"egghead_room_#{room_id}", :normal, 5_000)
+
+        {:ok, %{responses: responses, room_id: room_id, transcript_id: transcript_id}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp collect_responses(timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_collect(deadline, _expected = 0, _received = 0, _responses = [])
+  end
+
+  defp do_collect(deadline, expected, received, responses) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:agents_activated, count} ->
+        do_collect(deadline, expected + count, received, responses)
+
+      {:agent_message, msg} ->
+        responses = responses ++ [%{agent: msg.sender.id, text: msg.content}]
+        maybe_done(deadline, expected, received + 1, responses)
+
+      {:agent_passed, _agent_id} ->
+        maybe_done(deadline, expected, received + 1, responses)
+
+      :budget_exhausted ->
+        responses
+
+      _other ->
+        do_collect(deadline, expected, received, responses)
+    after
+      remaining -> responses
+    end
+  end
+
+  # When all activated agents have responded/passed, wait briefly for
+  # a follow-up activation from @-mention chains before returning.
+  defp maybe_done(deadline, expected, received, responses)
+       when expected > 0 and received >= expected do
+    receive do
+      {:agents_activated, count} ->
+        do_collect(deadline, expected + count, received, responses)
+
+      {:agent_message, msg} ->
+        responses = responses ++ [%{agent: msg.sender.id, text: msg.content}]
+        maybe_done(deadline, expected, received + 1, responses)
+
+      {:agent_passed, _agent_id} ->
+        maybe_done(deadline, expected, received + 1, responses)
+    after
+      2_000 -> responses
+    end
+  end
+
+  defp maybe_done(deadline, expected, received, responses) do
+    do_collect(deadline, expected, received, responses)
   end
 end

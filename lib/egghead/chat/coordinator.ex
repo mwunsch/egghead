@@ -128,14 +128,8 @@ defmodule Egghead.Chat.Coordinator do
   # --- Room event handling ---
 
   @impl true
-  def handle_info({:user_message, %{room_id: room_id} = msg}, state) do
-    agents_to_activate = tier1_filter(msg, state.agents)
-    activate(agents_to_activate, msg, room_id, state)
-    {:noreply, state}
-  end
-
   def handle_info({:user_message, msg}, state) do
-    room_id = state.rooms |> MapSet.to_list() |> List.first()
+    room_id = msg.room_id || state.rooms |> MapSet.to_list() |> List.first()
 
     if room_id do
       agents_to_activate = tier1_filter(msg, state.agents)
@@ -152,9 +146,7 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
-  def handle_info({:agent_mentions, from_agent, mentioned_ids}, state) do
-    room_id = state.rooms |> MapSet.to_list() |> List.first()
-
+  def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids}, state) do
     agents =
       mentioned_ids
       |> Enum.flat_map(fn id ->
@@ -164,11 +156,11 @@ defmodule Egghead.Chat.Coordinator do
         end
       end)
 
-    if agents != [] and room_id do
+    if agents != [] do
       Logger.info("Coordinator: #{from_agent} mentioned #{Enum.map_join(agents, ", ", & &1.id)}")
 
-      # The message is just "you were mentioned" — the agent gets the full
-      # transcript via room context and can see what was said
+      broadcast_activation(room_id, length(agents))
+
       Enum.each(agents, fn agent_info ->
         Task.start(fn ->
           prompt_agent_in_room(agent_info.id, room_id, "(You were @-mentioned by #{from_agent})")
@@ -203,6 +195,11 @@ defmodule Egghead.Chat.Coordinator do
     Logger.debug("Coordinator: #{agent_id} left room")
     {:noreply, state}
   end
+
+  def handle_info({:agents_activated, _count}, state), do: {:noreply, state}
+  def handle_info({:agent_passed, _agent_id}, state), do: {:noreply, state}
+  def handle_info({:agent_streaming, _, _, _}, state), do: {:noreply, state}
+  def handle_info({:agent_tool_call, _, _, _, _}, state), do: {:noreply, state}
 
   # --- Tier 1: Structural filter (zero tokens) ---
 
@@ -288,6 +285,8 @@ defmodule Egghead.Chat.Coordinator do
     agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)
     Logger.info("Coordinator: activating agents: #{agent_names}")
 
+    broadcast_activation(room_id, length(agents_to_prompt))
+
     Enum.each(agents_to_prompt, fn agent_info ->
       Task.start(fn ->
         prompt_agent_in_room(agent_info.id, room_id, msg.content)
@@ -307,16 +306,45 @@ defmodule Egghead.Chat.Coordinator do
       agents: room_state.agents
     }
 
-    case Egghead.Agent.prompt(agent_id, message, room: room_context) do
+    on_chunk = fn
+      {:text, delta} ->
+        Phoenix.PubSub.broadcast(
+          @pubsub,
+          Room.topic(room_id),
+          {:agent_streaming, room_id, agent_id, delta}
+        )
+
+      {:block_done, %{"type" => "tool_use", "name" => name} = block} ->
+        Phoenix.PubSub.broadcast(
+          @pubsub,
+          Room.topic(room_id),
+          {:agent_tool_call, room_id, agent_id, name, block["input"]}
+        )
+
+      _ ->
+        :ok
+    end
+
+    case Egghead.Agent.prompt(agent_id, message, room: room_context, on_chunk: on_chunk) do
       {:ok, %{text: text, usage: usage}} ->
         if String.trim(text) == "[PASS]" do
           Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
+          broadcast_pass(room_id, agent_id)
         else
           Room.agent_respond(room_id, agent_id, text, usage: usage)
         end
 
       {:error, reason} ->
         Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
+        broadcast_pass(room_id, agent_id)
     end
+  end
+
+  defp broadcast_activation(room_id, count) do
+    Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:agents_activated, count})
+  end
+
+  defp broadcast_pass(room_id, agent_id) do
+    Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:agent_passed, agent_id})
   end
 end

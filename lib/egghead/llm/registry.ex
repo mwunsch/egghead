@@ -126,6 +126,9 @@ defmodule Egghead.LLM.Registry do
       Logger.info("LLM providers configured: #{names}")
     end
 
+    # Discover models asynchronously for auto-discovery providers
+    send(self(), :discover_models)
+
     {:ok, %{providers: providers}}
   end
 
@@ -186,6 +189,8 @@ defmodule Egghead.LLM.Registry do
       {:ok, {module, opts}} ->
         model_id = Keyword.get(opts, :model)
 
+        Code.ensure_loaded(module)
+
         if function_exported?(module, :get_model_info, 2) do
           result = module.get_model_info(model_id, opts)
           {:reply, result, state}
@@ -196,6 +201,42 @@ defmodule Egghead.LLM.Registry do
       {:error, _} = err ->
         {:reply, err, state}
     end
+  end
+
+  # --- Config loading ---
+
+  @impl true
+  def handle_info(:discover_models, state) do
+    providers =
+      state.providers
+      |> Enum.map(fn {name, config} ->
+        case config.models do
+          :auto ->
+            Code.ensure_loaded(config.module)
+
+            if function_exported?(config.module, :list_models, 1) do
+              opts = [api_key: config.api_key] |> maybe_opt(:base_url, config.base_url)
+
+              case config.module.list_models(opts) do
+                {:ok, models} ->
+                  Logger.info("Discovered #{length(models)} models for #{name}")
+                  {name, %{config | model_cache: models}}
+
+                {:error, reason} ->
+                  Logger.warning("Model discovery failed for #{name}: #{inspect(reason)}")
+                  {name, config}
+              end
+            else
+              {name, config}
+            end
+
+          _ ->
+            {name, config}
+        end
+      end)
+      |> Map.new()
+
+    {:noreply, %{state | providers: providers}}
   end
 
   # --- Config loading ---
@@ -376,13 +417,24 @@ defmodule Egghead.LLM.Registry do
     {:ok, models}
   end
 
+  defp get_cached_models(%ProviderConfig{models: :auto, model_cache: cache})
+       when is_list(cache) do
+    {:ok, cache}
+  end
+
   defp get_cached_models(%ProviderConfig{models: :auto, module: module} = config) do
+    Code.ensure_loaded(module)
+
     if function_exported?(module, :list_models, 1) do
       opts = [api_key: config.api_key] |> maybe_opt(:base_url, config.base_url)
 
       case module.list_models(opts) do
-        {:ok, models} -> {:ok, models}
-        {:error, _} = err -> err
+        {:ok, models} ->
+          {:ok, models}
+
+        {:error, reason} ->
+          Logger.warning("Failed to list models for #{config.name}: #{inspect(reason)}")
+          {:error, reason}
       end
     else
       {:ok, []}

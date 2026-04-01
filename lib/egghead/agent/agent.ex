@@ -692,16 +692,40 @@ defmodule Egghead.Agent do
   # --- LLM dispatch ---
 
   defp call_llm(model_str, messages, opts) do
-    case Registry.resolve(model_str) do
+    result =
+      try do
+        Registry.resolve(model_str)
+      catch
+        :exit, _ -> {:error, :registry_unavailable}
+      end
+
+    case result do
       {:ok, {module, provider_opts}} ->
-        # Merge provider config (api_key, base_url) with call opts
-        merged = Keyword.merge(provider_opts, opts)
+        # Provider opts (resolved model name, api_key) take precedence over agent opts
+        merged = Keyword.merge(opts, provider_opts)
+        Code.ensure_loaded(module)
 
         if Keyword.has_key?(opts, :on_chunk) and function_exported?(module, :chat_stream, 2) do
           module.chat_stream(messages, merged)
         else
           module.chat(messages, merged)
         end
+
+      {:error, {:provider_not_configured, provider}} ->
+        {:error,
+         "Provider '#{provider}' is not configured. " <>
+           "Set the appropriate API key or add it to ~/.egghead/providers.yml. " <>
+           "Check the model field in the agent record."}
+
+      {:error, :registry_unavailable} ->
+        {:error,
+         "No LLM provider available. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or " <>
+           "GOOGLE_API_KEY, or create ~/.egghead/providers.yml"}
+
+      {:error, :missing_api_key} ->
+        {:error,
+         "API key not set for this provider. Set the appropriate environment variable " <>
+           "or add it to ~/.egghead/providers.yml"}
 
       {:error, reason} ->
         {:error, {:provider_error, reason}}

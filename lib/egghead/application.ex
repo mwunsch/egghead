@@ -4,15 +4,16 @@ defmodule Egghead.Application do
 
   Supervision tree layout:
 
-      Egghead.Supervisor (rest_for_one)
-      ├── Egghead.LLM.Registry — provider configuration and model resolution
-      ├── Egghead.Index — SQLite-backed graph index
-      ├── Egghead.RecordStore — filesystem watcher, delegates queries to Index
-      ├── Egghead.Agent.Supervisor — dynamic supervisor for agent processes
-      │
-      │   Future children (not yet implemented):
-      ├── Egghead.MCP.Server — MCP protocol endpoint (auto-start)
-      └── Egghead.TUI — terminal interface process
+      Egghead.Supervisor (one_for_one)
+      ├── Egghead.RecordSupervisor (rest_for_one)
+      │   ├── Egghead.Index — SQLite graph index
+      │   └── Egghead.RecordStore — file watcher, queries
+      └── Egghead.Agent.LayerSupervisor (rest_for_one)
+          ├── Egghead.LLM.Registry — provider config, model resolution
+          └── Egghead.Agent.Supervisor — DynamicSupervisor for agents
+
+  The record store is independent of the LLM/agent layer. If the
+  Registry crashes, agents restart but the record store keeps running.
   """
 
   use Application
@@ -27,16 +28,14 @@ defmodule Egghead.Application do
         db_path = Path.join(records_dir, ".egghead/index.db")
 
         [
-          {Egghead.LLM.Registry, records_dir: records_dir},
-          {Egghead.Index, db_path: db_path},
-          {Egghead.RecordStore, records_dir: records_dir},
-          {Egghead.Agent.Supervisor, []}
+          {Egghead.RecordSupervisor, records_dir: records_dir, db_path: db_path},
+          {Egghead.Agent.LayerSupervisor, records_dir: records_dir}
         ]
       else
         []
       end
 
-    opts = [strategy: :rest_for_one, name: Egghead.Supervisor]
+    opts = [strategy: :one_for_one, name: Egghead.Supervisor]
     result = Supervisor.start_link(children, opts)
 
     # After the tree is up, sync agents from the record store

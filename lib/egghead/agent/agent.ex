@@ -2,8 +2,10 @@ defmodule Egghead.Agent do
   @moduledoc """
   An agent process backed by a record of class `:agent`.
 
-  The agent's record body is its disposition (system prompt). Its frontmatter
-  meta fields configure the model, provider, capabilities, and LLM features.
+  The agent holds identity (disposition, model, capabilities) and spawns
+  per-room Session processes for conversation. Each room gets its own
+  session so history doesn't bleed across rooms. A "default" session
+  handles 1:1 prompts outside rooms.
 
   ## Agent Record Format
 
@@ -15,36 +17,13 @@ defmodule Egghead.Agent do
   provider: anthropic
   capabilities: [record_read, record_append, search]
   thinking: enabled
-  context_threshold: 0.75
+  context_threshold: 0.70
   max_tokens: 4096
   temperature: 0.7
   ---
 
   You look for connections between records across different domains...
   ```
-
-  ## Meta Fields
-
-  - `model` — LLM model id (default: claude-sonnet-4-6)
-  - `provider` — LLM provider (default: anthropic)
-  - `capabilities` — what the agent can do: record_read, record_append, search
-  - `thinking` — "enabled" or "adaptive" for extended thinking (if model supports it)
-  - `context_threshold` — fraction of context window before auto-summarize (default: 0.75)
-  - `max_tokens` — max response tokens per turn
-  - `temperature` — sampling temperature
-
-  ## Context Management
-
-  Each agent tracks cumulative token usage per session. When the session
-  approaches the context window limit (determined by querying the model's
-  `max_input_tokens` via the Models API), the agent automatically:
-
-  1. Summarizes the conversation into a `deliberation` record
-  2. Links the deliberation to all records referenced in the conversation
-  3. Clears the conversation history
-  4. Continues with the deliberation record as context
-
-  The records are the persistent memory. Conversations are ephemeral.
   """
 
   use GenServer
@@ -52,67 +31,27 @@ defmodule Egghead.Agent do
   require Logger
 
   alias Egghead.LLM.Registry
+  alias Egghead.Agent.Session
 
   @valid_capabilities ~w(record_read record_append record_modify search)
   @default_context_threshold 0.70
 
-  @base_system_prompt """
-  You are an agent in Egghead, a shared knowledge base. Records are Markdown
-  (with YAML frontmatter) or org-mode files, each with an id, title, tags,
-  links to other records, a class (durable, inbox, deliberation, agent), and
-  a body. Records are linked with [[wikilinks]].
-
-  Use your tools to search and read records — don't guess about what's in
-  the store. Reference records by their id. Create records to persist
-  valuable knowledge, using meaningful ids and linking to related records.
-
-  Be concise and substantive.
-  """
-
-  @chat_addendum """
-  You are in a shared chat room with other agents and a human. Address other
-  agents with @agents/id syntax — only @-mentions trigger activation. If you
-  have nothing substantive to add, respond with exactly [PASS] — nothing else,
-  no addendum. Don't restate what others already said. Keep responses brief.
-  """
-
   defmodule State do
     @moduledoc false
-
-    @type t :: %__MODULE__{
-            id: String.t(),
-            name: String.t(),
-            disposition: String.t(),
-            model: String.t(),
-            provider: atom(),
-            capabilities: [String.t()],
-            thinking: String.t() | nil,
-            max_tokens: non_neg_integer(),
-            temperature: float() | nil,
-            context_threshold: float(),
-            context_window: non_neg_integer() | nil,
-            history: [map()],
-            usage: %{input_tokens: non_neg_integer(), output_tokens: non_neg_integer()},
-            session_tokens: non_neg_integer(),
-            referenced_records: MapSet.t()
-          }
 
     defstruct [
       :id,
       :name,
       :disposition,
       :model,
-      :provider,
+      :capabilities,
       :thinking,
+      :max_tokens,
       :temperature,
-      capabilities: [],
-      max_tokens: 4096,
-      context_threshold: 0.75,
-      context_window: nil,
-      history: [],
-      usage: %{input_tokens: 0, output_tokens: 0},
-      session_tokens: 0,
-      referenced_records: MapSet.new()
+      :context_threshold,
+      :context_window,
+      # %{room_id | :default => session_pid}
+      sessions: %{}
     ]
   end
 
@@ -130,11 +69,10 @@ defmodule Egghead.Agent do
   @doc """
   Sends a prompt to an agent and returns its response.
 
-  Conversation history is maintained between prompts within the same session.
-  When the context window fills up, the agent auto-summarizes to a deliberation
-  record and starts a fresh session.
+  If `opts[:room]` is set, the prompt goes to a per-room session.
+  Otherwise it goes to the default (1:1) session.
   """
-  @spec prompt(String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec prompt(String.t(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def prompt(agent_id, message, opts \\ []) do
     name = agent_name(agent_id)
 
@@ -145,9 +83,10 @@ defmodule Egghead.Agent do
   end
 
   @doc """
-  Manually triggers a handoff: summarizes the current conversation into a
-  deliberation record, clears history, and optionally starts a new prompt.
-  Returns `{:ok, deliberation_record_id}`.
+  Manually triggers a handoff on a session.
+
+  With no opts or a string, hands off the default session.
+  With `room_id: "room-id"`, hands off that room's session.
   """
   @spec handoff(String.t(), keyword() | String.t() | nil) :: {:ok, String.t()} | {:error, term()}
   def handoff(agent_id, opts \\ nil)
@@ -162,12 +101,7 @@ defmodule Egghead.Agent do
   end
 
   def handoff(agent_id, next_prompt) do
-    name = agent_name(agent_id)
-
-    case GenServer.whereis(name) do
-      nil -> {:error, :agent_not_found}
-      _pid -> GenServer.call(name, {:handoff, next_prompt}, 300_000)
-    end
+    handoff(agent_id, next_prompt: next_prompt)
   end
 
   @doc """
@@ -205,11 +139,8 @@ defmodule Egghead.Agent do
     name = agent_name(agent_id)
 
     case GenServer.whereis(name) do
-      nil ->
-        {:error, :agent_not_found}
-
-      _pid ->
-        GenServer.call(name, :usage)
+      nil -> {:error, :agent_not_found}
+      _pid -> GenServer.call(name, :usage)
     end
   end
 
@@ -218,12 +149,10 @@ defmodule Egghead.Agent do
   """
   @spec list_agents() :: [map()]
   def list_agents do
-    # Get agent records from the store
     store_agents =
       Egghead.search_by_class(:agent)
       |> Enum.map(& &1.id)
 
-    # Include the default agent
     all_ids = Enum.uniq(["egghead" | store_agents])
 
     all_ids
@@ -232,15 +161,37 @@ defmodule Egghead.Agent do
       name = agent_name(id)
       state = :sys.get_state(GenServer.whereis(name))
 
+      # Aggregate usage across all sessions
+      {total_usage, total_session_tokens, total_history} =
+        state.sessions
+        |> Map.values()
+        |> Enum.reduce({%{input_tokens: 0, output_tokens: 0}, 0, 0}, fn pid,
+                                                                        {usage, stok, hist} ->
+          case safe_get_session_state(pid) do
+            nil ->
+              {usage, stok, hist}
+
+            session_state ->
+              {
+                %{
+                  input_tokens: usage.input_tokens + session_state.usage.input_tokens,
+                  output_tokens: usage.output_tokens + session_state.usage.output_tokens
+                },
+                stok + session_state.session_tokens,
+                hist + length(session_state.history)
+              }
+          end
+        end)
+
       %{
         id: state.id,
         name: state.name,
         capabilities: state.capabilities,
         model: state.model,
-        usage: state.usage,
-        session_tokens: state.session_tokens,
+        usage: total_usage,
+        session_tokens: total_session_tokens,
         context_window: state.context_window,
-        history_length: length(state.history)
+        history_length: total_history
       }
     end)
   end
@@ -265,8 +216,6 @@ defmodule Egghead.Agent do
     context_threshold =
       get_meta_float(record, "context_threshold", @default_context_threshold)
 
-    # Resolve model via registry — supports "provider/model" or bare model names
-    # Falls back to old "model" + "provider" fields for backwards compat
     raw_model = get_meta_string(record, "model", nil)
     fallback_provider = get_meta_string(record, "provider", nil)
 
@@ -294,7 +243,6 @@ defmodule Egghead.Agent do
       name: record.title || record.id,
       disposition: record.body || "",
       model: model,
-      provider: nil,
       capabilities: capabilities,
       thinking: thinking,
       max_tokens: max_tokens,
@@ -306,7 +254,6 @@ defmodule Egghead.Agent do
       "Agent started: #{state.name} (#{state.id}) model=#{model} capabilities=#{inspect(capabilities)}"
     )
 
-    # Fetch model info asynchronously
     send(self(), :fetch_model_info)
 
     {:ok, state}
@@ -315,86 +262,59 @@ defmodule Egghead.Agent do
   @impl true
   def handle_call({:prompt, message, opts}, _from, state) do
     room = Keyword.get(opts, :room)
+    room_id = if room, do: room.id
+    room_pid = if room_id, do: room_process(room_id)
 
-    # Check if we need to auto-summarize before processing
-    state =
-      if should_summarize?(state) do
-        case do_summarize_to_deliberation(state) do
-          {:ok, delib_id, new_state} ->
-            if room, do: broadcast_handoff(room.id, state.id, delib_id)
-            new_state
-
-          {:error, _, state} ->
-            state
-        end
-      else
-        state
-      end
-
-    {result, state} = do_prompt(state, message, opts)
+    {session_pid, state} = ensure_session(state, room_id, room_pid)
+    result = Session.prompt(session_pid, message, opts)
     {:reply, result, state}
   end
 
   def handle_call({:handoff, opts}, _from, state) when is_list(opts) do
     room_id = Keyword.get(opts, :room_id)
-    next_prompt = Keyword.get(opts, :next_prompt)
+    session_key = room_id || :default
 
-    case do_summarize_to_deliberation(state) do
-      {:ok, delib_id, state} ->
-        if room_id, do: broadcast_handoff(room_id, state.id, delib_id)
+    case Map.get(state.sessions, session_key) do
+      nil ->
+        {:reply, {:error, :no_history}, state}
 
-        if next_prompt do
-          {result, state} = do_prompt(state, next_prompt, [])
-          {:reply, {:ok, delib_id, result}, state}
-        else
-          {:reply, {:ok, delib_id}, state}
-        end
-
-      {:error, reason, state} ->
-        {:reply, {:error, reason}, state}
-    end
-  end
-
-  # Legacy arity: handoff(next_prompt) where next_prompt is a string or nil
-  def handle_call({:handoff, next_prompt}, _from, state) do
-    case do_summarize_to_deliberation(state) do
-      {:ok, delib_id, state} ->
-        if next_prompt do
-          {result, state} = do_prompt(state, next_prompt, [])
-          {:reply, {:ok, delib_id, result}, state}
-        else
-          {:reply, {:ok, delib_id}, state}
-        end
-
-      {:error, reason, state} ->
-        {:reply, {:error, reason}, state}
+      pid ->
+        result = Session.handoff(pid, opts)
+        {:reply, result, state}
     end
   end
 
   def handle_call(:save, _from, state) do
-    {result, state} = do_save(state)
-    {:reply, result, state}
+    case Map.get(state.sessions, :default) do
+      nil -> {:reply, {:error, :no_history}, state}
+      pid -> {:reply, Session.save(pid), state}
+    end
   end
 
   def handle_call(:clear_history, _from, state) do
-    {:reply, :ok, %{state | history: [], session_tokens: 0, referenced_records: MapSet.new()}}
+    case Map.get(state.sessions, :default) do
+      nil -> {:reply, :ok, state}
+      pid -> {:reply, Session.clear_history(pid), state}
+    end
   end
 
   def handle_call(:usage, _from, state) do
-    info = %{
-      total_usage: state.usage,
-      session_tokens: state.session_tokens,
-      context_window: state.context_window,
-      context_used_pct:
-        if(state.context_window,
-          do: Float.round(state.session_tokens / state.context_window * 100, 1),
-          else: nil
-        ),
-      history_turns: length(state.history),
-      referenced_records: MapSet.to_list(state.referenced_records)
-    }
+    case Map.get(state.sessions, :default) do
+      nil ->
+        {:reply,
+         {:ok,
+          %{
+            total_usage: %{input_tokens: 0, output_tokens: 0},
+            session_tokens: 0,
+            context_window: state.context_window,
+            context_used_pct: nil,
+            history_turns: 0,
+            referenced_records: []
+          }}, state}
 
-    {:reply, {:ok, info}, state}
+      pid ->
+        {:reply, Session.usage(pid), state}
+    end
   end
 
   @impl true
@@ -422,592 +342,87 @@ defmodule Egghead.Agent do
     {:noreply, %{state | context_window: context_window}}
   end
 
-  # --- Prompt execution (agentic tool-use loop) ---
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    # A session died — clean it from our sessions map
+    sessions =
+      state.sessions
+      |> Enum.reject(fn {_key, session_pid} -> session_pid == pid end)
+      |> Map.new()
 
-  @max_tool_rounds 20
-
-  defp do_prompt(state, message, opts) do
-    room = Keyword.get(opts, :room)
-    system_prompt = build_system_prompt(state, room)
-
-    # Compact old tool results before adding new message
-    compacted = compact_history(state.history)
-
-    # Append user message to compacted history
-    history = compacted ++ [%{role: "user", content: message}]
-
-    # Get tools for this agent's capabilities
-    tools = Egghead.Agent.Tools.definitions_for(state.capabilities)
-
-    llm_opts =
-      [
-        model: state.model,
-        system: system_prompt,
-        max_tokens: state.max_tokens
-      ]
-      |> maybe_opt(:temperature, state.temperature)
-      |> maybe_opt(:thinking, state.thinking)
-      |> maybe_opt(:tools, if(tools != [], do: tools))
-      |> Keyword.merge(Keyword.take(opts, [:max_tokens, :temperature, :api_key]))
-
-    # Streaming callback (optional)
-    llm_opts =
-      case Keyword.get(opts, :on_chunk) do
-        nil -> llm_opts
-        cb -> Keyword.put(llm_opts, :on_chunk, cb)
-      end
-
-    start_time = System.monotonic_time(:millisecond)
-    room_id = if room, do: room.id
-
-    # Run the agentic loop: call LLM, execute tool uses, feed results back
-    case agent_loop(state, history, llm_opts, room_id, 0) do
-      {:ok, final_text, history, total_usage, tool_log} ->
-        duration = System.monotonic_time(:millisecond) - start_time
-
-        {created, updated} = partition_record_mutations(tool_log)
-        refs = extract_refs_from_tool_log(tool_log)
-
-        state = %{
-          state
-          | history: history,
-            usage: %{
-              input_tokens: state.usage.input_tokens + total_usage.input_tokens,
-              output_tokens: state.usage.output_tokens + total_usage.output_tokens
-            },
-            session_tokens:
-              state.session_tokens + total_usage.input_tokens + total_usage.output_tokens,
-            referenced_records: MapSet.union(state.referenced_records, refs)
-        }
-
-        context_pct =
-          if state.context_window && state.context_window > 0,
-            do: Float.round(state.session_tokens / state.context_window * 100, 1),
-            else: nil
-
-        response = %Egghead.Agent.Response{
-          text: final_text,
-          agent_id: state.id,
-          model: state.model,
-          usage:
-            Map.merge(total_usage, %{
-              session_tokens: state.session_tokens,
-              context_window: state.context_window,
-              context_pct: context_pct
-            }),
-          tool_calls: tool_log,
-          records_created: created,
-          records_updated: updated,
-          duration_ms: duration
-        }
-
-        {{:ok, response}, state}
-
-      {:error, _} = error ->
-        {error, state}
-    end
+    {:noreply, %{state | sessions: sessions}}
   end
 
-  # The agentic loop: call LLM, if it wants tools, execute them and call again.
-  # Returns {:ok, text, history, usage, tool_log} or {:error, reason}.
-  # tool_log is a list of %{name, input, result, error} maps.
-  defp agent_loop(_state, _history, _opts, _room_id, round) when round >= @max_tool_rounds do
-    {:error, :max_tool_rounds_exceeded}
-  end
+  # --- Session management ---
 
-  defp agent_loop(state, history, opts, room_id, round) do
-    case call_llm(state.model, history, opts) do
-      {:ok, %{content: content, stop_reason: stop_reason, usage: usage}} ->
-        input_tokens = usage[:input_tokens] || 0
-        output_tokens = usage[:output_tokens] || 0
-        acc_usage = %{input_tokens: input_tokens, output_tokens: output_tokens}
+  @max_sessions 10
 
-        if stop_reason == "tool_use" do
-          tool_uses = Enum.filter(content, &(&1["type"] == "tool_use"))
+  defp ensure_session(state, room_id, room_pid) do
+    session_key = room_id || :default
 
-          # Execute each tool, build log entries
-          {tool_results, tool_log} =
-            Enum.map(tool_uses, fn tool_use ->
-              Logger.info(
-                "Agent #{state.name} calling tool: #{tool_use["name"]}(#{inspect(tool_use["input"])})"
-              )
-
-              {status, result_text} =
-                case Egghead.Agent.Tools.execute(tool_use["name"], tool_use["input"], %{
-                       agent_id: state.id,
-                       room_id: room_id
-                     }) do
-                  {:ok, text} -> {:ok, text}
-                  {:error, text} -> {:error, text}
-                end
-
-              tool_result = %{
-                type: "tool_result",
-                tool_use_id: tool_use["id"],
-                content: result_text,
-                is_error: status == :error
-              }
-
-              log_entry = %{
-                name: tool_use["name"],
-                input: tool_use["input"],
-                result: result_text,
-                error: status == :error
-              }
-
-              {tool_result, log_entry}
-            end)
-            |> Enum.unzip()
-
-          history =
-            history ++
-              [
-                %{role: "assistant", content: content},
-                %{role: "user", content: tool_results}
-              ]
-
-          case agent_loop(state, history, opts, room_id, round + 1) do
-            {:ok, text, history, more_usage, more_log} ->
-              merged_usage = %{
-                input_tokens: acc_usage.input_tokens + more_usage.input_tokens,
-                output_tokens: acc_usage.output_tokens + more_usage.output_tokens
-              }
-
-              {:ok, text, history, merged_usage, tool_log ++ more_log}
-
-            error ->
-              error
-          end
+    case Map.get(state.sessions, session_key) do
+      nil ->
+        if map_size(state.sessions) >= @max_sessions do
+          Logger.warning("Agent #{state.name}: max sessions (#{@max_sessions}) reached")
+          # Reuse the default session as fallback
+          {Map.get(state.sessions, :default), state}
         else
-          text =
-            content
-            |> Enum.filter(&(&1["type"] == "text"))
-            |> Enum.map_join("\n", & &1["text"])
+          # Spawn a new session
+          identity = build_identity(state)
 
-          history = history ++ [%{role: "assistant", content: content}]
+          {:ok, pid} =
+            Session.start_link(
+              agent_id: state.id,
+              room_id: room_id,
+              identity: identity,
+              room_pid: room_pid
+            )
 
-          {:ok, text, history, acc_usage, []}
+          Process.monitor(pid)
+          state = %{state | sessions: Map.put(state.sessions, session_key, pid)}
+          {pid, state}
         end
 
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  # --- Context management ---
-
-  defp should_summarize?(%{context_window: nil}), do: false
-
-  defp should_summarize?(state) do
-    state.context_window != nil and
-      state.session_tokens > state.context_window * state.context_threshold and
-      length(state.history) > 0
-  end
-
-  defp do_summarize_to_deliberation(state) do
-    if state.history == [] do
-      {:error, :no_history, state}
-    else
-      # Ask the agent to summarize through its own disposition lens
-      summary_prompt = """
-      Summarize this conversation for your own future reference. Include:
-      - Key topics discussed and conclusions reached
-      - Open questions or unresolved threads
-      - Record ids that were important to the discussion
-      - Any decisions or insights worth preserving
-
-      Be thorough but concise. This summary will be stored as a deliberation
-      record and used as context for future conversations.
-      """
-
-      messages = state.history ++ [%{role: "user", content: summary_prompt}]
-
-      llm_opts = [
-        model: state.model,
-        system: build_system_prompt(state),
-        max_tokens: state.max_tokens
-      ]
-
-      case call_llm(state.model, messages, llm_opts) do
-        {:ok, %{content: content}} ->
-          summary =
-            content
-            |> Enum.filter(&(&1["type"] == "text"))
-            |> Enum.map_join("\n", & &1["text"])
-
-          delib_id = "deliberation/#{state.id}/#{timestamp_id()}"
-          ref_ids = MapSet.to_list(state.referenced_records)
-
-          attrs = %{
-            "id" => delib_id,
-            "title" => "Deliberation: #{state.name} — #{Date.utc_today()}",
-            "tags" => ["deliberation", "agent:#{state.id}"],
-            "links" => ref_ids,
-            "class" => "deliberation",
-            "author" => state.id,
-            "body" => summary
-          }
-
-          case Egghead.create_record(attrs) do
-            {:ok, _record} ->
-              Logger.info("Agent #{state.name} created deliberation: #{delib_id}")
-
-            {:error, reason} ->
-              Logger.warning("Agent #{state.name} deliberation failed: #{inspect(reason)}")
-          end
-
-          # Clear history, keep the deliberation as future context
-          new_state = %{
-            state
-            | history: [],
-              session_tokens: 0,
-              referenced_records: MapSet.new([delib_id])
-          }
-
-          {:ok, delib_id, new_state}
-
-        {:error, reason} ->
-          {:error, reason, state}
-      end
-    end
-  end
-
-  defp do_save(state) do
-    if state.history == [] do
-      {{:error, :no_history}, state}
-    else
-      save_prompt = """
-      Review this conversation and identify any insights, decisions, or
-      knowledge worth capturing as permanent durable records.
-
-      For each insight, create a record using the ```egghead-record format.
-      Each record should:
-      - Have a meaningful id and title
-      - Be tagged appropriately
-      - Link to the records that informed it
-      - Be class: durable
-
-      If nothing is worth saving as a permanent record, say so.
-      """
-
-      messages = state.history ++ [%{role: "user", content: save_prompt}]
-
-      llm_opts = [
-        model: state.model,
-        system: build_system_prompt(state),
-        max_tokens: state.max_tokens
-      ]
-
-      # Give the agent its tools so it can create_record
-      tools = Egghead.Agent.Tools.definitions_for(state.capabilities)
-      llm_opts = maybe_opt(llm_opts, :tools, if(tools != [], do: tools))
-
-      case agent_loop(state, messages, llm_opts, nil, 0) do
-        {:ok, response, _history, _usage, _refs} ->
-          {{:ok, response}, state}
-
-        {:error, _} = error ->
-          {error, state}
-      end
-    end
-  end
-
-  # --- System prompt ---
-
-  defp build_system_prompt(state, room \\ nil) do
-    context_status = format_context_status(state)
-
-    base = """
-    #{@base_system_prompt}
-
-    You are **#{state.name}** (#{state.id}). #{context_status}
-
-    #{state.disposition}
-    """
-
-    if room do
-      agents_list = room.agents |> Enum.join(", ")
-
-      # Only include new messages since agent's last response (diff)
-      transcript = format_room_diff(room, state.id)
-
-      base <>
-        @chat_addendum <>
-        """
-
-        Room: #{room.id} | Agents: #{agents_list}
-
-        #{transcript}
-        """
-    else
-      base
-    end
-  end
-
-  # --- LLM dispatch ---
-
-  # Two-phase tool result compaction (OpenCode pattern):
-  # 1. Protect the last 2 tool_result entries — the agent is actively reasoning about these
-  # 2. Compact everything else aggressively
-  # Large results (get_record_body) are capped even in the protected zone.
-  @max_protected_results 2
-  @compact_threshold 200
-  @body_cap 500
-
-  defp compact_history(history) do
-    # Count tool_result entries from the end to find the protected ones
-    {protected_ids, _} =
-      history
-      |> Enum.reverse()
-      |> Enum.reduce({MapSet.new(), 0}, fn entry, {ids, count} ->
-        case entry do
-          %{role: "user", content: content} when is_list(content) ->
-            tool_ids =
-              content
-              |> Enum.filter(&match?(%{type: "tool_result"}, &1))
-              |> Enum.map(& &1.tool_use_id)
-
-            remaining = @max_protected_results - count
-            newly_protected = Enum.take(tool_ids, max(remaining, 0))
-            {MapSet.union(ids, MapSet.new(newly_protected)), count + length(tool_ids)}
-
-          _ ->
-            {ids, count}
-        end
-      end)
-
-    Enum.map(history, fn
-      %{role: "user", content: content} = entry when is_list(content) ->
-        compacted =
-          Enum.map(content, fn
-            %{type: "tool_result", tool_use_id: id, content: text} = result
-            when is_binary(text) ->
-              if id in protected_ids do
-                cap_large_body(result)
-              else
-                compact_result(result)
-              end
-
-            other ->
-              other
-          end)
-
-        %{entry | content: compacted}
-
-      entry ->
-        entry
-    end)
-  end
-
-  # Compact a tool result to a brief summary
-  defp compact_result(%{content: text} = result) when is_binary(text) do
-    if String.length(text) > @compact_threshold do
-      token_est = div(String.length(text), 4)
-      preview = String.slice(text, 0, 100)
-      %{result | content: "[Compacted ~#{token_est}tok] #{preview}..."}
-    else
-      result
-    end
-  end
-
-  defp compact_result(result), do: result
-
-  # Cap large results (get_record_body) even in the protected zone
-  defp cap_large_body(%{content: text} = result) when is_binary(text) do
-    if String.length(text) > @body_cap do
-      token_est = div(String.length(text), 4)
-      preview = String.slice(text, 0, @body_cap)
-
-      %{
-        result
-        | content:
-            "#{preview}...\n(~#{token_est}tok total — re-fetch with get_record_body if needed)"
-      }
-    else
-      result
-    end
-  end
-
-  defp cap_large_body(result), do: result
-
-  defp format_context_status(state) do
-    case {state.session_tokens, state.context_window} do
-      {_, nil} ->
-        ""
-
-      {tokens, window} when window > 0 ->
-        pct = Float.round(tokens / window * 100, 1)
-
-        cond do
-          pct > 70.0 ->
-            """
-            ## Context Status: #{pct}% (#{tokens}/#{window} tokens)
-            Context pressure is HIGH. Summarize rather than quote. Avoid fetching large records.
-            Prefer search_records over get_record. If you need a record, use get_record_body for specific sections only.
-            """
-
-          pct > 40.0 ->
-            """
-            ## Context Status: #{pct}% (#{tokens}/#{window} tokens)
-            Be selective about which records you fetch. Search first, read only what's necessary.
-            """
-
-          true ->
-            "## Context Status: #{pct}% used"
-        end
-
-      _ ->
-        ""
-    end
-  end
-
-  defp format_room_diff(room, agent_id) do
-    transcript = room.transcript || []
-
-    # Find the last message from this agent
-    last_own_idx =
-      transcript
-      |> Enum.reverse()
-      |> Enum.find_index(fn m ->
-        case m.sender do
-          %{id: ^agent_id} -> true
-          _ -> false
-        end
-      end)
-
-    messages =
-      case last_own_idx do
-        nil ->
-          # First activation — show last 5 messages as catch-up
-          Enum.take(transcript, -5)
-
-        idx ->
-          # Messages since our last response
-          since_idx = length(transcript) - idx
-          diff = Enum.drop(transcript, since_idx)
-
-          # Always include at least the last 5 messages so the agent
-          # has context even if re-activated immediately after speaking
-          if length(diff) < 3 do
-            Enum.take(transcript, -5)
-          else
-            diff
-          end
-      end
-
-    if messages == [] do
-      "(no new messages)"
-    else
-      messages
-      |> Enum.map_join("\n", fn m ->
-        label =
-          case m.sender do
-            %{type: :user, name: name} -> "[#{name}]"
-            %{type: :agent, id: id} -> "[#{id}]"
-            _ -> "[unknown]"
-          end
-
-        # Truncate long messages in the transcript view
-        content =
-          if String.length(m.content) > 300 do
-            String.slice(m.content, 0, 300) <> "..."
-          else
-            m.content
-          end
-
-        "#{label} #{content}"
-      end)
-    end
-  end
-
-  defp call_llm(model_str, messages, opts) do
-    result =
-      try do
-        Registry.resolve(model_str)
-      catch
-        :exit, _ -> {:error, :registry_unavailable}
-      end
-
-    case result do
-      {:ok, {module, provider_opts}} ->
-        # Provider opts (resolved model name, api_key) take precedence over agent opts
-        merged = Keyword.merge(opts, provider_opts)
-        Code.ensure_loaded(module)
-
-        if Keyword.has_key?(opts, :on_chunk) and function_exported?(module, :chat_stream, 2) do
-          module.chat_stream(messages, merged)
+      pid ->
+        if Process.alive?(pid) do
+          {pid, state}
         else
-          module.chat(messages, merged)
+          # Stale pid — respawn
+          state = %{state | sessions: Map.delete(state.sessions, session_key)}
+          ensure_session(state, room_id, room_pid)
         end
-
-      {:error, {:provider_not_configured, provider}} ->
-        {:error,
-         "Provider '#{provider}' is not configured. " <>
-           "Set the appropriate API key or add it to ~/.egghead/providers.yml. " <>
-           "Check the model field in the agent record."}
-
-      {:error, :registry_unavailable} ->
-        {:error,
-         "No LLM provider available. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or " <>
-           "GOOGLE_API_KEY, or create ~/.egghead/providers.yml"}
-
-      {:error, :missing_api_key} ->
-        {:error,
-         "API key not set for this provider. Set the appropriate environment variable " <>
-           "or add it to ~/.egghead/providers.yml"}
-
-      {:error, reason} ->
-        {:error, {:provider_error, reason}}
     end
   end
 
-  # --- Tool log helpers ---
-
-  defp extract_refs_from_tool_log(tool_log) do
-    tool_log
-    |> Enum.flat_map(fn entry ->
-      result = entry.result || ""
-
-      ~r/(?:^- |^id: )([a-zA-Z0-9_\-\/]+)/m
-      |> Regex.scan(result)
-      |> Enum.map(fn [_, id] -> id end)
-    end)
-    |> MapSet.new()
+  defp build_identity(state) do
+    %{
+      id: state.id,
+      name: state.name,
+      disposition: state.disposition,
+      model: state.model,
+      capabilities: state.capabilities,
+      thinking: state.thinking,
+      max_tokens: state.max_tokens,
+      temperature: state.temperature,
+      context_threshold: state.context_threshold,
+      context_window: state.context_window
+    }
   end
 
-  defp partition_record_mutations(tool_log) do
-    created =
-      tool_log
-      |> Enum.filter(&(&1.name == "create_record" and not &1.error))
-      |> Enum.flat_map(fn entry ->
-        case Regex.run(~r/Created record: (.+)/, entry.result || "") do
-          [_, id] -> [id]
-          _ -> []
-        end
-      end)
+  defp room_process(room_id) do
+    GenServer.whereis(:"egghead_room_#{room_id}")
+  end
 
-    updated =
-      tool_log
-      |> Enum.filter(&(&1.name == "update_record" and not &1.error))
-      |> Enum.flat_map(fn entry ->
-        case Regex.run(~r/Updated record: (.+)/, entry.result || "") do
-          [_, id] -> [id]
-          _ -> []
-        end
-      end)
-
-    {created, updated}
+  defp safe_get_session_state(pid) do
+    if Process.alive?(pid) do
+      :sys.get_state(pid)
+    else
+      nil
+    end
+  rescue
+    _ -> nil
   end
 
   # --- Helpers ---
-
-  defp broadcast_handoff(room_id, agent_id, delib_id) do
-    Phoenix.PubSub.broadcast(
-      Egghead.PubSub,
-      Egghead.Chat.Room.topic(room_id),
-      {:agent_handoff, room_id, agent_id, delib_id}
-    )
-  end
 
   defp parse_capabilities(record) do
     raw =
@@ -1046,15 +461,6 @@ defmodule Egghead.Agent do
     end
   rescue
     _ -> default
-  end
-
-  defp maybe_opt(opts, _key, nil), do: opts
-  defp maybe_opt(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp timestamp_id do
-    DateTime.utc_now()
-    |> DateTime.to_iso8601()
-    |> String.replace(~r/[:\.]/, "-")
   end
 
   defp fallback_context_window(model) do

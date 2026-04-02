@@ -9,6 +9,12 @@ defmodule Egghead.Chat.ToolCache do
 
   Cache entries expire after 60 seconds. Write operations (create_record,
   update_record) are never cached.
+
+  Note: cache is keyed by {room_id, tool_name, input_hash} without per-agent
+  capability scoping. This assumes all agents in a room have equivalent read
+  access to records.
+  TODO(security): when pledge/unveil capability scopes ship, add capability
+  hash to cache key to prevent cross-agent leaks.
   """
 
   use GenServer

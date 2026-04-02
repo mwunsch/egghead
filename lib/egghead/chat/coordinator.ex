@@ -32,12 +32,12 @@ defmodule Egghead.Chat.Coordinator do
 
   defmodule AgentInfo do
     @moduledoc false
-    defstruct [:id, :name, :capabilities, :tags]
+    defstruct [:id, :name, :capabilities, :tags, :disposition]
   end
 
   defmodule State do
     @moduledoc false
-    defstruct agents: %{}, rooms: MapSet.new(), handoffs_in_progress: MapSet.new()
+    defstruct agents: %{}, rooms: MapSet.new(), handoffs_in_progress: MapSet.new(), corpus: %{}
   end
 
   # --- Public API ---
@@ -92,16 +92,21 @@ defmodule Egghead.Chat.Coordinator do
       id: agent_id,
       name: metadata[:name] || agent_id,
       capabilities: metadata[:capabilities] || [],
-      tags: metadata[:tags] || []
+      tags: metadata[:tags] || [],
+      disposition: metadata[:disposition] || ""
     }
 
-    state = %{state | agents: Map.put(state.agents, agent_id, info)}
+    agents = Map.put(state.agents, agent_id, info)
+    corpus = Egghead.Chat.Relevance.build_corpus(agents)
+    state = %{state | agents: agents, corpus: corpus}
     Logger.debug("Coordinator: registered agent #{agent_id}")
     {:noreply, state}
   end
 
   def handle_cast({:unregister_agent, agent_id}, state) do
-    state = %{state | agents: Map.delete(state.agents, agent_id)}
+    agents = Map.delete(state.agents, agent_id)
+    corpus = Egghead.Chat.Relevance.build_corpus(agents)
+    state = %{state | agents: agents, corpus: corpus}
     Logger.debug("Coordinator: unregistered agent #{agent_id}")
     {:noreply, state}
   end
@@ -233,44 +238,13 @@ defmodule Egghead.Chat.Coordinator do
           find_agent(agents, name)
         end)
 
-      # Open message (no @-mention) → tag-based filtering
-      # Index is infrastructure, not a participant — exclude from open
-      # messages when specialist agents are available
+      # Open message (no @-mention) → activate all specialists
+      # Index is infrastructure — excluded when specialists are available
+      # TF-IDF scoring in activate/4 determines stagger order
       true ->
         specialists = agents |> Map.values() |> Enum.reject(&(&1.id == "index"))
-        pool = if specialists != [], do: specialists, else: Map.values(agents)
-
-        message_words = tokenize(msg.content)
-
-        matched =
-          pool
-          |> Enum.filter(fn info ->
-            Enum.any?(info.tags || [], &(&1 in message_words))
-          end)
-
-        # Tag filtering narrows but doesn't gate — if it filters too
-        # aggressively (0-1 matches from a larger pool), fall through to all.
-        # The filter is useful when it makes a clear distinction, not when
-        # it arbitrarily drops agents.
-        if length(matched) > 1 do
-          matched
-        else
-          if matched == [] do
-            Logger.debug("Coordinator: no tag match, activating all agents")
-          else
-            Logger.debug("Coordinator: only 1 tag match, activating all agents")
-          end
-
-          pool
-        end
+        if specialists != [], do: specialists, else: Map.values(agents)
     end
-  end
-
-  defp tokenize(text) do
-    text
-    |> String.downcase()
-    |> String.split(~r/[^a-z0-9\-]+/, trim: true)
-    |> MapSet.new()
   end
 
   defp find_agent(agents, name) do
@@ -308,10 +282,9 @@ defmodule Egghead.Chat.Coordinator do
     mentions = msg.mentions || []
     broadcast = "everyone" in mentions or "channel" in mentions
 
-    # Filter out agents mid-handoff, order by tag relevancy (most matches
-    # first) then alphabetically. Agents whose tags match the message go
-    # first — they're most likely to have the definitive answer.
-    message_words = tokenize(msg.content)
+    # Filter out agents mid-handoff, order by TF-IDF relevance score
+    # (highest score first). Most relevant agent starts first in stagger.
+    scores = Egghead.Chat.Relevance.score(msg.content, state.corpus)
 
     agents_to_prompt =
       agents
@@ -319,8 +292,7 @@ defmodule Egghead.Chat.Coordinator do
         MapSet.member?(state.handoffs_in_progress, {info.id, room_id})
       end)
       |> Enum.sort_by(fn info ->
-        tag_matches = Enum.count(info.tags || [], &(&1 in message_words))
-        {-tag_matches, info.id}
+        {-(scores[info.id] || 0), info.id}
       end)
 
     agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)

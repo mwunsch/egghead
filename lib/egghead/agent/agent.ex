@@ -189,6 +189,7 @@ defmodule Egghead.Agent do
         name: state.name,
         capabilities: state.capabilities,
         tags: state.tags,
+        disposition: state.disposition,
         model: state.model,
         usage: total_usage,
         session_tokens: total_session_tokens,

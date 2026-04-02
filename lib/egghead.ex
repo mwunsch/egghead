@@ -171,7 +171,8 @@ defmodule Egghead do
           Egghead.Chat.Coordinator.register_agent(agent.id, %{
             name: agent.name,
             capabilities: agent.capabilities,
-            tags: agent[:tags] || []
+            tags: agent[:tags] || [],
+            disposition: agent[:disposition] || ""
           })
         end)
 

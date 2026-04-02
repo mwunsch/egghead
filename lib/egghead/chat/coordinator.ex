@@ -37,7 +37,7 @@ defmodule Egghead.Chat.Coordinator do
 
   defmodule State do
     @moduledoc false
-    defstruct agents: %{}, rooms: MapSet.new()
+    defstruct agents: %{}, rooms: MapSet.new(), handoffs_in_progress: MapSet.new()
   end
 
   # --- Public API ---
@@ -171,8 +171,14 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
-  def handle_info({:agent_message, _msg}, state) do
-    # Agent spoke — visible to all via PubSub, no coordinator action needed
+  def handle_info({:agent_message, msg}, state) do
+    # Agent spoke — clear any handoff-in-progress flag for this agent
+    state = %{
+      state
+      | handoffs_in_progress:
+          MapSet.delete(state.handoffs_in_progress, {msg.sender.id, msg.room_id})
+    }
+
     {:noreply, state}
   end
 
@@ -200,7 +206,15 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_passed, _agent_id}, state), do: {:noreply, state}
   def handle_info({:agent_streaming, _, _, _}, state), do: {:noreply, state}
   def handle_info({:agent_tool_call, _, _, _, _}, state), do: {:noreply, state}
-  def handle_info({:agent_handoff, _, _, _}, state), do: {:noreply, state}
+
+  def handle_info({:agent_handoff, room_id, agent_id, _delib_id}, state) do
+    state = %{
+      state
+      | handoffs_in_progress: MapSet.put(state.handoffs_in_progress, {agent_id, room_id})
+    }
+
+    {:noreply, state}
+  end
 
   # --- Tier 1: Structural filter (zero tokens) ---
 
@@ -219,11 +233,35 @@ defmodule Egghead.Chat.Coordinator do
           find_agent(agents, name)
         end)
 
-      # Open message (no @-mention) → activate all for now
-      # TODO: implement graph-proximity filtering and tier 2 LLM gate
+      # Open message (no @-mention) → tag-based filtering
+      # Index is infrastructure, not a participant — exclude from open
+      # messages when specialist agents are available
       true ->
-        Map.values(agents)
+        specialists = agents |> Map.values() |> Enum.reject(&(&1.id == "index"))
+        pool = if specialists != [], do: specialists, else: Map.values(agents)
+
+        message_words = tokenize(msg.content)
+
+        matched =
+          pool
+          |> Enum.filter(fn info ->
+            Enum.any?(info.tags || [], &(&1 in message_words))
+          end)
+
+        if matched != [] do
+          matched
+        else
+          Logger.debug("Coordinator: no tag match, activating all agents")
+          pool
+        end
     end
+  end
+
+  defp tokenize(text) do
+    text
+    |> String.downcase()
+    |> String.split(~r/[^a-z0-9\-]+/, trim: true)
+    |> MapSet.new()
   end
 
   defp find_agent(agents, name) do
@@ -257,42 +295,39 @@ defmodule Egghead.Chat.Coordinator do
 
   defp activate([], _msg, _room_id, _state), do: :ok
 
-  defp activate(agents, msg, room_id, _state) do
-    # Egghead (coordinator) only participates when:
-    # 1. Directly @-mentioned
-    # 2. No other agents available (fallback)
-    # Otherwise it stays out and lets the specialist agents work
+  defp activate(agents, msg, room_id, state) do
     mentions = msg.mentions || []
-    egghead_mentioned = "egghead" in mentions
+    broadcast = "everyone" in mentions or "channel" in mentions
 
-    {egghead_agents, other_agents} = Enum.split_with(agents, &(&1.id == "egghead"))
-
+    # Filter out agents mid-handoff in this room, sort for determinism
     agents_to_prompt =
-      cond do
-        egghead_mentioned ->
-          # Egghead was directly addressed — include it alongside others
-          agents
-
-        other_agents == [] and egghead_agents != [] ->
-          # No specialists available — egghead responds as fallback
-          Logger.info("Coordinator: no other agents, egghead responding")
-          egghead_agents
-
-        true ->
-          # Normal case — specialists only
-          other_agents
-      end
+      agents
+      |> Enum.reject(fn info ->
+        MapSet.member?(state.handoffs_in_progress, {info.id, room_id})
+      end)
+      |> Enum.sort_by(& &1.id)
 
     agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)
     Logger.info("Coordinator: activating agents: #{agent_names}")
 
-    broadcast_activation(room_id, length(agents_to_prompt))
+    if broadcast do
+      # @everyone/@channel — parallel activation for speed
+      broadcast_activation(room_id, length(agents_to_prompt))
 
-    Enum.each(agents_to_prompt, fn agent_info ->
-      Task.start(fn ->
-        prompt_agent_in_room(agent_info.id, room_id, msg.content)
+      Enum.each(agents_to_prompt, fn agent_info ->
+        Task.start(fn ->
+          prompt_agent_in_room(agent_info.id, room_id, msg.content)
+        end)
       end)
-    end)
+    else
+      # Serial activation — each agent sees prior responses in transcript
+      Task.start(fn ->
+        Enum.each(agents_to_prompt, fn agent_info ->
+          broadcast_activation(room_id, 1)
+          prompt_agent_in_room(agent_info.id, room_id, msg.content)
+        end)
+      end)
+    end
   end
 
   # The Coordinator's only job: pass the message and room context to the agent.

@@ -50,6 +50,7 @@ defmodule Egghead.Agent do
       :temperature,
       :context_threshold,
       :context_window,
+      tags: [],
       # %{room_id | :default => session_pid}
       sessions: %{}
     ]
@@ -153,7 +154,7 @@ defmodule Egghead.Agent do
       Egghead.search_by_class(:agent)
       |> Enum.map(& &1.id)
 
-    all_ids = Enum.uniq(["egghead" | store_agents])
+    all_ids = Enum.uniq(["index" | store_agents])
 
     all_ids
     |> Enum.filter(fn id -> agent_name(id) |> GenServer.whereis() != nil end)
@@ -187,6 +188,7 @@ defmodule Egghead.Agent do
         id: state.id,
         name: state.name,
         capabilities: state.capabilities,
+        tags: state.tags,
         model: state.model,
         usage: total_usage,
         session_tokens: total_session_tokens,
@@ -238,12 +240,16 @@ defmodule Egghead.Agent do
           end
       end
 
+    # Agent tags for domain filtering — exclude the "agent" tag itself
+    tags = (record.tags || []) |> Enum.reject(&(&1 == "agent"))
+
     state = %State{
       id: record.id,
       name: record.title || record.id,
       disposition: record.body || "",
       model: model,
       capabilities: capabilities,
+      tags: tags,
       thinking: thinking,
       max_tokens: max_tokens,
       temperature: temperature,

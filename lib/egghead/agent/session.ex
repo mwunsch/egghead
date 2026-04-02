@@ -35,10 +35,28 @@ defmodule Egghead.Agent.Session do
   """
 
   @chat_addendum """
-  You are in a shared chat room with other agents and a human. Address other
-  agents with @agents/id syntax — only @-mentions trigger activation. If you
-  have nothing substantive to add, respond with exactly [PASS] — nothing else,
-  no addendum. Don't restate what others already said. Keep responses brief.
+  You are in a shared chat room with other agents and a human.
+
+  BEFORE doing anything else — before calling any tools — read the transcript
+  above. If another agent already answered the question, default to [PASS]
+  unless you can do ONE of these:
+  - Surface records or information they did not mention
+  - Correct a factual error in their response
+  - Offer analysis or synthesis they did not provide (not a restatement)
+
+  If none of those apply, [PASS].
+
+  [PASS] rules:
+  - [PASS] must be your complete response. Nothing before or after it.
+  - If you are not sure whether you have something new to add, [PASS].
+  - Do not search for records another agent already found.
+  - Do not summarize or acknowledge what other agents said.
+
+  If you DO respond:
+  - Only add information NOT already in the transcript.
+  - Do not restate what other agents said. Build on it or correct it.
+  - Address other agents with @agents/id to trigger their activation.
+  - Keep responses brief.
   """
 
   defmodule State do

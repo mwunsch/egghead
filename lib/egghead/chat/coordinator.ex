@@ -154,12 +154,7 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids}, state) do
     agents =
       mentioned_ids
-      |> Enum.flat_map(fn id ->
-        case Map.get(state.agents, id) || Map.get(state.agents, "agents/#{id}") do
-          nil -> []
-          info -> [info]
-        end
-      end)
+      |> Enum.flat_map(fn id -> find_agent(state.agents, id) end)
 
     if agents != [] do
       Logger.info("Coordinator: #{from_agent} mentioned #{Enum.map_join(agents, ", ", & &1.id)}")
@@ -250,24 +245,19 @@ defmodule Egghead.Chat.Coordinator do
   defp find_agent(agents, name) do
     lower_name = String.downcase(name)
 
-    # Try exact match first
+    # Try exact match first, then fuzzy match on basename or display name
     case Map.get(agents, name) do
       nil ->
-        # Try agents/ prefix
-        case Map.get(agents, "agents/#{name}") do
-          nil ->
-            # Fuzzy: case-insensitive match against id or name
-            agents
-            |> Map.values()
-            |> Enum.filter(fn info ->
-              String.downcase(info.id) == lower_name or
-                String.downcase(info.id) == "agents/#{lower_name}" or
-                String.downcase(info.name) == lower_name
-            end)
+        agents
+        |> Map.values()
+        |> Enum.filter(fn info ->
+          lower_id = String.downcase(info.id)
+          basename = info.id |> String.split("/") |> List.last() |> String.downcase()
 
-          info ->
-            [info]
-        end
+          lower_id == lower_name or
+            basename == lower_name or
+            String.downcase(info.name) == lower_name
+        end)
 
       info ->
         [info]

@@ -200,6 +200,7 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_passed, _agent_id}, state), do: {:noreply, state}
   def handle_info({:agent_streaming, _, _, _}, state), do: {:noreply, state}
   def handle_info({:agent_tool_call, _, _, _, _}, state), do: {:noreply, state}
+  def handle_info({:agent_handoff, _, _, _}, state), do: {:noreply, state}
 
   # --- Tier 1: Structural filter (zero tokens) ---
 
@@ -327,7 +328,7 @@ defmodule Egghead.Chat.Coordinator do
 
     case Egghead.Agent.prompt(agent_id, message, room: room_context, on_chunk: on_chunk) do
       {:ok, %{text: text, usage: usage}} ->
-        if String.trim(text) == "[PASS]" do
+        if String.contains?(text, "[PASS]") do
           Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
           broadcast_pass(room_id, agent_id)
         else

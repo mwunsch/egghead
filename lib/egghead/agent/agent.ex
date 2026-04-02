@@ -54,7 +54,7 @@ defmodule Egghead.Agent do
   alias Egghead.LLM.Registry
 
   @valid_capabilities ~w(record_read record_append record_modify search)
-  @default_context_threshold 0.75
+  @default_context_threshold 0.70
 
   @base_system_prompt """
   You are an agent in Egghead, a shared knowledge base. Records are Markdown
@@ -149,8 +149,19 @@ defmodule Egghead.Agent do
   deliberation record, clears history, and optionally starts a new prompt.
   Returns `{:ok, deliberation_record_id}`.
   """
-  @spec handoff(String.t(), String.t() | nil) :: {:ok, String.t()} | {:error, term()}
-  def handoff(agent_id, next_prompt \\ nil) do
+  @spec handoff(String.t(), keyword() | String.t() | nil) :: {:ok, String.t()} | {:error, term()}
+  def handoff(agent_id, opts \\ nil)
+
+  def handoff(agent_id, opts) when is_list(opts) do
+    name = agent_name(agent_id)
+
+    case GenServer.whereis(name) do
+      nil -> {:error, :agent_not_found}
+      _pid -> GenServer.call(name, {:handoff, opts}, 300_000)
+    end
+  end
+
+  def handoff(agent_id, next_prompt) do
     name = agent_name(agent_id)
 
     case GenServer.whereis(name) do
@@ -303,12 +314,18 @@ defmodule Egghead.Agent do
 
   @impl true
   def handle_call({:prompt, message, opts}, _from, state) do
+    room = Keyword.get(opts, :room)
+
     # Check if we need to auto-summarize before processing
     state =
       if should_summarize?(state) do
         case do_summarize_to_deliberation(state) do
-          {:ok, _delib_id, new_state} -> new_state
-          {:error, _, state} -> state
+          {:ok, delib_id, new_state} ->
+            if room, do: broadcast_handoff(room.id, state.id, delib_id)
+            new_state
+
+          {:error, _, state} ->
+            state
         end
       else
         state
@@ -318,6 +335,27 @@ defmodule Egghead.Agent do
     {:reply, result, state}
   end
 
+  def handle_call({:handoff, opts}, _from, state) when is_list(opts) do
+    room_id = Keyword.get(opts, :room_id)
+    next_prompt = Keyword.get(opts, :next_prompt)
+
+    case do_summarize_to_deliberation(state) do
+      {:ok, delib_id, state} ->
+        if room_id, do: broadcast_handoff(room_id, state.id, delib_id)
+
+        if next_prompt do
+          {result, state} = do_prompt(state, next_prompt, [])
+          {:reply, {:ok, delib_id, result}, state}
+        else
+          {:reply, {:ok, delib_id}, state}
+        end
+
+      {:error, reason, state} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  # Legacy arity: handoff(next_prompt) where next_prompt is a string or nil
   def handle_call({:handoff, next_prompt}, _from, state) do
     case do_summarize_to_deliberation(state) do
       {:ok, delib_id, state} ->
@@ -420,9 +458,10 @@ defmodule Egghead.Agent do
       end
 
     start_time = System.monotonic_time(:millisecond)
+    room_id = if room, do: room.id
 
     # Run the agentic loop: call LLM, execute tool uses, feed results back
-    case agent_loop(state, history, llm_opts, 0) do
+    case agent_loop(state, history, llm_opts, room_id, 0) do
       {:ok, final_text, history, total_usage, tool_log} ->
         duration = System.monotonic_time(:millisecond) - start_time
 
@@ -472,11 +511,11 @@ defmodule Egghead.Agent do
   # The agentic loop: call LLM, if it wants tools, execute them and call again.
   # Returns {:ok, text, history, usage, tool_log} or {:error, reason}.
   # tool_log is a list of %{name, input, result, error} maps.
-  defp agent_loop(_state, _history, _opts, round) when round >= @max_tool_rounds do
+  defp agent_loop(_state, _history, _opts, _room_id, round) when round >= @max_tool_rounds do
     {:error, :max_tool_rounds_exceeded}
   end
 
-  defp agent_loop(state, history, opts, round) do
+  defp agent_loop(state, history, opts, room_id, round) do
     case call_llm(state.model, history, opts) do
       {:ok, %{content: content, stop_reason: stop_reason, usage: usage}} ->
         input_tokens = usage[:input_tokens] || 0
@@ -495,7 +534,8 @@ defmodule Egghead.Agent do
 
               {status, result_text} =
                 case Egghead.Agent.Tools.execute(tool_use["name"], tool_use["input"], %{
-                       agent_id: state.id
+                       agent_id: state.id,
+                       room_id: room_id
                      }) do
                   {:ok, text} -> {:ok, text}
                   {:error, text} -> {:error, text}
@@ -526,7 +566,7 @@ defmodule Egghead.Agent do
                 %{role: "user", content: tool_results}
               ]
 
-          case agent_loop(state, history, opts, round + 1) do
+          case agent_loop(state, history, opts, room_id, round + 1) do
             {:ok, text, history, more_usage, more_log} ->
               merged_usage = %{
                 input_tokens: acc_usage.input_tokens + more_usage.input_tokens,
@@ -662,7 +702,7 @@ defmodule Egghead.Agent do
       tools = Egghead.Agent.Tools.definitions_for(state.capabilities)
       llm_opts = maybe_opt(llm_opts, :tools, if(tools != [], do: tools))
 
-      case agent_loop(state, messages, llm_opts, 0) do
+      case agent_loop(state, messages, llm_opts, nil, 0) do
         {:ok, response, _history, _usage, _refs} ->
           {{:ok, response}, state}
 
@@ -706,54 +746,89 @@ defmodule Egghead.Agent do
 
   # --- LLM dispatch ---
 
-  # Compact old tool results in history. Keeps the last turn's tool results
-  # intact (the agent may still be reasoning about them). Earlier tool results
-  # are replaced with a brief summary showing what was fetched and how large it was.
-  defp compact_history(history) do
-    # Find where the last complete turn starts (last user message that isn't tool results)
-    last_turn_start =
-      history
-      |> Enum.with_index()
-      |> Enum.reverse()
-      |> Enum.find_value(fn {entry, idx} ->
-        case entry do
-          %{role: "user", content: content} when is_binary(content) -> idx
-          _ -> nil
-        end
-      end) || 0
+  # Two-phase tool result compaction (OpenCode pattern):
+  # 1. Protect the last 2 tool_result entries — the agent is actively reasoning about these
+  # 2. Compact everything else aggressively
+  # Large results (get_record_body) are capped even in the protected zone.
+  @max_protected_results 2
+  @compact_threshold 200
+  @body_cap 500
 
-    history
-    |> Enum.with_index()
-    |> Enum.map(fn {entry, idx} ->
-      if idx < last_turn_start do
-        compact_entry(entry)
-      else
+  defp compact_history(history) do
+    # Count tool_result entries from the end to find the protected ones
+    {protected_ids, _} =
+      history
+      |> Enum.reverse()
+      |> Enum.reduce({MapSet.new(), 0}, fn entry, {ids, count} ->
+        case entry do
+          %{role: "user", content: content} when is_list(content) ->
+            tool_ids =
+              content
+              |> Enum.filter(&match?(%{type: "tool_result"}, &1))
+              |> Enum.map(& &1.tool_use_id)
+
+            remaining = @max_protected_results - count
+            newly_protected = Enum.take(tool_ids, max(remaining, 0))
+            {MapSet.union(ids, MapSet.new(newly_protected)), count + length(tool_ids)}
+
+          _ ->
+            {ids, count}
+        end
+      end)
+
+    Enum.map(history, fn
+      %{role: "user", content: content} = entry when is_list(content) ->
+        compacted =
+          Enum.map(content, fn
+            %{type: "tool_result", tool_use_id: id, content: text} = result
+            when is_binary(text) ->
+              if id in protected_ids do
+                cap_large_body(result)
+              else
+                compact_result(result)
+              end
+
+            other ->
+              other
+          end)
+
+        %{entry | content: compacted}
+
+      entry ->
         entry
-      end
     end)
   end
 
-  defp compact_entry(%{role: "user", content: content} = entry) when is_list(content) do
-    # Tool results — compact them
-    compacted =
-      Enum.map(content, fn
-        %{type: "tool_result", content: result_text} = result when is_binary(result_text) ->
-          if String.length(result_text) > 200 do
-            token_est = div(String.length(result_text), 4)
-            preview = String.slice(result_text, 0, 100)
-            %{result | content: "[Compacted ~#{token_est}tok] #{preview}..."}
-          else
-            result
-          end
-
-        other ->
-          other
-      end)
-
-    %{entry | content: compacted}
+  # Compact a tool result to a brief summary
+  defp compact_result(%{content: text} = result) when is_binary(text) do
+    if String.length(text) > @compact_threshold do
+      token_est = div(String.length(text), 4)
+      preview = String.slice(text, 0, 100)
+      %{result | content: "[Compacted ~#{token_est}tok] #{preview}..."}
+    else
+      result
+    end
   end
 
-  defp compact_entry(entry), do: entry
+  defp compact_result(result), do: result
+
+  # Cap large results (get_record_body) even in the protected zone
+  defp cap_large_body(%{content: text} = result) when is_binary(text) do
+    if String.length(text) > @body_cap do
+      token_est = div(String.length(text), 4)
+      preview = String.slice(text, 0, @body_cap)
+
+      %{
+        result
+        | content:
+            "#{preview}...\n(~#{token_est}tok total — re-fetch with get_record_body if needed)"
+      }
+    else
+      result
+    end
+  end
+
+  defp cap_large_body(result), do: result
 
   defp format_context_status(state) do
     case {state.session_tokens, state.context_window} do
@@ -803,8 +878,8 @@ defmodule Egghead.Agent do
     messages =
       case last_own_idx do
         nil ->
-          # First activation — show last 10 messages as catch-up
-          Enum.take(transcript, -10)
+          # First activation — show last 5 messages as catch-up
+          Enum.take(transcript, -5)
 
         idx ->
           # Messages since our last response
@@ -834,8 +909,8 @@ defmodule Egghead.Agent do
 
         # Truncate long messages in the transcript view
         content =
-          if String.length(m.content) > 500 do
-            String.slice(m.content, 0, 500) <> "..."
+          if String.length(m.content) > 300 do
+            String.slice(m.content, 0, 300) <> "..."
           else
             m.content
           end
@@ -925,6 +1000,14 @@ defmodule Egghead.Agent do
   end
 
   # --- Helpers ---
+
+  defp broadcast_handoff(room_id, agent_id, delib_id) do
+    Phoenix.PubSub.broadcast(
+      Egghead.PubSub,
+      Egghead.Chat.Room.topic(room_id),
+      {:agent_handoff, room_id, agent_id, delib_id}
+    )
+  end
 
   defp parse_capabilities(record) do
     raw =

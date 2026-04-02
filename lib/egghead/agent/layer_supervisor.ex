@@ -18,6 +18,7 @@ defmodule Egghead.Agent.LayerSupervisor do
 
     children = [
       {Egghead.LLM.Registry, records_dir: records_dir},
+      {Egghead.Chat.ToolCache, []},
       {Egghead.Chat.Coordinator, []},
       {Egghead.Agent.Supervisor, []}
     ]

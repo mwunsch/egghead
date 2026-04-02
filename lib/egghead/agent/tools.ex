@@ -29,10 +29,14 @@ defmodule Egghead.Agent.Tools do
   """
   @spec execute(String.t(), map(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def execute(tool_name, input, agent_context \\ %{}) do
-    case do_execute(tool_name, input, agent_context) do
-      {:ok, result} -> {:ok, result}
-      {:error, reason} -> {:error, to_string(reason)}
-    end
+    room_id = agent_context[:room_id]
+
+    Egghead.Chat.ToolCache.get_or_execute(room_id, tool_name, input, fn ->
+      case do_execute(tool_name, input, agent_context) do
+        {:ok, result} -> {:ok, result}
+        {:error, reason} -> {:error, to_string(reason)}
+      end
+    end)
   rescue
     e -> {:error, "Tool error: #{Exception.message(e)}"}
   end

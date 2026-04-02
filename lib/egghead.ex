@@ -213,7 +213,7 @@ defmodule Egghead do
   """
   @spec watch(String.t()) :: pid()
   def watch(room_id \\ default_room()) do
-    Egghead.Chat.Watcher.start(room_id)
+    Egghead.Chat.RoomLogger.start(room_id)
   end
 
   @doc """
@@ -272,6 +272,7 @@ defmodule Egghead do
             {:error, _} -> nil
           end
 
+        Egghead.Chat.ToolCache.invalidate(room_id)
         GenServer.stop(:"egghead_room_#{room_id}", :normal, 5_000)
 
         {:ok, %{responses: responses, room_id: room_id, transcript_id: transcript_id}}

@@ -57,6 +57,8 @@ defmodule Egghead.Agent.Session do
   - Do not restate what other agents said. Build on it or correct it.
   - Address other agents with @agents/id to trigger their activation.
   - Keep responses brief.
+  - In the transcript, your messages appear under your agent id. Speak as
+    yourself — use "I" not your own name in third person.
   """
 
   defmodule State do

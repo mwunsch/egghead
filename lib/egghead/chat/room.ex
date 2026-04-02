@@ -49,7 +49,10 @@ defmodule Egghead.Chat.Room do
       rounds_remaining: 0,
       current_round_responded: MapSet.new(),
       pending_mentions: [],
+      # %{agent_id => %Message{}} — provisional streaming messages
+      in_progress: %{},
       idle_timeout: nil,
+      mode: :staggered,
       status: :waiting
     ]
   end
@@ -87,6 +90,39 @@ defmodule Egghead.Chat.Room do
     sender = %Sender{type: :agent, id: agent_id, name: name}
     usage = Keyword.get(opts, :usage)
     GenServer.call(room_name(room_id), {:agent_respond, sender, content, usage})
+  end
+
+  @doc """
+  Update an agent's in-progress (streaming) text. Provisional — replaced
+  by `agent_respond` when the agent finishes.
+  """
+  @spec streaming_update(String.t(), String.t(), String.t()) :: :ok
+  def streaming_update(room_id, agent_id, partial_text) do
+    GenServer.cast(room_name(room_id), {:streaming_update, agent_id, partial_text})
+  end
+
+  @doc """
+  Get an agent's in-progress text, or nil if none.
+  """
+  @spec get_in_progress(String.t(), String.t()) :: String.t() | nil
+  def get_in_progress(room_id, agent_id) do
+    GenServer.call(room_name(room_id), {:get_in_progress, agent_id})
+  end
+
+  @doc """
+  Clear an agent's in-progress text (e.g., on [PASS]).
+  """
+  @spec clear_in_progress(String.t(), String.t()) :: :ok
+  def clear_in_progress(room_id, agent_id) do
+    GenServer.cast(room_name(room_id), {:clear_in_progress, agent_id})
+  end
+
+  @doc """
+  Set the room's activation mode at runtime.
+  """
+  @spec set_mode(String.t(), :staggered | :serial) :: :ok
+  def set_mode(room_id, mode) when mode in [:staggered, :serial] do
+    GenServer.call(room_name(room_id), {:set_mode, mode})
   end
 
   @doc """
@@ -162,11 +198,14 @@ defmodule Egghead.Chat.Room do
 
     Logger.info("Chat room started: #{id}")
 
+    mode = Keyword.get(opts, :mode, :staggered)
+
     state = %State{
       id: id,
       round_budget: round_budget,
       rounds_remaining: round_budget,
-      idle_timeout: idle_timeout
+      idle_timeout: idle_timeout,
+      mode: mode
     }
 
     if idle_timeout, do: {:ok, state, idle_timeout}, else: {:ok, state}
@@ -215,7 +254,8 @@ defmodule Egghead.Chat.Room do
     state = %{
       state
       | transcript: state.transcript ++ [msg],
-        current_round_responded: MapSet.put(state.current_round_responded, sender.id)
+        current_round_responded: MapSet.put(state.current_round_responded, sender.id),
+        in_progress: Map.delete(state.in_progress, sender.id)
     }
 
     broadcast(state.id, {:agent_message, msg})
@@ -295,24 +335,26 @@ defmodule Egghead.Chat.Room do
   end
 
   def handle_call(:get_transcript, _from, state) do
-    transcript =
-      Enum.map(state.transcript, fn msg ->
-        %{
-          id: msg.id,
-          room_id: msg.room_id,
-          sender: %{
-            type: msg.sender.type,
-            id: msg.sender.id,
-            name: msg.sender.name
-          },
-          content: msg.content,
-          timestamp: msg.timestamp,
-          mentions: msg.mentions,
-          usage: msg.usage
-        }
-      end)
+    format_msg = fn msg ->
+      %{
+        id: msg.id,
+        room_id: msg.room_id,
+        sender: %{
+          type: msg.sender.type,
+          id: msg.sender.id,
+          name: msg.sender.name
+        },
+        content: msg.content,
+        timestamp: msg.timestamp,
+        mentions: msg.mentions,
+        usage: msg.usage
+      }
+    end
 
-    {:reply, transcript, state}
+    committed = Enum.map(state.transcript, format_msg)
+    in_progress = state.in_progress |> Map.values() |> Enum.map(format_msg)
+
+    {:reply, committed ++ in_progress, state}
   end
 
   def handle_call(:get_state, _from, state) do
@@ -323,10 +365,48 @@ defmodule Egghead.Chat.Room do
       rounds_remaining: state.rounds_remaining,
       round_budget: state.round_budget,
       pending_mentions: length(state.pending_mentions),
-      message_count: length(state.transcript)
+      message_count: length(state.transcript),
+      mode: state.mode
     }
 
     {:reply, info, state}
+  end
+
+  def handle_call({:set_mode, mode}, _from, state) do
+    {:reply, :ok, %{state | mode: mode}}
+  end
+
+  def handle_call({:get_in_progress, agent_id}, _from, state) do
+    content =
+      case Map.get(state.in_progress, agent_id) do
+        %{content: text} -> text
+        _ -> nil
+      end
+
+    {:reply, content, state}
+  end
+
+  @impl true
+  def handle_cast({:streaming_update, agent_id, partial_text}, state) do
+    name = agent_id |> String.split("/") |> List.last() |> String.capitalize()
+    sender = %Sender{type: :agent, id: agent_id, name: name}
+
+    msg = %Message{
+      id: "in_progress_#{agent_id}",
+      room_id: state.id,
+      sender: sender,
+      content: partial_text,
+      timestamp: DateTime.utc_now(),
+      mentions: []
+    }
+
+    state = %{state | in_progress: Map.put(state.in_progress, agent_id, msg)}
+    {:noreply, state}
+  end
+
+  def handle_cast({:clear_in_progress, agent_id}, state) do
+    state = %{state | in_progress: Map.delete(state.in_progress, agent_id)}
+    {:noreply, state}
   end
 
   @impl true

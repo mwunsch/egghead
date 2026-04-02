@@ -158,9 +158,10 @@ defmodule Egghead do
 
     round_budget = Keyword.get(opts, :round_budget, 5)
     idle_timeout = Keyword.get(opts, :idle_timeout, false)
+    mode = Keyword.get(opts, :mode, :staggered)
     is_default = Keyword.get(opts, :default, false)
 
-    room_opts = [id: id, round_budget: round_budget, idle_timeout: idle_timeout]
+    room_opts = [id: id, round_budget: round_budget, idle_timeout: idle_timeout, mode: mode]
 
     case Egghead.Chat.Room.start_link(room_opts) do
       {:ok, _pid} ->
@@ -239,6 +240,15 @@ defmodule Egghead do
   @spec chat_save(String.t()) :: {:ok, String.t()} | {:error, term()}
   def chat_save(room_id \\ default_room()) do
     Egghead.Chat.Room.save_transcript(room_id)
+  end
+
+  @doc """
+  Sets the room's activation mode. `:staggered` (default) for overlapping
+  agent activity, `:serial` for strict turn-taking.
+  """
+  @spec set_room_mode(String.t(), :staggered | :serial) :: :ok
+  def set_room_mode(room_id \\ default_room(), mode) do
+    Egghead.Chat.Room.set_mode(room_id, mode)
   end
 
   # --- Consultation API ---

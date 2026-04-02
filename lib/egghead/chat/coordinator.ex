@@ -248,10 +248,19 @@ defmodule Egghead.Chat.Coordinator do
             Enum.any?(info.tags || [], &(&1 in message_words))
           end)
 
-        if matched != [] do
+        # Tag filtering narrows but doesn't gate — if it filters too
+        # aggressively (0-1 matches from a larger pool), fall through to all.
+        # The filter is useful when it makes a clear distinction, not when
+        # it arbitrarily drops agents.
+        if length(matched) > 1 do
           matched
         else
-          Logger.debug("Coordinator: no tag match, activating all agents")
+          if matched == [] do
+            Logger.debug("Coordinator: no tag match, activating all agents")
+          else
+            Logger.debug("Coordinator: only 1 tag match, activating all agents")
+          end
+
           pool
         end
     end
@@ -299,19 +308,33 @@ defmodule Egghead.Chat.Coordinator do
     mentions = msg.mentions || []
     broadcast = "everyone" in mentions or "channel" in mentions
 
-    # Filter out agents mid-handoff in this room, sort for determinism
+    # Filter out agents mid-handoff, order by tag relevancy (most matches
+    # first) then alphabetically. Agents whose tags match the message go
+    # first — they're most likely to have the definitive answer.
+    message_words = tokenize(msg.content)
+
     agents_to_prompt =
       agents
       |> Enum.reject(fn info ->
         MapSet.member?(state.handoffs_in_progress, {info.id, room_id})
       end)
-      |> Enum.sort_by(& &1.id)
+      |> Enum.sort_by(fn info ->
+        tag_matches = Enum.count(info.tags || [], &(&1 in message_words))
+        {-tag_matches, info.id}
+      end)
 
     agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)
     Logger.info("Coordinator: activating agents: #{agent_names}")
 
+    room_mode =
+      try do
+        Room.get_state(room_id).mode
+      rescue
+        _ -> :staggered
+      end
+
     if broadcast do
-      # @everyone/@channel — parallel activation for speed
+      # @everyone/@channel — parallel activation regardless of mode
       broadcast_activation(room_id, length(agents_to_prompt))
 
       Enum.each(agents_to_prompt, fn agent_info ->
@@ -320,13 +343,44 @@ defmodule Egghead.Chat.Coordinator do
         end)
       end)
     else
-      # Serial activation — each agent sees prior responses in transcript
-      Task.start(fn ->
-        Enum.each(agents_to_prompt, fn agent_info ->
-          broadcast_activation(room_id, 1)
-          prompt_agent_in_room(agent_info.id, room_id, msg.content)
+      if room_mode == :staggered and length(agents_to_prompt) > 1 do
+        # Staggered: each agent runs in its own Task. A coordinator Task
+        # subscribes to PubSub and spawns agents with stagger delays.
+        Task.start(fn ->
+          Phoenix.PubSub.subscribe(@pubsub, Room.topic(room_id))
+
+          agents_to_prompt
+          |> Enum.with_index()
+          |> Enum.each(fn {agent_info, idx} ->
+            if idx > 0 do
+              # Wait for previous agent's tool call, completion, pass, or 3s
+              receive do
+                {:agent_tool_call, ^room_id, _, _, _} -> :ok
+                {:agent_message, %{room_id: ^room_id}} -> :ok
+                {:agent_passed, _} -> :ok
+              after
+                3_000 -> :ok
+              end
+            end
+
+            broadcast_activation(room_id, 1)
+
+            # Each agent runs in its own Task so this process stays free
+            # to receive PubSub events for stagger timing
+            Task.start(fn ->
+              prompt_agent_in_room(agent_info.id, room_id, msg.content)
+            end)
+          end)
         end)
-      end)
+      else
+        # Serial: strict A-finishes-then-B in one Task
+        Task.start(fn ->
+          Enum.each(agents_to_prompt, fn agent_info ->
+            broadcast_activation(room_id, 1)
+            prompt_agent_in_room(agent_info.id, room_id, msg.content)
+          end)
+        end)
+      end
     end
   end
 
@@ -342,15 +396,40 @@ defmodule Egghead.Chat.Coordinator do
       agents: room_state.agents
     }
 
+    # Initialize streaming buffer for in-progress transcript updates
+    Process.put({:streaming_buffer, agent_id}, "")
+    Process.put({:last_flush, agent_id}, System.monotonic_time(:millisecond))
+
     on_chunk = fn
       {:text, delta} ->
+        # Broadcast for live rendering (RoomLogger)
         Phoenix.PubSub.broadcast(
           @pubsub,
           Room.topic(room_id),
           {:agent_streaming, room_id, agent_id, delta}
         )
 
+        # Accumulate and periodically flush to Room's in-progress transcript
+        current = Process.get({:streaming_buffer, agent_id}, "")
+        updated = current <> delta
+        Process.put({:streaming_buffer, agent_id}, updated)
+
+        last_flush = Process.get({:last_flush, agent_id}, 0)
+        now = System.monotonic_time(:millisecond)
+
+        if String.contains?(delta, "\n") or (now - last_flush > 500 and updated != "") do
+          Room.streaming_update(room_id, agent_id, updated)
+          Process.put({:last_flush, agent_id}, now)
+        end
+
       {:block_done, %{"type" => "tool_use", "name" => name} = block} ->
+        # Flush buffer before tool call
+        buffer = Process.get({:streaming_buffer, agent_id}, "")
+
+        if buffer != "" do
+          Room.streaming_update(room_id, agent_id, buffer)
+        end
+
         Phoenix.PubSub.broadcast(
           @pubsub,
           Room.topic(room_id),
@@ -363,17 +442,37 @@ defmodule Egghead.Chat.Coordinator do
 
     case Egghead.Agent.prompt(agent_id, message, room: room_context, on_chunk: on_chunk) do
       {:ok, %{text: text, usage: usage}} ->
-        if String.contains?(text, "[PASS]") do
-          Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
-          broadcast_pass(room_id, agent_id)
+        if pass_response?(text) do
+          # Check if the agent streamed substantive content to the room's
+          # in-progress buffer during tool rounds. on_chunk runs in the
+          # Session process so we query the Room instead of process dict.
+          in_progress = Room.get_in_progress(room_id, agent_id)
+
+          if in_progress != nil and String.trim(in_progress) != "" do
+            Logger.debug("Coordinator: #{agent_id} streamed content, committing despite [PASS]")
+            Room.agent_respond(room_id, agent_id, String.trim(in_progress), usage: usage)
+          else
+            Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
+            Room.clear_in_progress(room_id, agent_id)
+            broadcast_pass(room_id, agent_id)
+          end
         else
           Room.agent_respond(room_id, agent_id, text, usage: usage)
         end
 
       {:error, reason} ->
         Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
+        Room.clear_in_progress(room_id, agent_id)
         broadcast_pass(room_id, agent_id)
     end
+  end
+
+  # [PASS] counts as a pass only if it appears on a line by itself (trimmed).
+  # An agent discussing "[PASS]" as a concept in prose is not a pass.
+  defp pass_response?(text) do
+    text
+    |> String.split("\n")
+    |> Enum.any?(fn line -> String.trim(line) == "[PASS]" end)
   end
 
   defp broadcast_activation(room_id, count) do

@@ -273,12 +273,13 @@ defmodule Egghead.Agent.Tools do
     {:ok, format_record_list(records)}
   end
 
-  defp do_execute("create_record", input, _ctx) do
+  defp do_execute("create_record", input, ctx) do
     attrs =
       input
       |> Map.take(["id", "title", "tags", "links", "class", "body"])
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
+      |> Map.put_new("author", ctx[:agent_id])
 
     case Egghead.create_record(attrs) do
       {:ok, record} -> {:ok, "Created record: #{record.id}"}

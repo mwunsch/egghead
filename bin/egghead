@@ -1,0 +1,12 @@
+#!/bin/bash
+# Launch the Egghead TUI.
+#
+#   +Bd — disable BEAM break handler so Ctrl+C exits cleanly
+#         (without this, Ctrl+C shows the BEAM's "BREAK -->" menu)
+#
+# Usage: ./bin/egghead
+#        ANTHROPIC_API_KEY=key ./bin/egghead
+
+cd "$(dirname "$0")/.." || exit 1
+export ERL_FLAGS="+Bd"
+exec mix egghead.tui "$@"

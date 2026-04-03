@@ -142,6 +142,36 @@ defmodule Egghead do
   @spec list_models() :: [map()]
   defdelegate list_models(), to: Egghead.LLM.Registry
 
+  # --- TUI ---
+
+  @doc """
+  Launches the terminal UI. Blocks until the TUI exits.
+  """
+  @spec tui() :: :ok | {:error, term()}
+  def tui do
+    # Register cleanup for abnormal exits (Ctrl+C with +Bd, SIGTERM, etc.)
+    System.at_exit(fn _status -> reset_terminal() end)
+
+    result = TermUI.Runtime.run(root: Egghead.TUI.App)
+    reset_terminal()
+    result
+  end
+
+  defp reset_terminal do
+    # Disable all mouse tracking modes
+    IO.write("\e[?1006l\e[?1003l\e[?1002l\e[?1000l")
+    # Show cursor
+    IO.write("\e[?25h")
+    # Exit alternate screen
+    IO.write("\e[?1049l")
+    # Reset terminal attributes
+    IO.write("\e[0m\e[?7h")
+    # Disable Kitty keyboard protocol
+    IO.write("\e[>0u")
+  rescue
+    _ -> :ok
+  end
+
   # --- Chat API ---
 
   @doc """

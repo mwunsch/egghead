@@ -31,7 +31,10 @@ defmodule Egghead.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:bandit, "~> 1.6"},
       {:plug, "~> 1.16"},
-      {:req, "~> 0.5"}
+      {:req, "~> 0.5"},
+      # Pinned to fix commit: append!/2 was silently discarding auto-flushed data,
+      # causing blank screens on wide terminals. PR #16, before MDEx was added.
+      {:term_ui, github: "pcharbon70/term_ui", ref: "a2db141"}
     ]
   end
 end

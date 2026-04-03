@@ -319,5 +319,61 @@ defmodule Egghead.TUI.AppTest do
 
       Runtime.shutdown(runtime)
     end
+
+    test "arrow up/down navigates command list" do
+      runtime = start_headless()
+
+      send_char(runtime, "/")
+      state = get_app_state(runtime)
+      assert state.command_selected == 0
+
+      send_key(runtime, :down)
+      state = get_app_state(runtime)
+      assert state.command_selected == 1
+
+      send_key(runtime, :down)
+      state = get_app_state(runtime)
+      assert state.command_selected == 2
+
+      send_key(runtime, :up)
+      state = get_app_state(runtime)
+      assert state.command_selected == 1
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "typing resets command selection to 0" do
+      runtime = start_headless()
+
+      send_char(runtime, "/")
+      send_key(runtime, :down)
+      send_key(runtime, :down)
+      state = get_app_state(runtime)
+      assert state.command_selected == 2
+
+      send_char(runtime, "h")
+      state = get_app_state(runtime)
+      assert state.command_selected == 0
+      assert state.command_input == "h"
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "/help sets preview to help content" do
+      runtime = start_headless()
+
+      send_char(runtime, "/")
+      send_char(runtime, "h")
+      send_char(runtime, "e")
+      send_key(runtime, :enter)
+
+      state = get_app_state(runtime)
+      assert state.command_mode == false
+      assert state.preview != nil
+      assert state.preview.id == "help"
+      assert state.preview.body =~ "Keybindings"
+
+      Runtime.shutdown(runtime)
+    end
   end
 end

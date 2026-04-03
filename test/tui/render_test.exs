@@ -184,27 +184,67 @@ defmodule Egghead.TUI.RenderTest do
 
   describe "command mode rendering" do
     test "search bar shows /command_input when in command mode" do
-      all_records = Egghead.list_records()
-
-      durable =
-        Enum.filter(all_records, &(&1.class == :durable)) |> Enum.sort_by(& &1.updated, :desc)
-
-      state = %State{
-        width: 80,
-        height: 24,
-        all_records: all_records,
-        results: durable,
-        agents: [],
-        preview: nil,
-        command_mode: true,
-        command_input: "deb"
-      }
+      state = cmd_state("deb")
 
       tree = App.view(state)
       buf = TestHelpers.render_to_test_buffer(tree, 24, 80, :"cmd_test_#{:rand.uniform(999_999)}")
       text = TestHelpers.row_text(buf, 2)
       assert text =~ "/deb"
     end
+
+    test "autocomplete dropdown shows filtered commands" do
+      state = cmd_state("h")
+
+      tree = App.view(state)
+      buf = TestHelpers.render_to_test_buffer(tree, 24, 80, :"cmd_dd_#{:rand.uniform(999_999)}")
+      # Row 3 should be the dropdown (right after search bar)
+      text = TestHelpers.row_text(buf, 3)
+      assert text =~ "/help"
+    end
+
+    test "selected command in dropdown is highlighted" do
+      state = cmd_state("", 1)
+
+      tree = App.view(state)
+      buf = TestHelpers.render_to_test_buffer(tree, 24, 80, :"cmd_sel_#{:rand.uniform(999_999)}")
+      # Row 3 = first command (not selected), Row 4 = second command (selected)
+      assert TestHelpers.cell_bg(buf, 3, 1) == :bright_black
+      assert TestHelpers.cell_bg(buf, 4, 1) == :cyan
+    end
+
+    test "status bar shows CMD mode hint in command mode" do
+      state = cmd_state("")
+
+      tree = App.view(state)
+      buf = TestHelpers.render_to_test_buffer(tree, 24, 80, :"cmd_st_#{:rand.uniform(999_999)}")
+      # Status bar is always the last rendered row
+      # Find it by scanning for CMD
+      found =
+        Enum.any?(1..24, fn row ->
+          TestHelpers.row_text(buf, row) =~ "CMD"
+        end)
+
+      assert found
+    end
+  end
+
+  defp cmd_state(input, selected \\ 0) do
+    all_records = Egghead.list_records()
+
+    durable =
+      Enum.filter(all_records, &(&1.class == :durable)) |> Enum.sort_by(& &1.updated, :desc)
+
+    %State{
+      width: 80,
+      height: 24,
+      all_records: all_records,
+      results: durable,
+      agents: [],
+      preview: nil,
+      command_mode: true,
+      command_input: input,
+      command_selected: selected
+    }
   end
 
   # Helper to find the preview label row by scanning for "preview:"

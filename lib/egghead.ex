@@ -152,10 +152,46 @@ defmodule Egghead do
     # Register cleanup for abnormal exits (Ctrl+C with +Bd, SIGTERM, etc.)
     System.at_exit(fn _status -> reset_terminal() end)
 
+    tui_loop()
+  end
+
+  defp tui_loop do
     result = TermUI.Runtime.run(root: Egghead.TUI.App)
     reset_terminal()
-    result
+
+    # Check if the TUI quit to open an editor (set by App.open_in_editor)
+    case Application.get_env(:egghead, :pending_editor) do
+      {editor, path, restore} ->
+        Application.delete_env(:egghead, :pending_editor)
+
+        # Run editor with a fully clean terminal — no competing IO readers,
+        # no alternate screen, no raw mode. Port with :nouse_stdio inherits
+        # the BEAM's terminal FDs directly.
+        sh = System.find_executable("sh") || "/bin/sh"
+        escaped = path |> String.replace("'", "'\\''")
+
+        port =
+          Port.open({:spawn_executable, sh}, [
+            :nouse_stdio,
+            :exit_status,
+            args: ["-c", "#{editor} '#{escaped}'"]
+          ])
+
+        receive do
+          {^port, {:exit_status, _}} -> :ok
+        end
+
+        # Save restore state for the next Runtime init
+        Application.put_env(:egghead, :tui_restore, restore)
+
+        # Restart the TUI
+        tui_loop()
+
+      _ ->
+        result
+    end
   end
+
 
   defp reset_terminal do
     # Disable all mouse tracking modes

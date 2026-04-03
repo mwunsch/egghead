@@ -40,17 +40,53 @@ defmodule Egghead.TUI.App do
         _, _ -> []
       end
 
-    # Default: show only durable records, sorted by updated desc
-    durable = filter_and_sort(all_records, false)
-    preview = load_preview(durable, 0)
+    # Check for restore state (set when returning from $EDITOR)
+    restore = Application.get_env(:egghead, :tui_restore)
+    Application.delete_env(:egghead, :tui_restore)
+
+    # When returning from $EDITOR:
+    # 1. Drain stale terminal responses (DECRPM, DA1, Kitty) from stdin.
+    #    TermUI's Terminal.disable_raw_mode sends \ec (Full Terminal Reset).
+    #    Modern terminals respond with capability announcements. OTP 28's
+    #    prim_tty reads these into the Erlang IO system — they can only be
+    #    consumed via IO.getn, not a raw fd read.
+    # 2. Clear the BufferManager's previous buffer. The BufferManager survives
+    #    across Runtime restarts (named process). Its "previous" buffer has
+    #    content from before the editor, but the actual alternate screen is
+    #    blank (we left and re-entered it). Without clearing, the diff
+    #    computes minimal changes against stale content → blank screen.
+    if restore do
+      drain_stale_input()
+
+      try do
+        prev = TermUI.Renderer.BufferManager.get_previous_buffer()
+        TermUI.Renderer.Buffer.clear(prev)
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    {show_all, query, selected, scroll} =
+      case restore do
+        %{show_all: sa, query: q, selected: s, scroll: sc} -> {sa, q, s, sc}
+        _ -> {false, "", 0, 0}
+      end
+
+    results = filter_and_sort(all_records, show_all, query)
+    selected = min(selected, max(0, length(results) - 1))
+    preview = load_preview(results, selected)
 
     %State{
       width: w,
       height: h,
       all_records: all_records,
-      results: durable,
+      results: results,
       agents: agents,
-      preview: preview
+      preview: preview,
+      query: query,
+      selected: selected,
+      scroll_offset: scroll,
+      show_all_classes: show_all
     }
   end
 
@@ -185,12 +221,18 @@ defmodule Egghead.TUI.App do
     w = state.width
     h = state.height
     body = max(1, h - 5)
-    list_h = max(1, div(body, 3))
-    preview_h = max(1, body - list_h)
+
+    # When command mode is active, show autocomplete dropdown between search and list
+    dropdown_lines = if state.command_mode, do: render_command_dropdown(state, w), else: []
+    dropdown_h = length(dropdown_lines)
+
+    list_h = max(1, div(body - dropdown_h, 3))
+    preview_h = max(1, body - list_h - dropdown_h)
 
     lines =
       [render_header(state, w)] ++
         [render_search(state, w)] ++
+        dropdown_lines ++
         render_list(state, w, list_h) ++
         [text("", nil)] ++
         render_preview(state, w, preview_h) ++
@@ -224,6 +266,31 @@ defmodule Egghead.TUI.App do
     content = prompt_str <> input <> "▌"
     pad = max(0, w - String.length(content))
     text(content <> String.duplicate(" ", pad), Theme.prompt())
+  end
+
+  # --- Command autocomplete dropdown ---
+
+  defp render_command_dropdown(state, w) do
+    cmds = filtered_commands(state.command_input)
+
+    if cmds == [] do
+      []
+    else
+      cmds
+      |> Enum.with_index()
+      |> Enum.map(fn {{name, desc, shortcut}, idx} ->
+        selected = idx == state.command_selected
+        shortcut_str = if shortcut != "", do: " (#{shortcut})", else: ""
+        content = " /#{name}#{shortcut_str}  #{desc}"
+        pad = max(0, w - String.length(content))
+
+        if selected do
+          text(content <> String.duplicate(" ", pad), Theme.selected())
+        else
+          text(content <> String.duplicate(" ", pad), Theme.command_item())
+        end
+      end)
+    end
   end
 
   # --- Note list ---
@@ -346,8 +413,14 @@ defmodule Egghead.TUI.App do
 
   # --- Status bar (dark background band) ---
 
-  defp render_status(_state, w) do
-    left = " REC │ ↑↓ nav │ ^n/^p scroll │ ⏎ $EDITOR │ / cmd │ tab filter │ ^c quit"
+  defp render_status(state, w) do
+    left =
+      if state.command_mode do
+        " CMD │ ↑↓ select │ ⏎ execute │ esc cancel"
+      else
+        " REC │ ↑↓ nav │ ^n/^p scroll │ ⏎ $EDITOR │ / cmd │ tab filter │ ^q quit"
+      end
+
     pad = max(0, w - String.length(left))
     text(left <> String.duplicate(" ", pad), Theme.status_bar_line())
   end
@@ -434,7 +507,7 @@ defmodule Egghead.TUI.App do
      []}
   end
 
-  defp filter_and_sort(records, show_all, query \\ "") do
+  defp filter_and_sort(records, show_all, query) do
     records
     |> then(fn rs ->
       if show_all, do: rs, else: Enum.filter(rs, &(&1.class == :durable))
@@ -473,17 +546,17 @@ defmodule Egghead.TUI.App do
   # --- Commands ---
 
   @commands [
-    {"quit", "Exit the TUI"},
-    {"chat", "Enter chat mode"},
-    {"system", "View agent diagnostics"},
-    {"help", "Show help"},
-    {"new", "Create a new record"},
-    {"debug", "Dump screen to /tmp/egghead_render.txt"}
+    {"quit", "Exit the TUI", "q"},
+    {"help", "Show keybindings & commands", "h"},
+    {"new", "Create a new record", "n"},
+    {"chat", "Enter chat mode", "c"},
+    {"system", "Agent diagnostics", "s"},
+    {"debug", "Dump buffer to /tmp/egghead_render.txt", ""}
   ]
 
   defp filtered_commands(input) do
     q = String.downcase(input)
-    Enum.filter(@commands, fn {name, _} -> String.starts_with?(name, q) end)
+    Enum.filter(@commands, fn {name, _, _} -> String.starts_with?(name, q) end)
   end
 
   defp execute_command(state) do
@@ -493,11 +566,25 @@ defmodule Egghead.TUI.App do
     state = %{state | command_mode: false, command_input: ""}
 
     case selected do
-      {"quit", _} ->
+      {"quit", _, _} ->
         {state, [:quit]}
 
-      {"debug", _} ->
+      {"debug", _, _} ->
         Egghead.TUI.TestHelpers.dump_live_buffer()
+        {state, []}
+
+      {"help", _, _} ->
+        {%{state | preview: help_record(), preview_scroll: 0}, []}
+
+      {"new", _, _} ->
+        create_and_edit_record(state)
+
+      {"chat", _, _} ->
+        # Placeholder — chat mode not yet implemented
+        {state, []}
+
+      {"system", _, _} ->
+        # Placeholder — system mode not yet implemented
         {state, []}
 
       _ ->
@@ -505,7 +592,80 @@ defmodule Egghead.TUI.App do
     end
   end
 
+  defp help_record do
+    %Egghead.Record{
+      id: "help",
+      title: "Egghead TUI Help",
+      body: """
+      # Keybindings
+
+      - **↑/↓** — Navigate record list
+      - **Ctrl+N/Ctrl+P** — Scroll preview down/up
+      - **Ctrl+J/Ctrl+K** — Scroll preview down/up
+      - **PageDown/PageUp** — Scroll preview down/up
+      - **Enter** — Open selected record in $EDITOR
+      - **Tab** — Toggle durable-only / all record classes
+      - **/** — Enter command mode
+      - **Ctrl+Q** — Quit
+
+      # Commands
+
+      - **/quit** — Exit the TUI
+      - **/help** — Show this help
+      - **/new [id]** — Create a new record and open in editor
+      - **/chat** — Enter chat mode (coming soon)
+      - **/system** — Agent diagnostics (coming soon)
+      - **/debug** — Dump render buffer to /tmp/egghead_render.txt
+
+      # Search
+
+      Type to instantly filter records by id, title, or tags.
+      """,
+      tags: [],
+      links: [],
+      class: :durable,
+      updated: DateTime.to_iso8601(DateTime.utc_now())
+    }
+  end
+
+  defp create_and_edit_record(state) do
+    # Parse optional id from command input: "new my-record-id" → "my-record-id"
+    id =
+      case String.split(state.command_input, " ", parts: 2) do
+        [_, rest] when rest != "" -> String.trim(rest)
+        _ -> "new-record-#{System.system_time(:second)}"
+      end
+
+    path = Path.join([File.cwd!(), "records", "#{id}.md"])
+
+    unless File.exists?(path) do
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(path, """
+      ---
+      id: #{id}
+      tags: []
+      class: durable
+      ---
+
+      """)
+    end
+
+    quit_for_editor(state, path)
+  end
+
   # --- Editor ---
+  #
+  # Opening $EDITOR from inside a TUI requires fully shutting down the
+  # Runtime first. The Erlang IO system, TermUI's InputReader, and the
+  # terminal state all fight the editor if we try to run it inline.
+  #
+  # Pattern (same as BubbleTea's tea.ExecProcess):
+  # 1. Save editor intent + restore state to Application env
+  # 2. Return :quit to cleanly shut down the Runtime
+  # 3. Egghead.tui_loop detects the pending editor, runs it with a
+  #    fully clean terminal (Port :nouse_stdio)
+  # 4. tui_loop restarts the Runtime; init restores the saved state
 
   defp open_in_editor(state) do
     case Enum.at(state.results, state.selected) do
@@ -515,38 +675,59 @@ defmodule Egghead.TUI.App do
       record ->
         case Egghead.get_record(record.id) do
           {:ok, %{source_path: path}} when not is_nil(path) ->
-            editor = System.get_env("EDITOR") || "vi"
-            # Suspend TUI: leave alternate screen, restore terminal for editor
-            TermUI.Terminal.show_cursor()
-            TermUI.Terminal.leave_alternate_screen()
-            TermUI.Terminal.disable_raw_mode()
-
-            # Run editor — interactive, needs cooked mode + main screen
-            System.cmd(editor, [path], into: IO.stream())
-
-            # Resume TUI: re-enter alternate screen, raw mode
-            TermUI.Terminal.enable_raw_mode()
-            TermUI.Terminal.enter_alternate_screen()
-            TermUI.Terminal.hide_cursor()
-            # Force full screen clear to avoid artifacts
-            IO.write("\e[2J")
-
-            # Reload the record in case it was edited
-            preview = load_preview(state.results, state.selected)
-
-            all =
-              try do
-                Egghead.list_records()
-              catch
-                _, _ -> state.all_records
-              end
-
-            results = filter_and_sort(all, state.show_all_classes, state.query)
-            {%{state | preview: preview, all_records: all, results: results}, []}
+            quit_for_editor(state, path)
 
           _ ->
             {state, []}
         end
+    end
+  end
+
+  defp quit_for_editor(state, path) do
+    editor = System.get_env("EDITOR") || "vi"
+
+    restore = %{
+      query: state.query,
+      selected: state.selected,
+      scroll: state.scroll_offset,
+      show_all: state.show_all_classes
+    }
+
+    Application.put_env(:egghead, :pending_editor, {editor, path, restore})
+    {state, [:quit]}
+  end
+
+  # --- Stdin drain ---
+
+  # Drain stale bytes from the Erlang IO system. Spawns a process that
+  # reads via IO.getn (which goes through OTP's prim_tty) until no more
+  # data is available. The 200ms timeout handles the case where there's
+  # nothing to drain — IO.getn blocks in raw mode when stdin is empty.
+  defp drain_stale_input do
+    parent = self()
+
+    drainer =
+      spawn(fn ->
+        drain_io_loop()
+        send(parent, :drain_done)
+      end)
+
+    receive do
+      :drain_done -> :ok
+    after
+      200 ->
+        Process.exit(drainer, :kill)
+        :ok
+    end
+  end
+
+  defp drain_io_loop do
+    case IO.getn("", 1) do
+      data when is_binary(data) and byte_size(data) > 0 ->
+        drain_io_loop()
+
+      _ ->
+        :ok
     end
   end
 

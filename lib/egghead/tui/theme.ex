@@ -16,6 +16,7 @@ defmodule Egghead.TUI.Theme do
   def separator, do: Style.new(fg: :bright_black)
   def status_bar_line, do: Style.new(fg: :white, bg: :bright_black)
   def link, do: Style.new(fg: :cyan, attrs: [:underline])
+  def command_item, do: Style.new(fg: :yellow, bg: :bright_black)
 
   # Markdown styles
   def md_h1, do: Style.new(fg: :cyan, attrs: [:bold])

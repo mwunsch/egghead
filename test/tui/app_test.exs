@@ -278,6 +278,37 @@ defmodule Egghead.TUI.AppTest do
       Runtime.shutdown(runtime)
     end
 
+    test "typing in command mode appends to command_input" do
+      runtime = start_headless()
+
+      send_char(runtime, "/")
+      send_char(runtime, "d")
+      send_char(runtime, "e")
+      send_char(runtime, "b")
+
+      state = get_app_state(runtime)
+      assert state.command_mode == true
+      assert state.command_input == "deb"
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "enter executes command and exits command mode" do
+      runtime = start_headless()
+
+      send_char(runtime, "/")
+      send_char(runtime, "d")
+      send_char(runtime, "e")
+      send_char(runtime, "b")
+      send_key(runtime, :enter)
+
+      state = get_app_state(runtime)
+      assert state.command_mode == false
+      assert state.command_input == ""
+
+      Runtime.shutdown(runtime)
+    end
+
     test "escape exits command mode" do
       runtime = start_headless()
 

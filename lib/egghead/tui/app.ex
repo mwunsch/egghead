@@ -247,18 +247,19 @@ defmodule Egghead.TUI.App do
   defp render_list_row(record, selected, w) do
     title = record.title || record.id
     time = relative_time(record.updated)
-
-    # Layout: " Title                                          time "
-    right = " #{time} "
-    right_len = String.length(right)
-    title_max = max(1, w - right_len - 2)
+    time_str = " #{time} "
+    title_max = max(1, w - String.length(time_str) - 2)
     title_str = String.pad_trailing(String.slice(title, 0, title_max), title_max)
-    line = " " <> title_str <> right
 
     if selected do
-      text(line, Theme.selected())
+      # Selected: entire row one style
+      text(" " <> title_str <> time_str, Theme.selected())
     else
-      text(line, Theme.normal())
+      # Normal: title white, time muted
+      stack(:horizontal, [
+        text(" " <> title_str, Theme.normal()),
+        text(time_str, Theme.muted())
+      ])
     end
   end
 
@@ -311,13 +312,17 @@ defmodule Egghead.TUI.App do
             false
           end
 
-        line =
-          (" " <> content)
-          |> String.slice(0, w - 1)
-          |> String.pad_trailing(w - 1)
-
+        # Content padded to fixed width, scrollbar as separate styled node.
+        # The diff merges adjacent spans (gap=0) but preserves style groups,
+        # so the scrollbar style is emitted correctly.
+        clean = content |> String.replace("\n", " ")
+        padded = (" " <> clean) |> String.slice(0, w - 1) |> String.pad_trailing(w - 1)
         scrollbar_char = if is_thumb, do: "▐", else: " "
-        text(line <> scrollbar_char, style)
+
+        stack(:horizontal, [
+          text(padded, style),
+          text(scrollbar_char, Theme.separator())
+        ])
       end)
 
     padding = List.duplicate(text("", nil), max(0, content_h - length(visible)))
@@ -472,7 +477,8 @@ defmodule Egghead.TUI.App do
     {"chat", "Enter chat mode"},
     {"system", "View agent diagnostics"},
     {"help", "Show help"},
-    {"new", "Create a new record"}
+    {"new", "Create a new record"},
+    {"debug", "Dump screen to /tmp/egghead_render.txt"}
   ]
 
   defp filtered_commands(input) do
@@ -487,8 +493,15 @@ defmodule Egghead.TUI.App do
     state = %{state | command_mode: false, command_input: ""}
 
     case selected do
-      {"quit", _} -> {state, [:quit]}
-      _ -> {state, []}
+      {"quit", _} ->
+        {state, [:quit]}
+
+      {"debug", _} ->
+        Egghead.TUI.TestHelpers.dump_live_buffer()
+        {state, []}
+
+      _ ->
+        {state, []}
     end
   end
 

@@ -103,22 +103,22 @@ defmodule Egghead.TUI.RenderTest do
   describe "note list" do
     test "first record is highlighted" do
       {buf, _} = render_view()
-      # Row 3 is first list item (selected)
-      assert TestHelpers.cell_bg(buf, 3, 1) == :cyan
-      assert TestHelpers.cell_fg(buf, 3, 1) == :black
+      # Row 3 = separator, row 4 = first list item (selected)
+      assert TestHelpers.cell_bg(buf, 4, 1) == :cyan
+      assert TestHelpers.cell_fg(buf, 4, 1) == :black
     end
 
     test "second record has normal style" do
       {buf, _} = render_view()
-      # Row 4 is second list item (not selected)
-      fg = TestHelpers.cell_fg(buf, 4, 2)
+      # Row 5 is second list item (not selected)
+      fg = TestHelpers.cell_fg(buf, 5, 2)
       assert fg == :white
     end
 
     test "list items contain record titles" do
       {buf, state} = render_view()
       first_title = Enum.at(state.results, 0).title || Enum.at(state.results, 0).id
-      text = TestHelpers.row_text(buf, 3)
+      text = TestHelpers.row_text(buf, 4)
       # Title should appear somewhere in the row
       assert text =~ String.slice(first_title, 0, 20)
     end
@@ -136,25 +136,30 @@ defmodule Egghead.TUI.RenderTest do
     end
 
     test "preview has markdown content" do
-      {buf, _} = render_view()
-      {_, label_row} = find_preview_label(buf, 24)
-      # Row after label should have content
-      content = TestHelpers.row_text(buf, label_row + 1)
-      assert String.length(content) > 0
+      # Use a larger terminal to ensure preview has content rows
+      {buf, _} = render_view(120, 40)
+      {_, label_row} = find_preview_label(buf, 40)
+
+      content =
+        Enum.find_value(1..5, fn offset ->
+          text = TestHelpers.row_text(buf, label_row + offset)
+          if String.length(text) > 0, do: text
+        end)
+
+      assert content != nil
     end
   end
 
   describe "status bar" do
     test "status bar at last row" do
       {buf, _} = render_view(80, 24)
-      # h-1 = 23 (55 lines for 56 height, but 24 height = 23 lines)
-      text = TestHelpers.row_text(buf, 23)
+      text = TestHelpers.row_text(buf, 24)
       assert text =~ "REC"
     end
 
     test "status bar has background" do
       {buf, _} = render_view(80, 24)
-      assert TestHelpers.cell_bg(buf, 23, 1) == :bright_black
+      assert TestHelpers.cell_bg(buf, 24, 1) == :bright_black
     end
   end
 
@@ -197,8 +202,8 @@ defmodule Egghead.TUI.RenderTest do
 
       tree = App.view(state)
       buf = TestHelpers.render_to_test_buffer(tree, 24, 80, :"cmd_dd_#{:rand.uniform(999_999)}")
-      # Row 3 should be the dropdown (right after search bar)
-      text = TestHelpers.row_text(buf, 3)
+      # Row 3 = separator, row 4 = first dropdown item
+      text = TestHelpers.row_text(buf, 4)
       assert text =~ "/help"
     end
 
@@ -207,9 +212,10 @@ defmodule Egghead.TUI.RenderTest do
 
       tree = App.view(state)
       buf = TestHelpers.render_to_test_buffer(tree, 24, 80, :"cmd_sel_#{:rand.uniform(999_999)}")
-      # Row 3 = first command (not selected), Row 4 = second command (selected)
-      assert TestHelpers.cell_bg(buf, 3, 1) == :bright_black
-      assert TestHelpers.cell_bg(buf, 4, 1) == :cyan
+
+      # Row 4 = first command (not selected, default bg), Row 5 = second command (selected, cyan bg)
+      assert TestHelpers.cell_bg(buf, 4, 1) == :default
+      assert TestHelpers.cell_bg(buf, 5, 1) == :cyan
     end
 
     test "status bar shows CMD mode hint in command mode" do

@@ -1,6 +1,10 @@
 defmodule Egghead.TUI.Theme do
   @moduledoc """
   Styles for the Egghead TUI. Uses TermUI.Renderer.Style with {r,g,b} tuples.
+
+  Most styles use nil bg (→ Cell :default → terminal's native background).
+  Only chrome bars and selection set explicit bg. This avoids banding from
+  ANSI :black (#000000) mismatching the terminal theme's background color.
   """
 
   alias TermUI.Renderer.Style
@@ -16,7 +20,6 @@ defmodule Egghead.TUI.Theme do
   def separator, do: Style.new(fg: :bright_black)
   def status_bar_line, do: Style.new(fg: :white, bg: :bright_black)
   def link, do: Style.new(fg: :cyan, attrs: [:underline])
-  def command_item, do: Style.new(fg: :yellow, bg: :bright_black)
 
   # Markdown styles
   def md_h1, do: Style.new(fg: :cyan, attrs: [:bold])

@@ -74,20 +74,20 @@ defmodule Egghead.TUI.App do
 
     results = filter_and_sort(all_records, show_all, query)
     selected = min(selected, max(0, length(results) - 1))
-    preview = load_preview(results, selected)
 
-    %State{
+    base = %State{
       width: w,
       height: h,
       all_records: all_records,
       results: results,
       agents: agents,
-      preview: preview,
       query: query,
       selected: selected,
       scroll_offset: scroll,
       show_all_classes: show_all
     }
+
+    set_preview(base, load_preview(results, selected))
   end
 
   # --- handle_info for PubSub and async messages ---
@@ -101,11 +101,15 @@ defmodule Egghead.TUI.App do
   # --- Event handling ---
 
   @impl true
-  # Ctrl+C handled by +Bd flag (BEAM exits cleanly, no break menu).
-  # Ctrl+Q as in-app quit for when running without +Bd (e.g. mix egghead.tui)
+  # Ctrl+Q as in-app quit
   def event_to_msg(%Event.Key{key: "q", modifiers: [:ctrl]}, _state), do: {:msg, :quit}
 
   def event_to_msg(%Event.Key{key: :escape}, %{command_mode: true}) do
+    {:msg, :exit_command}
+  end
+
+  # Ctrl+G exits command mode (Emacs convention)
+  def event_to_msg(%Event.Key{key: "g", modifiers: [:ctrl]}, %{command_mode: true}) do
     {:msg, :exit_command}
   end
 
@@ -129,6 +133,9 @@ defmodule Egghead.TUI.App do
   def update(msg, state) do
     case msg do
       :quit ->
+        # Belt-and-suspenders: call shutdown directly in case [:quit]
+        # command processing fails (e.g. second Runtime after editor)
+        TermUI.Runtime.shutdown(self())
         {state, [:quit]}
 
       {:resize, w, h} ->
@@ -147,19 +154,21 @@ defmodule Egghead.TUI.App do
       :move_up ->
         new_sel = max(0, state.selected - 1)
         scroll = adjust_scroll(new_sel, state.scroll_offset, list_height(state))
-        preview = load_preview(state.results, new_sel)
 
-        {%{state | selected: new_sel, scroll_offset: scroll, preview: preview, preview_scroll: 0},
-         []}
+        {set_preview(
+           %{state | selected: new_sel, scroll_offset: scroll},
+           load_preview(state.results, new_sel)
+         ), []}
 
       :move_down ->
         max_sel = max(0, length(state.results) - 1)
         new_sel = min(max_sel, state.selected + 1)
         scroll = adjust_scroll(new_sel, state.scroll_offset, list_height(state))
-        preview = load_preview(state.results, new_sel)
 
-        {%{state | selected: new_sel, scroll_offset: scroll, preview: preview, preview_scroll: 0},
-         []}
+        {set_preview(
+           %{state | selected: new_sel, scroll_offset: scroll},
+           load_preview(state.results, new_sel)
+         ), []}
 
       :preview_scroll_down ->
         {%{state | preview_scroll: state.preview_scroll + 5}, []}
@@ -170,19 +179,68 @@ defmodule Egghead.TUI.App do
       :toggle_filter ->
         show_all = not state.show_all_classes
         results = filter_and_sort(state.all_records, show_all, state.query)
-        preview = load_preview(results, 0)
 
-        {%{
-           state
-           | show_all_classes: show_all,
-             results: results,
-             selected: 0,
-             scroll_offset: 0,
-             preview: preview
-         }, []}
+        {set_preview(
+           %{state | show_all_classes: show_all, results: results, selected: 0, scroll_offset: 0},
+           load_preview(results, 0)
+         ), []}
 
       :open_editor ->
         open_in_editor(state)
+
+      # Link navigation
+      :link_next ->
+        case state.preview_links do
+          [] ->
+            {state, []}
+
+          links ->
+            idx =
+              case state.link_index do
+                nil -> 0
+                i -> rem(i + 1, length(links))
+              end
+
+            {%{state | link_index: idx}, []}
+        end
+
+      :link_deselect ->
+        {%{state | link_index: nil}, []}
+
+      :follow_link ->
+        case Enum.at(state.preview_links, state.link_index || -1) do
+          {target_id, _, _} ->
+            case Egghead.get_record(target_id) do
+              {:ok, record} ->
+                history =
+                  if state.preview,
+                    do: [state.preview.id | state.nav_history],
+                    else: state.nav_history
+
+                {set_preview(%{state | nav_history: history}, record), []}
+
+              _ ->
+                {state, []}
+            end
+
+          nil ->
+            {state, []}
+        end
+
+      :nav_back ->
+        case state.nav_history do
+          [prev_id | rest] ->
+            case Egghead.get_record(prev_id) do
+              {:ok, record} ->
+                {set_preview(%{state | nav_history: rest}, record), []}
+
+              _ ->
+                {%{state | nav_history: rest}, []}
+            end
+
+          [] ->
+            {state, []}
+        end
 
       # Command mode
       :enter_command ->
@@ -195,8 +253,13 @@ defmodule Egghead.TUI.App do
         {%{state | command_input: state.command_input <> c, command_selected: 0}, []}
 
       :command_backspace ->
-        input = String.slice(state.command_input, 0..-2//1)
-        {%{state | command_input: input, command_selected: 0}, []}
+        if state.command_input == "" do
+          # Backspace on empty input exits command mode (deletes the /)
+          {%{state | command_mode: false}, []}
+        else
+          input = String.slice(state.command_input, 0..-2//1)
+          {%{state | command_input: input, command_selected: 0}, []}
+        end
 
       :command_up ->
         {%{state | command_selected: max(0, state.command_selected - 1)}, []}
@@ -220,22 +283,29 @@ defmodule Egghead.TUI.App do
   def view(state) do
     w = state.width
     h = state.height
-    body = max(1, h - 5)
+    # Non-body: header(1) + search(1) + separator(1) + blank(1) + blank(1) + status(1) = 6
+    body = max(1, h - 6)
+    list_h = max(1, div(body, 3))
+    preview_h = max(1, body - list_h)
 
-    # When command mode is active, show autocomplete dropdown between search and list
-    dropdown_lines = if state.command_mode, do: render_command_dropdown(state, w), else: []
-    dropdown_h = length(dropdown_lines)
+    # In command mode, the dropdown replaces the record list
+    list_or_dropdown =
+      if state.command_mode do
+        render_command_dropdown(state, w, list_h)
+      else
+        render_list(state, w, list_h)
+      end
 
-    list_h = max(1, div(body - dropdown_h, 3))
-    preview_h = max(1, body - list_h - dropdown_h)
+    sep = text(String.duplicate("─", w), Theme.separator())
 
     lines =
       [render_header(state, w)] ++
         [render_search(state, w)] ++
-        dropdown_lines ++
-        render_list(state, w, list_h) ++
+        [sep] ++
+        list_or_dropdown ++
         [text("", nil)] ++
         render_preview(state, w, preview_h) ++
+        [text("", nil)] ++
         [render_status(state, w)]
 
     stack(:vertical, lines)
@@ -270,27 +340,34 @@ defmodule Egghead.TUI.App do
 
   # --- Command autocomplete dropdown ---
 
-  defp render_command_dropdown(state, w) do
+  defp render_command_dropdown(state, w, list_h) do
     cmds = filtered_commands(state.command_input)
+    unselected = Theme.normal()
 
-    if cmds == [] do
-      []
-    else
+    rows =
       cmds
+      |> Enum.take(list_h)
       |> Enum.with_index()
-      |> Enum.map(fn {{name, desc, shortcut}, idx} ->
+      |> Enum.map(fn {{name, desc}, idx} ->
         selected = idx == state.command_selected
-        shortcut_str = if shortcut != "", do: " (#{shortcut})", else: ""
-        content = " /#{name}#{shortcut_str}  #{desc}"
+        content = " /#{name}  #{desc}"
         pad = max(0, w - String.length(content))
 
         if selected do
           text(content <> String.duplicate(" ", pad), Theme.selected())
         else
-          text(content <> String.duplicate(" ", pad), Theme.command_item())
+          text(content <> String.duplicate(" ", pad), unselected)
         end
       end)
-    end
+
+    # Pad remaining rows with explicit bg to clear any leftover styles
+    padding =
+      List.duplicate(
+        text(String.duplicate(" ", w), unselected),
+        max(0, list_h - length(rows))
+      )
+
+    rows ++ padding
   end
 
   # --- Note list ---
@@ -337,14 +414,15 @@ defmodule Egghead.TUI.App do
     [label | List.duplicate(text("", nil), max(0, preview_h - 1))]
   end
 
-  defp render_preview(%{preview: record, preview_scroll: scroll}, w, preview_h) do
+  defp render_preview(%{preview: record, preview_scroll: scroll} = state, w, preview_h) do
     body = record.body || "(no content)"
     total_lines = Egghead.TUI.Markdown.render(body, w - 4)
     total_count = length(total_lines)
 
-    # Reserve lines for links and scroll indicator
-    links_lines = render_links(record, w)
-    content_h = max(0, preview_h - 1 - length(links_lines))
+    # Reserve lines for links, gap, and scroll indicator
+    links_lines = render_links(state, w)
+    links_gap = if links_lines != [], do: 1, else: 0
+    content_h = max(0, preview_h - 1 - length(links_lines) - links_gap)
 
     # Clamp scroll
     max_scroll = max(0, total_count - content_h)
@@ -393,7 +471,8 @@ defmodule Egghead.TUI.App do
       end)
 
     padding = List.duplicate(text("", nil), max(0, content_h - length(visible)))
-    [label] ++ visible ++ padding ++ links_lines
+    gap = if links_lines != [], do: [text("", nil)], else: []
+    [label] ++ visible ++ padding ++ gap ++ links_lines
   end
 
   defp render_preview_label(name, scroll_info, w) do
@@ -402,23 +481,50 @@ defmodule Egghead.TUI.App do
     text(label <> String.duplicate("─", pad), Theme.separator())
   end
 
-  defp render_links(record, w) do
-    if record.links != [] do
-      link_text = Enum.map_join(record.links, "  ", &"[[#{&1}]]")
-      [text(" Links: " <> String.slice(link_text, 0, w - 10), Theme.link())]
-    else
-      []
-    end
+  defp render_links(%{preview_links: []}, _w), do: []
+
+  defp render_links(%{preview_links: links, link_index: link_index}, w) do
+    {fwd, back} = Enum.split_with(links, fn {_, _, type} -> type == :forward end)
+
+    fwd_line = render_link_line("Links", fwd, links, link_index, w)
+    back_line = render_link_line("Backlinks", back, links, link_index, w)
+
+    fwd_line ++ back_line
+  end
+
+  defp render_link_line(_label, [], _all, _selected, _w), do: []
+
+  defp render_link_line(label, items, all_links, selected_idx, _w) do
+    spans =
+      items
+      |> Enum.flat_map(fn {id, display, _type} ->
+        global_idx = Enum.find_index(all_links, fn {lid, _, _} -> lid == id end)
+        is_selected = global_idx == selected_idx
+        style = if is_selected, do: Theme.selected(), else: Theme.link()
+        [text("[[#{display}]]", style), text("  ", nil)]
+      end)
+
+    # Trim trailing spacer
+    spans = if spans != [], do: Enum.slice(spans, 0..-2//1), else: spans
+
+    content = [text(" #{label}: ", Theme.muted()) | spans]
+    [stack(:horizontal, content)]
   end
 
   # --- Status bar (dark background band) ---
 
   defp render_status(state, w) do
     left =
-      if state.command_mode do
-        " CMD │ ↑↓ select │ ⏎ execute │ esc cancel"
-      else
-        " REC │ ↑↓ nav │ ^n/^p scroll │ ⏎ $EDITOR │ / cmd │ tab filter │ ^q quit"
+      cond do
+        state.command_mode ->
+          " CMD │ ↑↓ select │ ⏎ execute │ esc cancel"
+
+        state.link_index != nil ->
+          back = if state.nav_history != [], do: " │ ⌫ back", else: ""
+          " LINK │ tab cycle │ ⏎ follow │ esc deselect#{back} │ ^q quit"
+
+        true ->
+          " REC │ ↑↓ nav │ ^n/^p scroll │ ⏎ $EDITOR │ / cmd │ tab links │ ^f filter │ ^q quit"
       end
 
     pad = max(0, w - String.length(left))
@@ -427,7 +533,7 @@ defmodule Egghead.TUI.App do
 
   # --- Key routing ---
 
-  defp records_event(event, _state) do
+  defp records_event(event, state) do
     case event.key do
       :up ->
         {:msg, :move_up}
@@ -436,13 +542,15 @@ defmodule Egghead.TUI.App do
         {:msg, :move_down}
 
       :enter ->
-        {:msg, :open_editor}
+        if state.link_index != nil, do: {:msg, :follow_link}, else: {:msg, :open_editor}
 
-      :tab ->
-        {:msg, :toggle_filter}
+      :escape ->
+        if state.link_index != nil, do: {:msg, :link_deselect}, else: :ignore
 
       :backspace ->
-        {:msg, :backspace}
+        if state.query == "" and state.nav_history != [],
+          do: {:msg, :nav_back},
+          else: {:msg, :backspace}
 
       :page_down ->
         {:msg, :preview_scroll_down}
@@ -452,7 +560,15 @@ defmodule Egghead.TUI.App do
 
       _ ->
         cond do
-          # Ctrl combos: key is "j"/"k", char is nil, modifiers is [:ctrl]
+          # Tab: cycle forward through links in preview
+          event.key == :tab ->
+            {:msg, :link_next}
+
+          # Ctrl+F: toggle durable/all filter
+          event.key == "f" and :ctrl in event.modifiers ->
+            {:msg, :toggle_filter}
+
+          # Ctrl combos for preview scroll
           event.key == "j" and :ctrl in event.modifiers ->
             {:msg, :preview_scroll_down}
 
@@ -467,7 +583,10 @@ defmodule Egghead.TUI.App do
 
           true ->
             case event.char do
-              "/" -> {:msg, :enter_command}
+              "/" when state.query == "" -> {:msg, :enter_command}
+              # Ignore "[" — orphaned CSI introducer from split escape sequences
+              # (e.g. ESC arrives alone via timeout, then [B arrives as two chars)
+              "[" -> :ignore
               c when is_binary(c) and c != "" -> {:msg, {:char, c}}
               _ -> :ignore
             end
@@ -491,6 +610,7 @@ defmodule Egghead.TUI.App do
 
       _ ->
         case event.char do
+          "[" -> :ignore
           c when is_binary(c) and c != "" -> {:msg, {:command_char, c}}
           _ -> :ignore
         end
@@ -501,10 +621,11 @@ defmodule Egghead.TUI.App do
 
   defp search(state, query) do
     results = filter_and_sort(state.all_records, state.show_all_classes, query)
-    preview = load_preview(results, 0)
 
-    {%{state | query: query, results: results, selected: 0, scroll_offset: 0, preview: preview},
-     []}
+    {set_preview(
+       %{state | query: query, results: results, selected: 0, scroll_offset: 0},
+       load_preview(results, 0)
+     ), []}
   end
 
   defp filter_and_sort(records, show_all, query) do
@@ -519,8 +640,8 @@ defmodule Egghead.TUI.App do
         q = String.downcase(query)
 
         Enum.filter(rs, fn r ->
-          String.contains?(String.downcase(r.id), q) or
-            (r.title && String.contains?(String.downcase(r.title), q)) or
+          String.contains?(String.downcase(r.id), q) ||
+            (r.title && String.contains?(String.downcase(r.title), q)) ||
             Enum.any?(r.tags || [], &String.contains?(String.downcase(&1), q))
         end)
       end
@@ -543,20 +664,50 @@ defmodule Egghead.TUI.App do
     end
   end
 
+  # Set preview and compute navigable links (forward + backlinks).
+  # Resets link_index and preview_scroll for a clean slate.
+  defp set_preview(state, preview) do
+    links = collect_preview_links(preview)
+    %{state | preview: preview, preview_scroll: 0, link_index: nil, preview_links: links}
+  end
+
+  defp collect_preview_links(nil), do: []
+
+  defp collect_preview_links(record) do
+    forward = Enum.map(record.links || [], fn id -> {id, id, :forward} end)
+
+    backlinks =
+      try do
+        Egghead.find_backlinks(record.id)
+        |> Enum.map(fn r -> {r.id, r.title || r.id, :backlink} end)
+      catch
+        _, _ -> []
+      end
+
+    forward_ids = MapSet.new(record.links || [])
+
+    filtered_back =
+      Enum.reject(backlinks, fn {id, _, _} ->
+        id == record.id || MapSet.member?(forward_ids, id)
+      end)
+
+    (forward ++ filtered_back) |> Enum.uniq_by(fn {id, _, _} -> id end)
+  end
+
   # --- Commands ---
 
   @commands [
-    {"quit", "Exit the TUI", "q"},
-    {"help", "Show keybindings & commands", "h"},
-    {"new", "Create a new record", "n"},
-    {"chat", "Enter chat mode", "c"},
-    {"system", "Agent diagnostics", "s"},
-    {"debug", "Dump buffer to /tmp/egghead_render.txt", ""}
+    {"quit", "Exit the TUI"},
+    {"help", "Show keybindings & commands"},
+    {"new", "Create a new record"},
+    {"chat", "Enter chat mode"},
+    {"system", "Agent diagnostics"},
+    {"debug", "Dump buffer to /tmp/egghead_render.txt"}
   ]
 
   defp filtered_commands(input) do
     q = String.downcase(input)
-    Enum.filter(@commands, fn {name, _, _} -> String.starts_with?(name, q) end)
+    Enum.filter(@commands, fn {name, _} -> String.starts_with?(name, q) end)
   end
 
   defp execute_command(state) do
@@ -566,24 +717,25 @@ defmodule Egghead.TUI.App do
     state = %{state | command_mode: false, command_input: ""}
 
     case selected do
-      {"quit", _, _} ->
+      {"quit", _} ->
+        TermUI.Runtime.shutdown(self())
         {state, [:quit]}
 
-      {"debug", _, _} ->
+      {"debug", _} ->
         Egghead.TUI.TestHelpers.dump_live_buffer()
         {state, []}
 
-      {"help", _, _} ->
-        {%{state | preview: help_record(), preview_scroll: 0}, []}
+      {"help", _} ->
+        {set_preview(state, help_record()), []}
 
-      {"new", _, _} ->
+      {"new", _} ->
         create_and_edit_record(state)
 
-      {"chat", _, _} ->
+      {"chat", _} ->
         # Placeholder — chat mode not yet implemented
         {state, []}
 
-      {"system", _, _} ->
+      {"system", _} ->
         # Placeholder — system mode not yet implemented
         {state, []}
 
@@ -600,11 +752,14 @@ defmodule Egghead.TUI.App do
       # Keybindings
 
       - **↑/↓** — Navigate record list
+      - **Enter** — Open selected record in $EDITOR (or follow link)
+      - **Tab** — Cycle through links in preview
+      - **Escape** — Deselect link
+      - **Backspace** — Navigate back (when search is empty)
+      - **Ctrl+F** — Toggle durable-only / all record classes
       - **Ctrl+N/Ctrl+P** — Scroll preview down/up
       - **Ctrl+J/Ctrl+K** — Scroll preview down/up
       - **PageDown/PageUp** — Scroll preview down/up
-      - **Enter** — Open selected record in $EDITOR
-      - **Tab** — Toggle durable-only / all record classes
       - **/** — Enter command mode
       - **Ctrl+Q** — Quit
 
@@ -617,9 +772,12 @@ defmodule Egghead.TUI.App do
       - **/system** — Agent diagnostics (coming soon)
       - **/debug** — Dump render buffer to /tmp/egghead_render.txt
 
-      # Search
+      # Graph Navigation
 
-      Type to instantly filter records by id, title, or tags.
+      Use **Tab** to highlight links in the preview. Press **Enter** to
+      follow a link — the preview updates to show that record. Press
+      **Backspace** to go back. Links and backlinks are shown at the
+      bottom of the preview.
       """,
       tags: [],
       links: [],

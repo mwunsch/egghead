@@ -234,20 +234,20 @@ defmodule Egghead.TUI.AppTest do
   end
 
   describe "filter toggle" do
-    test "tab toggles between durable-only and all" do
+    test "Ctrl+F toggles between durable-only and all" do
       runtime = start_headless()
 
       state = get_app_state(runtime)
       assert state.show_all_classes == false
       durable_count = length(state.results)
 
-      send_key(runtime, :tab)
+      send_key(runtime, "f", modifiers: [:ctrl])
       state = get_app_state(runtime)
       assert state.show_all_classes == true
       all_count = length(state.results)
       assert all_count >= durable_count
 
-      send_key(runtime, :tab)
+      send_key(runtime, "f", modifiers: [:ctrl])
       state = get_app_state(runtime)
       assert state.show_all_classes == false
 
@@ -372,6 +372,89 @@ defmodule Egghead.TUI.AppTest do
       assert state.preview != nil
       assert state.preview.id == "help"
       assert state.preview.body =~ "Keybindings"
+
+      Runtime.shutdown(runtime)
+    end
+  end
+
+  describe "link navigation" do
+    test "tab cycles link_index through preview_links" do
+      runtime = start_headless()
+
+      state = get_app_state(runtime)
+      assert state.link_index == nil
+
+      # Only test if the first record has links
+      if state.preview_links != [] do
+        send_key(runtime, :tab)
+        state = get_app_state(runtime)
+        assert state.link_index == 0
+
+        send_key(runtime, :tab)
+        state = get_app_state(runtime)
+        assert state.link_index == 1 or length(state.preview_links) == 1
+      end
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "escape deselects link" do
+      runtime = start_headless()
+
+      state = get_app_state(runtime)
+
+      if state.preview_links != [] do
+        send_key(runtime, :tab)
+        state = get_app_state(runtime)
+        assert state.link_index == 0
+
+        send_key(runtime, :escape)
+        state = get_app_state(runtime)
+        assert state.link_index == nil
+      end
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "follow_link navigates to linked record and pushes history" do
+      runtime = start_headless()
+
+      state = get_app_state(runtime)
+
+      if state.preview_links != [] do
+        original_id = state.preview.id
+
+        send_key(runtime, :tab)
+        send_key(runtime, :enter)
+
+        state = get_app_state(runtime)
+        # Should have navigated — preview changed, history has original
+        assert state.nav_history == [original_id]
+        assert state.link_index == nil
+      end
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "nav_back returns to previous preview" do
+      runtime = start_headless()
+
+      state = get_app_state(runtime)
+
+      if state.preview_links != [] do
+        original_id = state.preview.id
+
+        # Navigate forward
+        send_key(runtime, :tab)
+        send_key(runtime, :enter)
+
+        # Navigate back
+        send_key(runtime, :backspace)
+
+        state = get_app_state(runtime)
+        assert state.preview.id == original_id
+        assert state.nav_history == []
+      end
 
       Runtime.shutdown(runtime)
     end

@@ -152,6 +152,11 @@ defmodule Egghead do
     # Register cleanup for abnormal exits (Ctrl+C with +Bd, SIGTERM, etc.)
     System.at_exit(fn _status -> reset_terminal() end)
 
+    # Disable flow control so Ctrl+Q reaches the app (not swallowed as XON).
+    # Must use :nouse_stdio — System.cmd stty fails because it pipes stdin.
+    # OTP 28's shell.start_interactive may not disable ixon.
+    ensure_stty_raw()
+
     tui_loop()
   end
 
@@ -184,6 +189,8 @@ defmodule Egghead do
         # Save restore state for the next Runtime init
         Application.put_env(:egghead, :tui_restore, restore)
 
+        ensure_stty_raw()
+
         # Restart the TUI
         tui_loop()
 
@@ -192,6 +199,22 @@ defmodule Egghead do
     end
   end
 
+  # Set stty raw mode via :nouse_stdio port (real terminal on fd 0).
+  # TermUI's System.cmd stty fallback doesn't work (piped stdin).
+  defp ensure_stty_raw do
+    sh = System.find_executable("sh") || "/bin/sh"
+
+    port =
+      Port.open({:spawn_executable, sh}, [
+        :nouse_stdio,
+        :exit_status,
+        args: ["-c", "stty raw -echo -isig -ixon min 1 time 0"]
+      ])
+
+    receive do
+      {^port, {:exit_status, _}} -> :ok
+    end
+  end
 
   defp reset_terminal do
     # Disable all mouse tracking modes

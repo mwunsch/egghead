@@ -12,8 +12,8 @@ defmodule Egghead.TUI.Markdown do
   Renders a markdown string to a list of `{text, style}` tuples,
   one per display line, word-wrapped to `width`.
   """
-  # Default style for unstyled text — must be explicit (not nil/default)
-  # because cells with fg=:default may be invisible on alternate screens.
+  # Default style for unstyled text — explicit fg so text is visible.
+  # bg is nil → Cell :default → terminal's native background.
   @text_style Style.new(fg: :white)
 
   @spec render(String.t(), pos_integer()) :: [{String.t(), Style.t()}]

@@ -22,6 +22,11 @@ defmodule Egghead.TUI.State do
     # Agents
     agents: [],
 
+    # Link navigation
+    link_index: nil,
+    nav_history: [],
+    preview_links: [],
+
     # Command autocomplete
     command_mode: false,
     command_input: "",

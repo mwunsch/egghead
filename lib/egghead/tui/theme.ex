@@ -2,12 +2,32 @@ defmodule Egghead.TUI.Theme do
   @moduledoc """
   Styles for the Egghead TUI. Uses TermUI.Renderer.Style with {r,g,b} tuples.
 
-  Most styles use nil bg (→ Cell :default → terminal's native background).
-  Only chrome bars and selection set explicit bg. This avoids banding from
-  ANSI :black (#000000) mismatching the terminal theme's background color.
+  Currently the active theme is "System" — most styles use nil bg
+  (→ Cell :default → terminal's native background) so the TUI inherits
+  the user's terminal theme. Only chrome bars and selection set explicit
+  bg. See `records/design/tui-theme-system.md` for the full theme system
+  design (Mocha, Latte palettes that own every cell).
   """
 
   alias TermUI.Renderer.Style
+
+  @doc """
+  System theme constructor — formalizes the current default colors.
+  Future: switch the helper functions below to read from the active theme.
+  """
+  def system do
+    %{
+      name: "System",
+      bg: nil,
+      fg: nil,
+      fg_muted: :bright_black,
+      fg_accent: :cyan,
+      chrome_bg: :bright_black,
+      chrome_fg: :white,
+      sel_bg: :cyan,
+      sel_fg: :black
+    }
+  end
 
   # --- Styles ---
 
@@ -20,6 +40,7 @@ defmodule Egghead.TUI.Theme do
   def separator, do: Style.new(fg: :bright_black)
   def status_bar_line, do: Style.new(fg: :white, bg: :bright_black)
   def link, do: Style.new(fg: :cyan, attrs: [:underline])
+  def accent, do: Style.new(fg: :cyan)
 
   # Markdown styles
   def md_h1, do: Style.new(fg: :cyan, attrs: [:bold])

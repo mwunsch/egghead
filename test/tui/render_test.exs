@@ -234,6 +234,61 @@ defmodule Egghead.TUI.RenderTest do
     end
   end
 
+  describe "phantom create row" do
+    test "render_list shows phantom row when query has no exact match" do
+      # Empty results list ensures the phantom has room to render at the top
+      state = %State{
+        width: 80,
+        height: 24,
+        all_records: [],
+        results: [],
+        agents: [],
+        preview: nil,
+        query: "totally-new-record"
+      }
+
+      tree = App.view(state)
+      buf = TestHelpers.render_to_test_buffer(tree, 24, 80, :"phantom_#{:rand.uniform(999_999)}")
+
+      found =
+        Enum.any?(1..24, fn row ->
+          TestHelpers.row_text(buf, row) =~ ~r/\+ Create "totally-new-record"/
+        end)
+
+      assert found
+    end
+
+    test "no phantom row when query is empty" do
+      all_records = Egghead.list_records()
+
+      durable =
+        Enum.filter(all_records, &(&1.class == :durable))
+        |> Enum.sort_by(& &1.updated, :desc)
+
+      state = %State{
+        width: 80,
+        height: 24,
+        all_records: all_records,
+        results: durable,
+        agents: [],
+        preview: nil,
+        query: ""
+      }
+
+      tree = App.view(state)
+
+      buf =
+        TestHelpers.render_to_test_buffer(tree, 24, 80, :"no_phantom_#{:rand.uniform(999_999)}")
+
+      not_found =
+        Enum.all?(1..24, fn row ->
+          not (TestHelpers.row_text(buf, row) =~ "+ Create")
+        end)
+
+      assert not_found
+    end
+  end
+
   defp cmd_state(input, selected \\ 0) do
     all_records = Egghead.list_records()
 

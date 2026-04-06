@@ -459,4 +459,84 @@ defmodule Egghead.TUI.AppTest do
       Runtime.shutdown(runtime)
     end
   end
+
+  describe "search-as-create (phantom row)" do
+    test "no phantom for empty query" do
+      runtime = start_headless()
+      state = get_app_state(runtime)
+      assert state.query == ""
+
+      # Selection should not be at phantom (no phantom present)
+      total = length(state.results)
+      assert state.selected < total or total == 0
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "phantom appears when query has no exact match and is valid" do
+      runtime = start_headless()
+
+      # Type a unique id that won't match anything
+      for char <- String.graphemes("nonexistent-test-record") do
+        send_char(runtime, char)
+      end
+
+      state = get_app_state(runtime)
+      assert state.query == "nonexistent-test-record"
+
+      # Phantom row sits at index length(results)
+      phantom_idx = length(state.results)
+
+      # Move down to reach the phantom
+      Enum.each(0..phantom_idx, fn _ -> send_key(runtime, :down) end)
+
+      state = get_app_state(runtime)
+      assert state.selected == phantom_idx
+
+      # Preview should be the phantom hint, not a real record
+      assert state.preview != nil
+      assert state.preview.id == "nonexistent-test-record"
+      assert state.preview.title == "New Record"
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "no phantom when query is empty after typing then backspacing" do
+      runtime = start_headless()
+
+      send_char(runtime, "x")
+      send_key(runtime, :backspace)
+
+      state = get_app_state(runtime)
+      assert state.query == ""
+
+      # Phantom should not exist; preview should be a real record
+      assert state.preview.id != ""
+      assert state.preview.title != "New Record"
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "no phantom for invalid id chars" do
+      runtime = start_headless()
+
+      for char <- String.graphemes("hello world") do
+        send_char(runtime, char)
+      end
+
+      state = get_app_state(runtime)
+      assert state.query == "hello world"
+
+      # Move down past results — phantom should NOT be reachable
+      total_before = length(state.results)
+      Enum.each(0..(total_before + 5), fn _ -> send_key(runtime, :down) end)
+
+      state = get_app_state(runtime)
+      # selected capped at length(results) - 1, never reaches a phantom
+      max_valid = max(0, length(state.results) - 1)
+      assert state.selected == max_valid
+
+      Runtime.shutdown(runtime)
+    end
+  end
 end

@@ -87,7 +87,7 @@ defmodule Egghead.TUI.App do
       show_all_classes: show_all
     }
 
-    set_preview(base, load_preview(results, selected))
+    set_preview(base, preview_for_selection(base, selected))
   end
 
   # --- handle_info for PubSub and async messages ---
@@ -154,21 +154,17 @@ defmodule Egghead.TUI.App do
       :move_up ->
         new_sel = max(0, state.selected - 1)
         scroll = adjust_scroll(new_sel, state.scroll_offset, list_height(state))
+        new_state = %{state | selected: new_sel, scroll_offset: scroll}
 
-        {set_preview(
-           %{state | selected: new_sel, scroll_offset: scroll},
-           load_preview(state.results, new_sel)
-         ), []}
+        {set_preview(new_state, preview_for_selection(new_state, new_sel)), []}
 
       :move_down ->
-        max_sel = max(0, length(state.results) - 1)
+        max_sel = max(0, list_total(state) - 1)
         new_sel = min(max_sel, state.selected + 1)
         scroll = adjust_scroll(new_sel, state.scroll_offset, list_height(state))
+        new_state = %{state | selected: new_sel, scroll_offset: scroll}
 
-        {set_preview(
-           %{state | selected: new_sel, scroll_offset: scroll},
-           load_preview(state.results, new_sel)
-         ), []}
+        {set_preview(new_state, preview_for_selection(new_state, new_sel)), []}
 
       :preview_scroll_down ->
         {%{state | preview_scroll: state.preview_scroll + 5}, []}
@@ -180,13 +176,22 @@ defmodule Egghead.TUI.App do
         show_all = not state.show_all_classes
         results = filter_and_sort(state.all_records, show_all, state.query)
 
-        {set_preview(
-           %{state | show_all_classes: show_all, results: results, selected: 0, scroll_offset: 0},
-           load_preview(results, 0)
-         ), []}
+        new_state = %{
+          state
+          | show_all_classes: show_all,
+            results: results,
+            selected: 0,
+            scroll_offset: 0
+        }
+
+        {set_preview(new_state, preview_for_selection(new_state, 0)), []}
 
       :open_editor ->
-        open_in_editor(state)
+        if state.selected == phantom_index(state) do
+          create_and_open(state, creation_target(state))
+        else
+          open_in_editor(state)
+        end
 
       # Link navigation
       :link_next ->
@@ -379,13 +384,37 @@ defmodule Egghead.TUI.App do
       |> Enum.take(list_h)
       |> Enum.with_index(state.scroll_offset)
 
-    rows =
+    record_rows =
       Enum.map(visible, fn {record, idx} ->
         render_list_row(record, idx == state.selected, w)
       end)
 
+    # Phantom "Create" row appears when query has no exact match
+    phantom_rows =
+      case creation_target(state) do
+        nil ->
+          []
+
+        id ->
+          phantom_idx = length(state.results)
+
+          if length(record_rows) < list_h do
+            [render_phantom_row(id, phantom_idx == state.selected, w)]
+          else
+            []
+          end
+      end
+
+    rows = record_rows ++ phantom_rows
     padding = List.duplicate(text("", nil), max(0, list_h - length(rows)))
     rows ++ padding
+  end
+
+  defp render_phantom_row(id, selected, w) do
+    content = " + Create \"#{id}\""
+    pad = max(0, w - String.length(content))
+    style = if selected, do: Theme.selected(), else: Theme.accent()
+    text(content <> String.duplicate(" ", pad), style)
   end
 
   defp render_list_row(record, selected, w) do
@@ -523,6 +552,9 @@ defmodule Egghead.TUI.App do
           back = if state.nav_history != [], do: " │ ⌫ back", else: ""
           " LINK │ tab cycle │ ⏎ follow │ esc deselect#{back} │ ^q quit"
 
+        state.selected == phantom_index(state) ->
+          " NEW │ ⏎ create │ ↑ back to results │ ^q quit"
+
         true ->
           " REC │ ↑↓ nav │ ^n/^p scroll │ ⏎ $EDITOR │ / cmd │ tab links │ ^f filter │ ^q quit"
       end
@@ -621,11 +653,9 @@ defmodule Egghead.TUI.App do
 
   defp search(state, query) do
     results = filter_and_sort(state.all_records, state.show_all_classes, query)
+    new_state = %{state | query: query, results: results, selected: 0, scroll_offset: 0}
 
-    {set_preview(
-       %{state | query: query, results: results, selected: 0, scroll_offset: 0},
-       load_preview(results, 0)
-     ), []}
+    {set_preview(new_state, preview_for_selection(new_state, 0)), []}
   end
 
   defp filter_and_sort(records, show_all, query) do
@@ -662,6 +692,67 @@ defmodule Egghead.TUI.App do
           _ -> record
         end
     end
+  end
+
+  # Returns the record to preview for the given selection index.
+  # When the phantom create row is selected, returns a synthetic Record
+  # with an instructional body. Otherwise delegates to load_preview.
+  defp preview_for_selection(state, idx) do
+    cond do
+      idx == phantom_index(state) ->
+        id = creation_target(state)
+
+        %Egghead.Record{
+          id: id,
+          title: "New Record",
+          body: """
+          ## Create new record
+
+          Press **Enter** to create `#{id}` and open in $EDITOR.
+
+          The query becomes the new record's id. Slashes create
+          subdirectories: `agents/scout` → `records/agents/scout.md`.
+          """,
+          class: :durable,
+          tags: [],
+          links: []
+        }
+
+      true ->
+        load_preview(state.results, idx)
+    end
+  end
+
+  # --- Search-as-create (Notational Velocity pattern) ---
+
+  # When the query has no exact id match and is a valid id, return it
+  # as the candidate for record creation. The phantom row + preview hint
+  # both rely on this. Returns nil otherwise (no phantom shown).
+  defp creation_target(state) do
+    q = String.trim(state.query)
+
+    cond do
+      q == "" -> nil
+      Enum.any?(state.results, &(&1.id == q)) -> nil
+      not valid_id?(q) -> nil
+      true -> q
+    end
+  end
+
+  # Valid record ids: start with alnum, then alnum/dash/underscore/slash.
+  # Slashes allow path-style ids like "agents/scout".
+  defp valid_id?(id) do
+    String.match?(id, ~r{^[a-zA-Z0-9][a-zA-Z0-9_/-]*$})
+  end
+
+  # Total list length including phantom create row when present
+  defp list_total(state) do
+    length(state.results) + if creation_target(state), do: 1, else: 0
+  end
+
+  # Index of the phantom create row (one past the end of results), or nil
+  defp phantom_index(state) do
+    if creation_target(state), do: length(state.results), else: nil
   end
 
   # Set preview and compute navigable links (forward + backlinks).
@@ -794,6 +885,12 @@ defmodule Egghead.TUI.App do
         _ -> "new-record-#{System.system_time(:second)}"
       end
 
+    create_and_open(state, id)
+  end
+
+  # Create a record file at the given id (if missing) and open in $EDITOR.
+  # Used by both the /new command and the search-as-create phantom row.
+  defp create_and_open(state, id) do
     path = Path.join([File.cwd!(), "records", "#{id}.md"])
 
     unless File.exists?(path) do

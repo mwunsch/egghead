@@ -584,13 +584,16 @@ defmodule Egghead.TUI.App do
     # 1) chat header (1)
     # 2) presence bar (1)
     # 3) transcript (flex, scrolls)
-    # 4) input box border (1) - ── separator ──
-    # 5) input box (1+, capped at 5 by extras)
-    # 6) status bar (1)
-    chrome = 4 + input_box_height(state)
+    # 4) command dropdown (only when command_mode, replaces some transcript)
+    # 5) input box border (1)
+    # 6) input box (1+, capped at 5 by extras)
+    # 7) status bar (1)
+    dropdown_h = if state.command_mode, do: chat_dropdown_height(state), else: 0
+    chrome = 4 + dropdown_h + input_box_height(state)
     transcript_h = max(1, h - chrome)
 
     transcript = render_chat_transcript(state, w, transcript_h)
+    dropdown = if state.command_mode, do: render_chat_dropdown(state, w, dropdown_h), else: []
     input_lines = render_chat_input_box(state, w)
 
     sep_line = text(String.duplicate("─", w), Theme.separator())
@@ -599,11 +602,40 @@ defmodule Egghead.TUI.App do
       [render_chat_header(state, w)] ++
         [render_chat_presence(state, w)] ++
         transcript ++
+        dropdown ++
         [sep_line] ++
         input_lines ++
         [render_chat_status(state, w)]
 
     stack(:vertical, lines)
+  end
+
+  # Number of rows the chat-mode command dropdown should occupy.
+  # We size to the number of matches (capped) so the dropdown is compact.
+  defp chat_dropdown_height(state) do
+    cmds = filtered_commands(state.command_input, state.mode)
+    max(1, min(length(cmds), 6))
+  end
+
+  defp render_chat_dropdown(state, w, h) do
+    cmds = filtered_commands(state.command_input, state.mode)
+
+    rows =
+      cmds
+      |> Enum.take(h)
+      |> Enum.with_index()
+      |> Enum.map(fn {{name, desc}, idx} ->
+        selected = idx == state.command_selected
+        content = " /#{name}  #{desc}"
+        clipped = String.slice(content, 0, w)
+        pad = max(0, w - String.length(clipped))
+        style = if selected, do: Theme.selected(), else: Theme.normal()
+        text(clipped <> String.duplicate(" ", pad), style)
+      end)
+
+    # Pad to fixed dropdown height to keep layout stable
+    padding = List.duplicate(text(String.duplicate(" ", w), nil), max(0, h - length(rows)))
+    rows ++ padding
   end
 
   defp render_chat_header(state, w) do
@@ -661,40 +693,47 @@ defmodule Egghead.TUI.App do
   end
 
   defp render_chat_input_box(state, w) do
-    # Multi-line input: extras are previous lines (in order), chat_input
-    # is the current line being edited.
-    all_lines = state.chat_input_extra_lines ++ [state.chat_input]
+    if state.command_mode do
+      content = " /" <> state.command_input <> "▌"
+      pad = max(0, w - String.length(content))
+      [text(content <> String.duplicate(" ", pad), Theme.prompt())]
+    else
+      # Multi-line input: extras are previous lines (in order), chat_input
+      # is the current line being edited.
+      all_lines = state.chat_input_extra_lines ++ [state.chat_input]
 
-    Enum.with_index(all_lines)
-    |> Enum.map(fn {line, idx} ->
-      prefix = if idx == 0, do: " ❯ ", else: "   "
-      cursor = if idx == length(all_lines) - 1, do: "▌", else: ""
+      Enum.with_index(all_lines)
+      |> Enum.map(fn {line, idx} ->
+        prefix = if idx == 0, do: " ❯ ", else: "   "
+        cursor = if idx == length(all_lines) - 1, do: "▌", else: ""
 
-      ghost =
-        if idx == length(all_lines) - 1 and is_binary(state.chat_ghost),
-          do: state.chat_ghost,
-          else: ""
+        ghost =
+          if idx == length(all_lines) - 1 and is_binary(state.chat_ghost),
+            do: state.chat_ghost,
+            else: ""
 
-      base = prefix <> line <> cursor <> ghost
-      base = String.slice(base, 0, w)
-      pad = max(0, w - String.length(base))
-      text(base <> String.duplicate(" ", pad), Theme.prompt())
-    end)
+        base = prefix <> line <> cursor <> ghost
+        base = String.slice(base, 0, w)
+        pad = max(0, w - String.length(base))
+        text(base <> String.duplicate(" ", pad), Theme.prompt())
+      end)
+    end
   end
 
   defp render_chat_status(state, w) do
-    left = " CHAT"
+    line =
+      if state.command_mode do
+        " CMD │ ↑↓ select │ ⏎ execute │ esc cancel"
+      else
+        budget =
+          case state.chat_budget do
+            %{remaining: r, total: t} -> " │ budget #{r}/#{t}"
+            _ -> ""
+          end
 
-    cmds =
-      "│ ⏎ send │ ^j newline │ esc records │ /save │ /handoff │ ^q quit"
-
-    budget =
-      case state.chat_budget do
-        %{remaining: r, total: t} -> " │ budget #{r}/#{t}"
-        _ -> ""
+        " CHAT │ ⏎ send │ ^j newline │ esc records │ / cmd │ ^q quit" <> budget
       end
 
-    line = "#{left} #{cmds}#{budget}"
     line = String.slice(line, 0, w)
     pad = max(0, w - String.length(line))
     text(line <> String.duplicate(" ", pad), Theme.status_bar_line())
@@ -1670,7 +1709,12 @@ defmodule Egghead.TUI.App do
             chat_scroll: 0,
             chat_agents: agents,
             chat_budget: nil,
-            chat_ghost: nil
+            chat_ghost: nil,
+            # Always start chat mode with command palette closed
+            command_mode: false,
+            command_input: "",
+            command_selected: 0,
+            command_arg: ""
         }
         |> recompute_chat_total_lines()
 
@@ -1699,7 +1743,13 @@ defmodule Egghead.TUI.App do
         chat_total_lines: 0,
         chat_agents: [],
         chat_budget: nil,
-        chat_ghost: nil
+        chat_ghost: nil,
+        # Drop any in-flight command mode so we don't return to records
+        # with a stale command palette open.
+        command_mode: false,
+        command_input: "",
+        command_selected: 0,
+        command_arg: ""
     }
 
     {new_state, []}

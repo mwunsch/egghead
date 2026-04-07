@@ -358,30 +358,47 @@ defmodule Egghead.Chat.Coordinator do
       agents: room_state.agents
     }
 
-    # Initialize streaming buffer for in-progress transcript updates
+    # Initialize streaming buffer for in-progress transcript updates.
+    # We hold tokens locally and only emit downstream events on paragraph
+    # boundaries (\n\n) — no per-token streaming, no time-based flushing.
+    # This keeps the chat display readable: complete paragraphs appear
+    # one at a time instead of every individual token.
     Process.put({:streaming_buffer, agent_id}, "")
-    Process.put({:last_flush, agent_id}, System.monotonic_time(:millisecond))
 
     on_chunk = fn
       {:text, delta} ->
-        # Broadcast for live rendering (RoomLogger)
-        Phoenix.PubSub.broadcast(
-          @pubsub,
-          Room.topic(room_id),
-          {:agent_streaming, room_id, agent_id, delta}
-        )
-
-        # Accumulate and periodically flush to Room's in-progress transcript
         current = Process.get({:streaming_buffer, agent_id}, "")
-        updated = current <> delta
-        Process.put({:streaming_buffer, agent_id}, updated)
+        combined = current <> delta
 
-        last_flush = Process.get({:last_flush, agent_id}, 0)
-        now = System.monotonic_time(:millisecond)
+        case String.split(combined, "\n\n") do
+          [single] ->
+            # No paragraph break yet — keep buffering silently, no broadcast
+            Process.put({:streaming_buffer, agent_id}, single)
 
-        if String.contains?(delta, "\n") or (now - last_flush > 500 and updated != "") do
-          Room.streaming_update(room_id, agent_id, updated)
-          Process.put({:last_flush, agent_id}, now)
+          parts ->
+            # Everything before the last segment is a finished paragraph.
+            # Broadcast the finished portion as one delta and keep the
+            # partial last segment in the buffer for next time.
+            {complete_parts, [partial]} = Enum.split(parts, length(parts) - 1)
+            to_emit = Enum.join(complete_parts, "\n\n") <> "\n\n"
+
+            Phoenix.PubSub.broadcast(
+              @pubsub,
+              Room.topic(room_id),
+              {:agent_streaming, room_id, agent_id, to_emit}
+            )
+
+            Process.put({:streaming_buffer, agent_id}, partial)
+
+            # Also update Room's in-progress transcript with the
+            # cumulative text (complete + partial). Other watchers
+            # (e.g. egghead_chat MCP tool) read from there.
+            cumulative =
+              if partial == "",
+                do: Enum.join(complete_parts, "\n\n"),
+                else: Enum.join(complete_parts, "\n\n") <> "\n\n" <> partial
+
+            Room.streaming_update(room_id, agent_id, cumulative)
         end
 
       {:block_done, %{"type" => "tool_use", "name" => name} = block} ->

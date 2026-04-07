@@ -16,10 +16,18 @@ defmodule Egghead.TUI.Markdown do
   # bg is nil → Cell :default → terminal's native background.
   @text_style Style.new(fg: :white)
 
+  # Earmark options enabled:
+  # - wikilinks: parses [[target]] / [[target|display]] as marked anchors
+  # - gfm_tables: parses pipe tables (| col | col | with --- separator)
+  # - footnotes: parses [^id] references and [^id]: definitions
+  # - sub_sup: parses ~sub~ and ^sup^ syntax
+  # gfm: true is the default; pure_links: true is the default.
+  @earmark_opts [wikilinks: true, gfm_tables: true, footnotes: true, sub_sup: true]
+
   @spec render(String.t(), pos_integer()) :: [{String.t(), Style.t()}]
   def render(markdown, width) when is_binary(markdown) and width > 0 do
     lines =
-      case Earmark.as_ast!(markdown) do
+      case Earmark.as_ast!(markdown, @earmark_opts) do
         ast when is_list(ast) ->
           Enum.flat_map(ast, &render_node(&1, width))
 
@@ -36,6 +44,24 @@ defmodule Egghead.TUI.Markdown do
     _ ->
       markdown |> String.split("\n") |> Enum.map(&{&1, @text_style})
   end
+
+  @doc """
+  Find the line index where a given wikilink target appears in rendered lines.
+
+  Searches for `[[target]]` or `[[target|...]]` literally in each line.
+  Returns the first matching line index, or nil if not found.
+  """
+  @spec find_wikilink_line([{String.t(), Style.t()}], String.t()) :: integer() | nil
+  def find_wikilink_line(lines, target) when is_binary(target) do
+    pattern_exact = "[[#{target}]]"
+    pattern_pipe = "[[#{target}|"
+
+    Enum.find_index(lines, fn {text, _style} ->
+      String.contains?(text, pattern_exact) or String.contains?(text, pattern_pipe)
+    end)
+  end
+
+  def find_wikilink_line(_, _), do: nil
 
   # --- AST node rendering ---
 
@@ -97,14 +123,16 @@ defmodule Egghead.TUI.Markdown do
       Enum.flat_map(items, fn
         {"li", _, children, _} ->
           t = extract_text(children)
-          lines = word_wrap(t, max(1, width - 4))
 
-          case lines do
-            [first | rest] ->
-              [{"  · " <> first, nil} | Enum.map(rest, &{"    " <> &1, nil})]
+          case parse_task_marker(t) do
+            {:task, :done, rest} ->
+              render_task_li("☑", rest, width, Theme.muted())
 
-            [] ->
-              [{"  ·", nil}]
+            {:task, :todo, rest} ->
+              render_task_li("☐", rest, width, Theme.normal())
+
+            :no_task ->
+              render_bullet_li(t, width)
           end
 
         _ ->
@@ -152,6 +180,21 @@ defmodule Egghead.TUI.Markdown do
     [{"  " <> String.duplicate("─", max(1, width - 4)), Theme.separator()}, {"", nil}]
   end
 
+  defp render_node({"table", _, children, _}, width) do
+    Egghead.TUI.Markdown.Table.render(children, width)
+  end
+
+  # Footnotes section: <div class="footnotes"><hr/><ol>...</ol></div>
+  defp render_node({"div", attrs, children, _}, width) do
+    case List.keyfind(attrs, "class", 0) do
+      {"class", "footnotes"} ->
+        render_footnotes_section(children, width)
+
+      _ ->
+        Enum.flat_map(children, &render_node(&1, width))
+    end
+  end
+
   # Inline elements that appear at block level (shouldn't happen often)
   defp render_node(text, _width) when is_binary(text) do
     [{text, nil}]
@@ -166,6 +209,110 @@ defmodule Egghead.TUI.Markdown do
 
   defp render_node(_, _width), do: []
 
+  # --- List item helpers ---
+
+  # Task list detection — Earmark doesn't recognize GFM task syntax, so we
+  # detect "[ ] " / "[x] " / "[X] " as the leading text of an <li>.
+  defp parse_task_marker("[ ] " <> rest), do: {:task, :todo, rest}
+  defp parse_task_marker("[x] " <> rest), do: {:task, :done, rest}
+  defp parse_task_marker("[X] " <> rest), do: {:task, :done, rest}
+  defp parse_task_marker(_), do: :no_task
+
+  defp render_task_li(checkbox, text, width, style) do
+    prefix = "  #{checkbox} "
+    lines = word_wrap(text, max(1, width - String.length(prefix)))
+
+    case lines do
+      [first | rest] ->
+        [{prefix <> first, style}] ++
+          Enum.map(rest, fn ln ->
+            {String.duplicate(" ", String.length(prefix)) <> ln, style}
+          end)
+
+      [] ->
+        [{prefix, style}]
+    end
+  end
+
+  defp render_bullet_li(text, width) do
+    lines = word_wrap(text, max(1, width - 4))
+
+    case lines do
+      [first | rest] ->
+        [{"  · " <> first, nil} | Enum.map(rest, &{"    " <> &1, nil})]
+
+      [] ->
+        [{"  ·", nil}]
+    end
+  end
+
+  # --- Footnotes section ---
+
+  defp render_footnotes_section(children, width) do
+    items =
+      children
+      |> Enum.flat_map(fn
+        {"ol", _, lis, _} -> lis
+        _ -> []
+      end)
+
+    header = [
+      {"", nil},
+      {"── Footnotes ──", Theme.separator()},
+      {"", nil}
+    ]
+
+    rendered =
+      items
+      |> Enum.with_index(1)
+      |> Enum.flat_map(fn {{"li", attrs, content, _}, n} ->
+        # Strip the reversefootnote anchor that Earmark prepends
+        content =
+          Enum.reject(content, fn
+            {"a", a, _, _} ->
+              case List.keyfind(a, "class", 0) do
+                {"class", "reversefootnote"} -> true
+                _ -> false
+              end
+
+            _ ->
+              false
+          end)
+
+        id =
+          case List.keyfind(attrs, "id", 0) do
+            {"id", "fn:" <> raw} -> raw
+            _ -> "#{n}"
+          end
+
+        # Render footnote body inline (paragraph children only)
+        body_text =
+          content
+          |> Enum.map_join(" ", fn
+            {"p", _, kids, _} -> extract_text(kids)
+            other -> extract_text([other])
+          end)
+          |> String.trim()
+
+        prefix = "  [#{id}] "
+        wrap_w = max(1, width - String.length(prefix))
+        lines = word_wrap(body_text, wrap_w)
+
+        case lines do
+          [first | rest] ->
+            [{prefix <> first, Theme.muted()}] ++
+              Enum.map(rest, fn ln ->
+                {String.duplicate(" ", String.length(prefix)) <> ln, Theme.muted()}
+              end)
+
+          [] ->
+            [{prefix, Theme.muted()}]
+        end
+      end)
+
+    header ++ rendered ++ [{"", nil}]
+  end
+
   # --- Text extraction (flattens inline markup) ---
 
   defp extract_text(children) when is_list(children) do
@@ -179,10 +326,35 @@ defmodule Egghead.TUI.Markdown do
   defp extract_text_node({"strong", _, children, _}), do: extract_text(children)
   defp extract_text_node({"em", _, children, _}), do: extract_text(children)
   defp extract_text_node({"code", _, children, _}), do: extract_text(children)
+
+  # Wikilink: render as [[target]] or [[target|display]]
+  defp extract_text_node({"a", attrs, children, %{wikilink: true}}) do
+    target = attrs_get(attrs, "href", "")
+    display = extract_text(children)
+    if display == "" or display == target, do: "[[#{target}]]", else: "[[#{target}|#{display}]]"
+  end
+
+  # Footnote reference: render as ^[id]
+  defp extract_text_node({"a", attrs, [id], _meta}) when is_binary(id) do
+    case attrs_get(attrs, "class", "") do
+      "footnote" -> "^[#{id}]"
+      _ -> id
+    end
+  end
+
   defp extract_text_node({"a", _, children, _}), do: extract_text(children)
   defp extract_text_node({"br", _, _, _}), do: "\n"
+  defp extract_text_node({"sub", _, children, _}), do: "_" <> extract_text(children)
+  defp extract_text_node({"sup", _, children, _}), do: "^" <> extract_text(children)
   defp extract_text_node({_tag, _, children, _}), do: extract_text(children)
   defp extract_text_node(_), do: ""
+
+  defp attrs_get(attrs, key, default) do
+    case List.keyfind(attrs, key, 0) do
+      {^key, value} -> value
+      _ -> default
+    end
+  end
 
   # --- Word wrap ---
 

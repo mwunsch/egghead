@@ -167,7 +167,9 @@ defmodule Egghead.TUI.App do
         {set_preview(new_state, preview_for_selection(new_state, new_sel)), []}
 
       :preview_scroll_down ->
-        {%{state | preview_scroll: state.preview_scroll + 5}, []}
+        max_scroll = compute_max_scroll(state)
+        new_scroll = min(state.preview_scroll + 5, max_scroll)
+        {%{state | preview_scroll: new_scroll}, []}
 
       :preview_scroll_up ->
         {%{state | preview_scroll: max(0, state.preview_scroll - 5)}, []}
@@ -211,7 +213,8 @@ defmodule Egghead.TUI.App do
                 i -> rem(i + 1, length(links))
               end
 
-            {%{state | link_index: idx}, []}
+            new_state = %{state | link_index: idx}
+            {scroll_to_link(new_state), []}
         end
 
       :link_deselect ->
@@ -494,6 +497,23 @@ defmodule Egghead.TUI.App do
 
     label = render_preview_label(record.id, scroll_info, w)
 
+    # If a body wikilink is selected, find which line(s) contain it
+    # and highlight them.
+    selected_body_target = selected_body_target(state)
+
+    # Pre-compute scrollbar geometry once per render (not per row).
+    # bar_size: thumb height proportional to viewport/total ratio.
+    # travel: range of valid bar_start positions so the thumb fits in content_h.
+    {bar_start, bar_size} =
+      if total_count > content_h do
+        size = max(1, round(content_h * content_h / total_count))
+        travel = max(0, content_h - size)
+        start = if max_scroll > 0, do: round(scroll / max_scroll * travel), else: 0
+        {start, size}
+      else
+        {0, 0}
+      end
+
     # Render visible lines — each exactly w characters, with scrollbar on right edge
     visible =
       total_lines
@@ -501,20 +521,17 @@ defmodule Egghead.TUI.App do
       |> Enum.take(content_h)
       |> Enum.with_index()
       |> Enum.map(fn {{content, style}, idx} ->
-        is_thumb =
-          if total_count > content_h do
-            bar_start =
-              if max_scroll > 0, do: round(scroll / max_scroll * (content_h - 1)), else: 0
+        is_thumb = bar_size > 0 and idx >= bar_start and idx < bar_start + bar_size
 
-            bar_size = max(1, round(content_h / total_count * content_h))
-            idx >= bar_start and idx < bar_start + bar_size
+        # Highlight line if it contains the selected wikilink
+        style =
+          if selected_body_target && line_contains_wikilink?(content, selected_body_target) do
+            Theme.selected()
           else
-            false
+            style
           end
 
         # Content padded to fixed width, scrollbar as separate styled node.
-        # The diff merges adjacent spans (gap=0) but preserves style groups,
-        # so the scrollbar style is emitted correctly.
         clean = content |> String.replace("\n", " ")
         padded = (" " <> clean) |> String.slice(0, w - 1) |> String.pad_trailing(w - 1)
         scrollbar_char = if is_thumb, do: "▐", else: " "
@@ -539,7 +556,9 @@ defmodule Egghead.TUI.App do
   defp render_links(%{preview_links: []}, _w), do: []
 
   defp render_links(%{preview_links: links, link_index: link_index}, w) do
-    {fwd, back} = Enum.split_with(links, fn {_, _, type} -> type == :forward end)
+    # Body wikilinks are highlighted in the body itself, not in the footer.
+    fwd = Enum.filter(links, fn {_, _, type} -> type == :forward end)
+    back = Enum.filter(links, fn {_, _, type} -> type == :backlink end)
 
     fwd_line = render_link_line("Links", fwd, links, link_index, w)
     back_line = render_link_line("Backlinks", back, links, link_index, w)
@@ -807,16 +826,109 @@ defmodule Egghead.TUI.App do
   end
 
   # Set preview and compute navigable links (forward + backlinks).
-  # Resets link_index and preview_scroll for a clean slate.
+  # Also pre-computes the rendered line count so scroll handlers can
+  # clamp without re-rendering. Resets link_index and preview_scroll.
   defp set_preview(state, preview) do
     links = collect_preview_links(preview)
-    %{state | preview: preview, preview_scroll: 0, link_index: nil, preview_links: links}
+    total = preview_line_count(preview, max(1, state.width - 4))
+
+    %{
+      state
+      | preview: preview,
+        preview_scroll: 0,
+        link_index: nil,
+        preview_links: links,
+        preview_total_lines: total
+    }
+  end
+
+  defp preview_line_count(nil, _w), do: 0
+
+  defp preview_line_count(record, w) do
+    body = record.body || ""
+    body |> Egghead.TUI.Markdown.render(w) |> length()
+  end
+
+  # When a body wikilink is selected, find its line in the rendered preview
+  # and adjust preview_scroll to bring it into the viewport.
+  defp scroll_to_link(state) do
+    with %{link_index: idx} when not is_nil(idx) <- state,
+         {target, _, :body} <- Enum.at(state.preview_links, idx),
+         %{preview: record} when not is_nil(record) <- state,
+         body when is_binary(body) <- record.body,
+         lines <- Egghead.TUI.Markdown.render(body, max(1, state.width - 4)),
+         line_num when not is_nil(line_num) <-
+           Egghead.TUI.Markdown.find_wikilink_line(lines, target) do
+      content_h = compute_content_h(state)
+      max_scroll = compute_max_scroll(state)
+
+      new_scroll =
+        cond do
+          line_num < state.preview_scroll ->
+            line_num
+
+          line_num >= state.preview_scroll + content_h ->
+            min(max_scroll, line_num - div(content_h, 2))
+
+          true ->
+            state.preview_scroll
+        end
+
+      %{state | preview_scroll: new_scroll}
+    else
+      _ -> state
+    end
+  end
+
+  # Returns the target id of the currently-selected body wikilink, or nil
+  defp selected_body_target(state) do
+    case Enum.at(state.preview_links || [], state.link_index || -1) do
+      {target, _, :body} -> target
+      _ -> nil
+    end
+  end
+
+  defp line_contains_wikilink?(line_text, target) do
+    String.contains?(line_text, "[[#{target}]]") or
+      String.contains?(line_text, "[[#{target}|")
+  end
+
+  defp compute_content_h(state) do
+    body_h = max(1, state.height - 6)
+    list_h = max(1, div(body_h, 3))
+    preview_h = max(1, body_h - list_h)
+    links_n = link_lines_count(state)
+    links_gap = if links_n > 0, do: 1, else: 0
+    max(0, preview_h - 1 - links_n - links_gap)
+  end
+
+  # Conservative max scroll based on state.height. Used by scroll handlers
+  # to clamp preview_scroll. Mirrors the layout math in render_preview.
+  defp compute_max_scroll(state) do
+    body_h = max(1, state.height - 6)
+    list_h = max(1, div(body_h, 3))
+    preview_h = max(1, body_h - list_h)
+    links_n = link_lines_count(state)
+    links_gap = if links_n > 0, do: 1, else: 0
+    content_h = max(0, preview_h - 1 - links_n - links_gap)
+    max(0, state.preview_total_lines - content_h)
+  end
+
+  defp link_lines_count(state) do
+    fwd = Enum.any?(state.preview_links, fn {_, _, type} -> type == :forward end)
+    back = Enum.any?(state.preview_links, fn {_, _, type} -> type == :backlink end)
+    if(fwd, do: 1, else: 0) + if back, do: 1, else: 0
   end
 
   defp collect_preview_links(nil), do: []
 
   defp collect_preview_links(record) do
     forward = Enum.map(record.links || [], fn id -> {id, id, :forward} end)
+
+    body =
+      Enum.map(record.wikilinks || [], fn %{target: t, display: d} ->
+        {t, d || t, :body}
+      end)
 
     backlinks =
       try do
@@ -828,12 +940,23 @@ defmodule Egghead.TUI.App do
 
     forward_ids = MapSet.new(record.links || [])
 
-    filtered_back =
-      Enum.reject(backlinks, fn {id, _, _} ->
+    # Body wikilinks: dedupe against the record itself and forward links
+    filtered_body =
+      body
+      |> Enum.reject(fn {id, _, _} ->
         id == record.id || MapSet.member?(forward_ids, id)
       end)
+      |> Enum.uniq_by(fn {id, _, _} -> id end)
 
-    (forward ++ filtered_back) |> Enum.uniq_by(fn {id, _, _} -> id end)
+    body_ids = MapSet.new(Enum.map(filtered_body, fn {id, _, _} -> id end))
+
+    filtered_back =
+      Enum.reject(backlinks, fn {id, _, _} ->
+        id == record.id || MapSet.member?(forward_ids, id) || MapSet.member?(body_ids, id)
+      end)
+
+    # Order: forward (footer), body (in-document order), backlinks (footer)
+    forward ++ filtered_body ++ filtered_back
   end
 
   # --- Commands ---

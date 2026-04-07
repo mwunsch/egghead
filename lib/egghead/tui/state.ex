@@ -30,6 +30,9 @@ defmodule Egghead.TUI.State do
     nav_history: [],
     preview_links: [],
 
+    # Preview metadata for scroll clamping (computed when preview is set)
+    preview_total_lines: 0,
+
     # Command autocomplete
     command_mode: false,
     command_input: "",

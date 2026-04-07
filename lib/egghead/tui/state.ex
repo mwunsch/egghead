@@ -22,6 +22,9 @@ defmodule Egghead.TUI.State do
     # Agents
     agents: [],
 
+    # Date display format for the list rows: :relative or :iso
+    date_format: :relative,
+
     # Link navigation
     link_index: nil,
     nav_history: [],

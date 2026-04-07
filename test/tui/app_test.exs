@@ -496,7 +496,8 @@ defmodule Egghead.TUI.AppTest do
       # Preview should be the phantom hint, not a real record
       assert state.preview != nil
       assert state.preview.id == "nonexistent-test-record"
-      assert state.preview.title == "New Record"
+      assert state.preview.title == "nonexistent-test-record"
+      assert state.preview.body =~ "Create new record"
 
       Runtime.shutdown(runtime)
     end
@@ -517,22 +518,44 @@ defmodule Egghead.TUI.AppTest do
       Runtime.shutdown(runtime)
     end
 
-    test "no phantom for invalid id chars" do
+    test "title with spaces is slugified for the id" do
       runtime = start_headless()
 
-      for char <- String.graphemes("hello world") do
+      for char <- String.graphemes("Notational Velocity") do
         send_char(runtime, char)
       end
 
       state = get_app_state(runtime)
-      assert state.query == "hello world"
+      assert state.query == "Notational Velocity"
 
-      # Move down past results — phantom should NOT be reachable
+      # Phantom should be reachable; preview shows slug
+      phantom_idx = length(state.results)
+      Enum.each(0..phantom_idx, fn _ -> send_key(runtime, :down) end)
+
+      state = get_app_state(runtime)
+      assert state.selected == phantom_idx
+      assert state.preview != nil
+      assert state.preview.id == "notational-velocity"
+      assert state.preview.title == "Notational Velocity"
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "garbage query (only special chars) shows no phantom" do
+      runtime = start_headless()
+
+      for char <- String.graphemes("!@#$") do
+        send_char(runtime, char)
+      end
+
+      state = get_app_state(runtime)
+      assert state.query == "!@#$"
+
+      # Slugifies to empty → no phantom
       total_before = length(state.results)
       Enum.each(0..(total_before + 5), fn _ -> send_key(runtime, :down) end)
 
       state = get_app_state(runtime)
-      # selected capped at length(results) - 1, never reaches a phantom
       max_valid = max(0, length(state.results) - 1)
       assert state.selected == max_valid
 

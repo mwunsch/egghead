@@ -186,9 +186,14 @@ defmodule Egghead.TUI.App do
 
         {set_preview(new_state, preview_for_selection(new_state, 0)), []}
 
+      :toggle_date_format ->
+        new_format = if state.date_format == :relative, do: :iso, else: :relative
+        {%{state | date_format: new_format}, []}
+
       :open_editor ->
         if state.selected == phantom_index(state) do
-          create_and_open(state, creation_target(state))
+          {title, slug} = creation_target(state)
+          create_and_open(state, slug, title)
         else
           open_in_editor(state)
         end
@@ -386,7 +391,7 @@ defmodule Egghead.TUI.App do
 
     record_rows =
       Enum.map(visible, fn {record, idx} ->
-        render_list_row(record, idx == state.selected, w)
+        render_list_row(record, idx == state.selected, w, state)
       end)
 
     # Phantom "Create" row appears when query has no exact match
@@ -395,11 +400,11 @@ defmodule Egghead.TUI.App do
         nil ->
           []
 
-        id ->
+        {title, slug} ->
           phantom_idx = length(state.results)
 
           if length(record_rows) < list_h do
-            [render_phantom_row(id, phantom_idx == state.selected, w)]
+            [render_phantom_row(title, slug, phantom_idx == state.selected, w)]
           else
             []
           end
@@ -410,29 +415,50 @@ defmodule Egghead.TUI.App do
     rows ++ padding
   end
 
-  defp render_phantom_row(id, selected, w) do
-    content = " + Create \"#{id}\""
-    pad = max(0, w - String.length(content))
+  defp render_phantom_row(title, slug, selected, w) do
+    label =
+      if title == slug do
+        " + Create \"#{title}\""
+      else
+        " + Create \"#{title}\"  → #{slug}"
+      end
+
+    pad = max(0, w - String.length(label))
     style = if selected, do: Theme.selected(), else: Theme.accent()
-    text(content <> String.duplicate(" ", pad), style)
+    text(label <> String.duplicate(" ", pad), style)
   end
 
-  defp render_list_row(record, selected, w) do
+  defp render_list_row(record, selected, w, state) do
     title = record.title || record.id
-    time = relative_time(record.updated)
+    time = format_time(record.updated, state.date_format)
     time_str = " #{time} "
-    title_max = max(1, w - String.length(time_str) - 2)
+    show_badge? = state.show_all_classes
+    badge_str = if show_badge?, do: " ● ", else: ""
+    title_max = max(1, w - String.length(time_str) - String.length(badge_str) - 2)
     title_str = String.pad_trailing(String.slice(title, 0, title_max), title_max)
 
     if selected do
-      # Selected: entire row one style
-      text(" " <> title_str <> time_str, Theme.selected())
+      # Selected: entire row one style (badge is just a char, takes selection color)
+      text(" " <> title_str <> badge_str <> time_str, Theme.selected())
     else
-      # Normal: title white, time muted
-      stack(:horizontal, [
+      # Normal: title white, badge class-colored, time muted
+      base_spans = [
         text(" " <> title_str, Theme.normal()),
         text(time_str, Theme.muted())
-      ])
+      ]
+
+      spans =
+        if show_badge? do
+          [
+            text(" " <> title_str, Theme.normal()),
+            text(badge_str, Theme.class_color(record.class)),
+            text(time_str, Theme.muted())
+          ]
+        else
+          base_spans
+        end
+
+      stack(:horizontal, spans)
     end
   end
 
@@ -556,7 +582,7 @@ defmodule Egghead.TUI.App do
           " NEW │ ⏎ create │ ↑ back to results │ ^q quit"
 
         true ->
-          " REC │ ↑↓ nav │ ^n/^p scroll │ ⏎ $EDITOR │ / cmd │ tab links │ ^f filter │ ^q quit"
+          " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^f filter │ ^t date │ ^q quit"
       end
 
     pad = max(0, w - String.length(left))
@@ -599,6 +625,10 @@ defmodule Egghead.TUI.App do
           # Ctrl+F: toggle durable/all filter
           event.key == "f" and :ctrl in event.modifiers ->
             {:msg, :toggle_filter}
+
+          # Ctrl+T: toggle date format (relative ↔ iso8601)
+          event.key == "t" and :ctrl in event.modifiers ->
+            {:msg, :toggle_date_format}
 
           # Ctrl combos for preview scroll
           event.key == "j" and :ctrl in event.modifiers ->
@@ -700,17 +730,19 @@ defmodule Egghead.TUI.App do
   defp preview_for_selection(state, idx) do
     cond do
       idx == phantom_index(state) ->
-        id = creation_target(state)
+        {title, slug} = creation_target(state)
 
         %Egghead.Record{
-          id: id,
-          title: "New Record",
+          id: slug,
+          title: title,
           body: """
           ## Create new record
 
-          Press **Enter** to create `#{id}` and open in $EDITOR.
+          **Title:** #{title}
+          **Id:** `#{slug}`
 
-          The query becomes the new record's id. Slashes create
+          Press **Enter** to create this record and open in $EDITOR.
+          The title is slugified to derive the id. Slashes create
           subdirectories: `agents/scout` → `records/agents/scout.md`.
           """,
           class: :durable,
@@ -725,24 +757,43 @@ defmodule Egghead.TUI.App do
 
   # --- Search-as-create (Notational Velocity pattern) ---
 
-  # When the query has no exact id match and is a valid id, return it
-  # as the candidate for record creation. The phantom row + preview hint
-  # both rely on this. Returns nil otherwise (no phantom shown).
+  # Returns the target {title, slug} for a phantom create row, or nil.
+  # The user types a free-form title in the search bar. We slugify it
+  # to derive the id. If the slugified id matches an existing record,
+  # no phantom is shown (the existing record is already in the list).
   defp creation_target(state) do
-    q = String.trim(state.query)
+    title = String.trim(state.query)
 
     cond do
-      q == "" -> nil
-      Enum.any?(state.results, &(&1.id == q)) -> nil
-      not valid_id?(q) -> nil
-      true -> q
+      title == "" ->
+        nil
+
+      true ->
+        slug = slugify(title)
+
+        cond do
+          slug == "" -> nil
+          Enum.any?(state.results, &(&1.id == slug)) -> nil
+          true -> {title, slug}
+        end
     end
   end
 
-  # Valid record ids: start with alnum, then alnum/dash/underscore/slash.
-  # Slashes allow path-style ids like "agents/scout".
-  defp valid_id?(id) do
-    String.match?(id, ~r{^[a-zA-Z0-9][a-zA-Z0-9_/-]*$})
+  # Convert a free-form title to a record id slug.
+  # - Lowercase
+  # - Strip non-(alnum/_/slash/dash) → dash
+  # - Collapse runs of dashes
+  # - Trim leading/trailing dashes per path segment
+  # Slashes are preserved to allow path-style ids: "Agents / Scout" → "agents/scout"
+  defp slugify(title) do
+    title
+    |> String.downcase()
+    |> String.replace(~r{[^a-z0-9_/-]+}, "-")
+    |> String.replace(~r{-+}, "-")
+    |> String.split("/")
+    |> Enum.map(&String.trim(&1, "-"))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("/")
   end
 
   # Total list length including phantom create row when present
@@ -848,6 +899,7 @@ defmodule Egghead.TUI.App do
       - **Escape** — Deselect link
       - **Backspace** — Navigate back (when search is empty)
       - **Ctrl+F** — Toggle durable-only / all record classes
+      - **Ctrl+T** — Toggle date format (relative ↔ ISO 8601)
       - **Ctrl+N/Ctrl+P** — Scroll preview down/up
       - **Ctrl+J/Ctrl+K** — Scroll preview down/up
       - **PageDown/PageUp** — Scroll preview down/up
@@ -885,25 +937,36 @@ defmodule Egghead.TUI.App do
         _ -> "new-record-#{System.system_time(:second)}"
       end
 
-    create_and_open(state, id)
+    create_and_open(state, id, nil)
   end
 
   # Create a record file at the given id (if missing) and open in $EDITOR.
   # Used by both the /new command and the search-as-create phantom row.
-  defp create_and_open(state, id) do
+  # When title is provided, it's written into frontmatter (and the id may
+  # be a slug derived from a longer title).
+  defp create_and_open(state, id, title) do
     path = Path.join([File.cwd!(), "records", "#{id}.md"])
 
     unless File.exists?(path) do
       File.mkdir_p!(Path.dirname(path))
 
-      File.write!(path, """
-      ---
-      id: #{id}
-      tags: []
-      class: durable
-      ---
+      lines = [
+        "---",
+        "id: #{id}",
+        title && title != id && "title: #{title}",
+        "tags: []",
+        "class: durable",
+        "---",
+        ""
+      ]
 
-      """)
+      content =
+        lines
+        |> Enum.reject(&(&1 == false || &1 == nil))
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+
+      File.write!(path, content)
     end
 
     quit_for_editor(state, path)
@@ -1001,6 +1064,9 @@ defmodule Egghead.TUI.App do
     end
   end
 
+  defp format_time(updated, :relative), do: relative_time(updated)
+  defp format_time(updated, :iso), do: iso_date(updated)
+
   defp relative_time(nil), do: ""
 
   defp relative_time(iso) when is_binary(iso) do
@@ -1022,4 +1088,15 @@ defmodule Egghead.TUI.App do
   end
 
   defp relative_time(_), do: ""
+
+  defp iso_date(nil), do: ""
+
+  defp iso_date(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _} -> Calendar.strftime(dt, "%Y-%m-%d")
+      _ -> ""
+    end
+  end
+
+  defp iso_date(_), do: ""
 end

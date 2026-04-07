@@ -96,7 +96,51 @@ defmodule Egghead.TUI.App do
     {%{state | width: cols, height: rows}, []}
   end
 
-  def handle_info(_msg, state), do: state
+  # PubSub events from the chat room arrive here when in chat mode.
+  # Each clause translates the event into an :update_loop message via
+  # update/2 so all state changes flow through the Elm update function.
+  def handle_info({:user_message, msg}, %{mode: :chat} = state),
+    do: update({:room_event, {:user_message, msg}}, state)
+
+  def handle_info({:agent_message, msg}, %{mode: :chat} = state),
+    do: update({:room_event, {:agent_message, msg}}, state)
+
+  def handle_info({:agent_streaming, _room_id, agent_id, delta}, %{mode: :chat} = state),
+    do: update({:room_event, {:agent_streaming, agent_id, delta}}, state)
+
+  def handle_info(
+        {:agent_tool_call, _room_id, agent_id, tool_name, input},
+        %{mode: :chat} = state
+      ),
+      do: update({:room_event, {:agent_tool_call, agent_id, tool_name, input}}, state)
+
+  def handle_info({:agents_activated, count}, %{mode: :chat} = state),
+    do: update({:room_event, {:agents_activated, count}}, state)
+
+  def handle_info({:agent_passed, agent_id}, %{mode: :chat} = state),
+    do: update({:room_event, {:agent_passed, agent_id}}, state)
+
+  def handle_info({:agent_joined, agent_id}, %{mode: :chat} = state),
+    do: update({:room_event, {:agent_joined, agent_id}}, state)
+
+  def handle_info({:agent_left, agent_id}, %{mode: :chat} = state),
+    do: update({:room_event, {:agent_left, agent_id}}, state)
+
+  def handle_info({:agent_handoff, _room_id, agent_id, delib_id}, %{mode: :chat} = state),
+    do: update({:room_event, {:agent_handoff, agent_id, delib_id}}, state)
+
+  def handle_info(:budget_exhausted, %{mode: :chat} = state),
+    do: update({:room_event, :budget_exhausted}, state)
+
+  def handle_info(:continued, %{mode: :chat} = state),
+    do: update({:room_event, :continued}, state)
+
+  # Ignored coordinator signal — agents @-mentioning each other is internal
+  def handle_info({:agent_mentions, _, _, _}, %{mode: :chat} = state), do: {state, []}
+
+  # Catch-all: required to return {state, []} (NOT just state) — TermUI
+  # expects a tuple from handle_info or it crashes the runtime.
+  def handle_info(_msg, state), do: {state, []}
 
   # --- Event handling ---
 
@@ -119,6 +163,10 @@ defmodule Egghead.TUI.App do
 
   def event_to_msg(%Event.Key{} = event, %{mode: :records} = state) do
     records_event(event, state)
+  end
+
+  def event_to_msg(%Event.Key{} = event, %{mode: :chat} = state) do
+    chat_event(event, state)
   end
 
   def event_to_msg(%Event.Resize{width: w, height: h}, _state) do
@@ -278,22 +326,224 @@ defmodule Egghead.TUI.App do
         {%{state | command_selected: max(0, state.command_selected - 1)}, []}
 
       :command_down ->
-        cmds = filtered_commands(state.command_input)
+        cmds = filtered_commands(state.command_input, state.mode)
         max_i = max(0, length(cmds) - 1)
         {%{state | command_selected: min(max_i, state.command_selected + 1)}, []}
 
       :command_execute ->
         execute_command(state)
 
+      # PubSub events from the chat room (dispatched via handle_info clauses)
+      {:room_event, event} ->
+        {handle_room_event(event, state), []}
+
+      # --- Chat mode input handling ---
+      {:chat_char, c} ->
+        new_state = %{state | chat_input: state.chat_input <> c}
+        {refresh_chat_ghost(new_state), []}
+
+      :chat_backspace ->
+        cond do
+          state.chat_input != "" ->
+            new_input = String.slice(state.chat_input, 0..-2//1)
+            {refresh_chat_ghost(%{state | chat_input: new_input}), []}
+
+          state.chat_input_extra_lines != [] ->
+            extras = state.chat_input_extra_lines
+            last = List.last(extras)
+            new_extras = Enum.drop(extras, -1)
+
+            {refresh_chat_ghost(%{state | chat_input_extra_lines: new_extras, chat_input: last}),
+             []}
+
+          true ->
+            {state, []}
+        end
+
+      :chat_newline ->
+        new_extras = state.chat_input_extra_lines ++ [state.chat_input]
+        {%{state | chat_input_extra_lines: new_extras, chat_input: "", chat_ghost: nil}, []}
+
+      :chat_send ->
+        chat_send(state)
+
+      :chat_leave ->
+        leave_chat_mode(state)
+
+      :chat_accept_ghost ->
+        case state.chat_ghost do
+          ghost when is_binary(ghost) and ghost != "" ->
+            {refresh_chat_ghost(%{state | chat_input: state.chat_input <> ghost}), []}
+
+          _ ->
+            {state, []}
+        end
+
+      :chat_cancel ->
+        {%{state | chat_input: "", chat_input_extra_lines: [], chat_ghost: nil}, []}
+
+      :chat_scroll_down ->
+        new_scroll = max(0, state.chat_scroll - 5)
+        {%{state | chat_scroll: new_scroll}, []}
+
+      :chat_scroll_up ->
+        max_scroll = compute_chat_max_scroll(state)
+        new_scroll = min(max_scroll, state.chat_scroll + 5)
+        {%{state | chat_scroll: new_scroll}, []}
+
       _ ->
         {state, []}
     end
   end
 
+  # --- Room event ingestion ---
+
+  defp handle_room_event({:user_message, msg}, state) do
+    state
+    |> append_chat_entries(message_to_entries(msg))
+    |> Map.put(:chat_in_progress, %{})
+    |> recompute_chat_total_lines()
+    |> auto_pin_to_bottom()
+  end
+
+  defp handle_room_event({:agent_message, msg}, state) do
+    agent_id = msg.sender.id
+    entries = message_to_entries(msg)
+
+    state
+    |> Map.update!(:chat_in_progress, &Map.delete(&1, agent_id))
+    |> update_agent_ctx(agent_id, msg)
+    |> append_chat_entries(entries)
+    |> recompute_chat_total_lines()
+    |> auto_pin_to_bottom()
+  end
+
+  defp handle_room_event({:agent_streaming, agent_id, delta}, state) do
+    name = chat_agent_name(state, agent_id)
+
+    in_progress =
+      Map.update(
+        state.chat_in_progress,
+        agent_id,
+        %{name: name, text: delta, started_at: System.monotonic_time()},
+        fn existing -> %{existing | text: existing.text <> delta} end
+      )
+
+    %{state | chat_in_progress: in_progress}
+    |> recompute_chat_total_lines()
+    |> auto_pin_to_bottom()
+  end
+
+  defp handle_room_event({:agent_tool_call, agent_id, tool_name, input}, state) do
+    nick = chat_agent_name(state, agent_id)
+    text = "#{tool_name}(#{format_tool_input(input)})"
+    entry = {:action, %{nick: nick, text: text, color: :muted, ts: DateTime.utc_now()}}
+
+    state
+    |> append_chat_entries([entry])
+    |> recompute_chat_total_lines()
+    |> auto_pin_to_bottom()
+  end
+
+  defp handle_room_event({:agents_activated, count}, state) do
+    append_system(state, "#{count} agent#{if count == 1, do: "", else: "s"} activated", :info)
+  end
+
+  defp handle_room_event({:agent_passed, agent_id}, state) do
+    nick = chat_agent_name(state, agent_id)
+
+    state
+    |> Map.update!(:chat_in_progress, &Map.delete(&1, agent_id))
+    |> append_system("#{nick} passed", :info)
+  end
+
+  defp handle_room_event({:agent_joined, agent_id}, state) do
+    nick = chat_agent_name(state, agent_id)
+    append_system(state, "#{nick} joined", :info)
+  end
+
+  defp handle_room_event({:agent_left, agent_id}, state) do
+    nick = chat_agent_name(state, agent_id)
+    append_system(state, "#{nick} left", :info)
+  end
+
+  defp handle_room_event({:agent_handoff, agent_id, delib_id}, state) do
+    nick = chat_agent_name(state, agent_id)
+
+    state
+    |> reset_agent_ctx(agent_id)
+    |> append_system("#{nick} handed off → [[#{delib_id}]]", :info)
+  end
+
+  defp handle_room_event(:budget_exhausted, state) do
+    append_system(state, "budget exhausted — /continue to grant more rounds", :warning)
+  end
+
+  defp handle_room_event(:continued, state) do
+    append_system(state, "budget reset", :info)
+  end
+
+  defp handle_room_event(_, state), do: state
+
+  defp append_chat_entries(state, entries) do
+    %{state | chat_messages: state.chat_messages ++ entries}
+  end
+
+  # If user is pinned to bottom (chat_scroll == 0), keep them there.
+  # Nothing to do explicitly — chat_scroll already 0 means follow.
+  defp auto_pin_to_bottom(state), do: state
+
+  defp chat_agent_name(state, agent_id) do
+    case Enum.find(state.chat_agents, fn %{id: id} -> id == agent_id end) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _ -> agent_basename(agent_id)
+    end
+  end
+
+  defp update_agent_ctx(state, agent_id, msg) do
+    case Map.get(msg, :usage) do
+      %{context_window: cw, session_tokens: st} when is_integer(cw) and cw > 0 ->
+        pct = round(st / cw * 100)
+        update_chat_agent(state, agent_id, %{ctx_pct: pct})
+
+      _ ->
+        state
+    end
+  end
+
+  defp reset_agent_ctx(state, agent_id) do
+    update_chat_agent(state, agent_id, %{ctx_pct: 0})
+  end
+
+  defp update_chat_agent(state, agent_id, fields) do
+    agents =
+      Enum.map(state.chat_agents, fn agent ->
+        if agent.id == agent_id, do: Map.merge(agent, fields), else: agent
+      end)
+
+    %{state | chat_agents: agents}
+  end
+
+  defp format_tool_input(%{} = input) do
+    cond do
+      Map.has_key?(input, "query") -> inspect(Map.get(input, "query"))
+      Map.has_key?(input, :query) -> inspect(Map.get(input, :query))
+      Map.has_key?(input, "id") -> inspect(Map.get(input, "id"))
+      Map.has_key?(input, :id) -> inspect(Map.get(input, :id))
+      Map.has_key?(input, "title") -> inspect(Map.get(input, "title"))
+      true -> "..."
+    end
+  end
+
+  defp format_tool_input(_), do: ""
+
   # --- View ---
 
   @impl true
-  def view(state) do
+  def view(%{mode: :chat} = state), do: chat_view(state)
+  def view(state), do: records_view(state)
+
+  defp records_view(state) do
     w = state.width
     h = state.height
     # Non-body: header(1) + search(1) + separator(1) + blank(1) + blank(1) + status(1) = 6
@@ -322,6 +572,137 @@ defmodule Egghead.TUI.App do
         [render_status(state, w)]
 
     stack(:vertical, lines)
+  end
+
+  # --- Chat view ---
+
+  defp chat_view(state) do
+    w = state.width
+    h = state.height
+
+    # Layout regions (top → bottom):
+    # 1) chat header (1)
+    # 2) presence bar (1)
+    # 3) transcript (flex, scrolls)
+    # 4) input box border (1) - ── separator ──
+    # 5) input box (1+, capped at 5 by extras)
+    # 6) status bar (1)
+    chrome = 4 + input_box_height(state)
+    transcript_h = max(1, h - chrome)
+
+    transcript = render_chat_transcript(state, w, transcript_h)
+    input_lines = render_chat_input_box(state, w)
+
+    sep_line = text(String.duplicate("─", w), Theme.separator())
+
+    lines =
+      [render_chat_header(state, w)] ++
+        [render_chat_presence(state, w)] ++
+        transcript ++
+        [sep_line] ++
+        input_lines ++
+        [render_chat_status(state, w)]
+
+    stack(:vertical, lines)
+  end
+
+  defp render_chat_header(state, w) do
+    left = " egghead"
+    room = state.chat_room_id || "(no room)"
+    right = "CHAT · #{room} "
+    pad = max(0, w - String.length(left) - String.length(right))
+    text(left <> String.duplicate(" ", pad) <> right, Theme.header_bar())
+  end
+
+  defp render_chat_presence(state, w) do
+    presence_text =
+      case state.chat_agents do
+        [] ->
+          " ── no agents present ──"
+
+        agents ->
+          parts =
+            Enum.map(agents, fn %{name: n, ctx_pct: pct} ->
+              if pct > 0, do: "#{n} (#{pct}%)", else: n
+            end)
+
+          " ── present: " <> Enum.join(parts, " · ") <> " ──"
+      end
+
+    line = String.slice(presence_text, 0, w)
+    pad = max(0, w - String.length(line))
+    text(line <> String.duplicate("─", pad), Theme.separator())
+  end
+
+  defp render_chat_transcript(state, w, h) do
+    entries = chat_display_entries(state)
+    lines = Egghead.TUI.ChatRender.render_entries(entries, w)
+    total = length(lines)
+
+    # Bottom-anchored: when chat_scroll == 0, show the LAST h lines.
+    # When chat_scroll > 0, the user has scrolled up by that many lines.
+    skip = max(0, total - h - state.chat_scroll)
+    visible = lines |> Enum.drop(skip) |> Enum.take(h)
+
+    # Pad with empty lines so the transcript region always fills h rows
+    rendered =
+      Enum.map(visible, fn {content, style} ->
+        clean = String.replace(content, "\n", " ")
+        padded = clean |> String.slice(0, w) |> String.pad_trailing(w)
+        text(padded, style || Theme.normal())
+      end)
+
+    padding_count = max(0, h - length(visible))
+    padding = List.duplicate(text(String.duplicate(" ", w), nil), padding_count)
+
+    # When transcript is shorter than viewport, padding goes ABOVE
+    # the content so messages bottom-align.
+    padding ++ rendered
+  end
+
+  defp render_chat_input_box(state, w) do
+    # Multi-line input: extras are previous lines (in order), chat_input
+    # is the current line being edited.
+    all_lines = state.chat_input_extra_lines ++ [state.chat_input]
+
+    Enum.with_index(all_lines)
+    |> Enum.map(fn {line, idx} ->
+      prefix = if idx == 0, do: " ❯ ", else: "   "
+      cursor = if idx == length(all_lines) - 1, do: "▌", else: ""
+
+      ghost =
+        if idx == length(all_lines) - 1 and is_binary(state.chat_ghost),
+          do: state.chat_ghost,
+          else: ""
+
+      base = prefix <> line <> cursor <> ghost
+      base = String.slice(base, 0, w)
+      pad = max(0, w - String.length(base))
+      text(base <> String.duplicate(" ", pad), Theme.prompt())
+    end)
+  end
+
+  defp render_chat_status(state, w) do
+    left = " CHAT"
+
+    cmds =
+      "│ ⏎ send │ ^j newline │ esc records │ /save │ /handoff │ ^q quit"
+
+    budget =
+      case state.chat_budget do
+        %{remaining: r, total: t} -> " │ budget #{r}/#{t}"
+        _ -> ""
+      end
+
+    line = "#{left} #{cmds}#{budget}"
+    line = String.slice(line, 0, w)
+    pad = max(0, w - String.length(line))
+    text(line <> String.duplicate(" ", pad), Theme.status_bar_line())
+  end
+
+  defp input_box_height(state) do
+    extras = length(state.chat_input_extra_lines)
+    1 + min(extras, 4)
   end
 
   # --- Header (dark background band) ---
@@ -354,7 +735,7 @@ defmodule Egghead.TUI.App do
   # --- Command autocomplete dropdown ---
 
   defp render_command_dropdown(state, w, list_h) do
-    cmds = filtered_commands(state.command_input)
+    cmds = filtered_commands(state.command_input, state.mode)
     unselected = Theme.normal()
 
     rows =
@@ -685,6 +1066,58 @@ defmodule Egghead.TUI.App do
     end
   end
 
+  defp chat_event(event, state) do
+    case event.key do
+      :enter ->
+        {:msg, :chat_send}
+
+      :escape ->
+        {:msg, :chat_leave}
+
+      :backspace ->
+        {:msg, :chat_backspace}
+
+      :tab ->
+        if is_binary(state.chat_ghost), do: {:msg, :chat_accept_ghost}, else: :ignore
+
+      _ ->
+        cond do
+          # Ctrl+J: insert newline (push current line to extras, start fresh)
+          event.key == "j" and :ctrl in event.modifiers ->
+            {:msg, :chat_newline}
+
+          # Ctrl+N: scroll down (toward newer messages)
+          event.key == "n" and :ctrl in event.modifiers ->
+            {:msg, :chat_scroll_down}
+
+          # Ctrl+P: scroll up (toward older messages)
+          event.key == "p" and :ctrl in event.modifiers ->
+            {:msg, :chat_scroll_up}
+
+          # Ctrl+G: cancel (clear input + ghost)
+          event.key == "g" and :ctrl in event.modifiers ->
+            {:msg, :chat_cancel}
+
+          true ->
+            case event.char do
+              # / on empty input enters command mode (chat-aware palette)
+              "/" when state.chat_input == "" and state.chat_input_extra_lines == [] ->
+                {:msg, :enter_command}
+
+              # Ignore orphan CSI fragments
+              "[" ->
+                :ignore
+
+              c when is_binary(c) and c != "" ->
+                {:msg, {:chat_char, c}}
+
+              _ ->
+                :ignore
+            end
+        end
+    end
+  end
+
   defp command_event(event, _state) do
     case event.key do
       :enter ->
@@ -971,7 +1404,7 @@ defmodule Egghead.TUI.App do
 
   # --- Commands ---
 
-  @commands [
+  @records_commands [
     {"quit", "Exit the TUI"},
     {"help", "Show keybindings & commands"},
     {"new", "Create a new record"},
@@ -980,16 +1413,42 @@ defmodule Egghead.TUI.App do
     {"debug", "Dump buffer to /tmp/egghead_render.txt"}
   ]
 
-  defp filtered_commands(input) do
-    q = String.downcase(input)
-    Enum.filter(@commands, fn {name, _} -> String.starts_with?(name, q) end)
+  @chat_commands [
+    {"save", "Save room as deliberation"},
+    {"continue", "Reset turn budget"},
+    {"handoff", "Hand off to an agent (provide id as arg)"},
+    {"leave", "Return to records mode"},
+    {"help", "Show keybindings & commands"},
+    {"quit", "Exit the TUI"}
+  ]
+
+  defp commands_for(:chat), do: @chat_commands
+  defp commands_for(_), do: @records_commands
+
+  defp filtered_commands(input, mode) do
+    # Match against the command name only (before any space).
+    head =
+      input
+      |> String.split(" ", parts: 2)
+      |> List.first()
+      |> String.downcase()
+
+    Enum.filter(commands_for(mode), fn {name, _} -> String.starts_with?(name, head) end)
   end
 
   defp execute_command(state) do
-    cmds = filtered_commands(state.command_input)
+    raw_input = state.command_input
+    cmds = filtered_commands(raw_input, state.mode)
     selected = Enum.at(cmds, state.command_selected)
 
-    state = %{state | command_mode: false, command_input: ""}
+    # Capture argument (e.g. "handoff scout" → arg "scout") before clearing
+    arg =
+      case String.split(raw_input, " ", parts: 2) do
+        [_, rest] -> String.trim(rest)
+        _ -> ""
+      end
+
+    state = %{state | command_mode: false, command_input: "", command_arg: arg}
 
     case selected do
       {"quit", _} ->
@@ -1007,8 +1466,19 @@ defmodule Egghead.TUI.App do
         create_and_edit_record(state)
 
       {"chat", _} ->
-        # Placeholder — chat mode not yet implemented
-        {state, []}
+        enter_chat_mode(state)
+
+      {"leave", _} ->
+        leave_chat_mode(state)
+
+      {"save", _} ->
+        chat_save(state)
+
+      {"continue", _} ->
+        chat_continue(state)
+
+      {"handoff", _} ->
+        chat_handoff(state)
 
       {"system", _} ->
         # Placeholder — system mode not yet implemented
@@ -1146,6 +1616,344 @@ defmodule Egghead.TUI.App do
 
     Application.put_env(:egghead, :pending_editor, {editor, path, restore})
     {state, [:quit]}
+  end
+
+  # --- Chat mode ---
+
+  # Resolve or create the room, subscribe to its PubSub topic, seed the
+  # transcript and presence, switch to chat mode.
+  defp enter_chat_mode(state) do
+    room_id =
+      case Egghead.default_room() do
+        nil ->
+          case Egghead.create_room(default: true) do
+            {:ok, id} -> id
+            _ -> nil
+          end
+
+        id ->
+          id
+      end
+
+    if is_nil(room_id) do
+      {state, []}
+    else
+      try do
+        Phoenix.PubSub.subscribe(Egghead.PubSub, Egghead.Chat.Room.topic(room_id))
+      catch
+        _, _ -> :ok
+      end
+
+      transcript = safe_chat_transcript(room_id)
+      messages = Enum.flat_map(transcript, &message_to_entries/1)
+
+      agents =
+        Enum.map(state.agents, fn agent ->
+          %{
+            id: agent.id,
+            name: agent_basename(agent.id),
+            model: Map.get(agent, :model, ""),
+            ctx_pct: 0,
+            status: :idle
+          }
+        end)
+
+      new_state =
+        %{
+          state
+          | mode: :chat,
+            chat_room_id: room_id,
+            chat_messages: messages,
+            chat_in_progress: %{},
+            chat_input: "",
+            chat_input_extra_lines: [],
+            chat_scroll: 0,
+            chat_agents: agents,
+            chat_budget: nil,
+            chat_ghost: nil
+        }
+        |> recompute_chat_total_lines()
+
+      {new_state, []}
+    end
+  end
+
+  defp leave_chat_mode(state) do
+    if state.chat_room_id do
+      try do
+        Phoenix.PubSub.unsubscribe(Egghead.PubSub, Egghead.Chat.Room.topic(state.chat_room_id))
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    new_state = %{
+      state
+      | mode: :records,
+        chat_room_id: nil,
+        chat_messages: [],
+        chat_in_progress: %{},
+        chat_input: "",
+        chat_input_extra_lines: [],
+        chat_scroll: 0,
+        chat_total_lines: 0,
+        chat_agents: [],
+        chat_budget: nil,
+        chat_ghost: nil
+    }
+
+    {new_state, []}
+  end
+
+  defp safe_chat_transcript(room_id) do
+    try do
+      Egghead.chat_transcript(room_id) || []
+    catch
+      _, _ -> []
+    end
+  end
+
+  # Convert a Room.Message struct (or map) into a list of chat_entry tuples.
+  # Agent messages with `\n\n` get split into multiple :message entries.
+  defp message_to_entries(%{sender: %{type: :user, name: name}, content: content} = msg) do
+    [
+      {:message,
+       %{
+         nick: name,
+         color: :user,
+         body: content,
+         usage: nil,
+         ts: Map.get(msg, :timestamp)
+       }}
+    ]
+  end
+
+  defp message_to_entries(
+         %{sender: %{type: :agent, id: agent_id, name: name}, content: content} = msg
+       ) do
+    nick = agent_basename(name || agent_id)
+
+    content
+    |> split_agent_blocks()
+    |> Enum.map(fn block ->
+      {:message,
+       %{
+         nick: nick,
+         agent_id: agent_id,
+         color: :agent,
+         body: block,
+         usage: Map.get(msg, :usage),
+         ts: Map.get(msg, :timestamp)
+       }}
+    end)
+  end
+
+  defp message_to_entries(_), do: []
+
+  # Split an agent message body on blank-line boundaries (\n\n+).
+  # Each chunk becomes its own :message entry, so the agent appears to
+  # speak in distinct paragraphs with separate nick prefixes.
+  defp split_agent_blocks(content) when is_binary(content) do
+    content
+    |> String.split(~r/\n\s*\n/, trim: false)
+    |> Enum.map(&String.trim_trailing/1)
+    |> Enum.reject(&(&1 == ""))
+    |> case do
+      [] -> [content]
+      blocks -> blocks
+    end
+  end
+
+  defp split_agent_blocks(_), do: []
+
+  # Last segment of a slash-separated agent id (agents/scout → scout).
+  defp agent_basename(id) when is_binary(id) do
+    case String.split(id, "/") do
+      [] -> id
+      parts -> List.last(parts)
+    end
+  end
+
+  defp agent_basename(_), do: ""
+
+  defp recompute_chat_total_lines(state) do
+    width = max(20, state.width)
+    lines = Egghead.TUI.ChatRender.render_entries(chat_display_entries(state), width)
+    %{state | chat_total_lines: length(lines)}
+  end
+
+  # Combine committed messages + in-progress streams in display order
+  # (in-progress entries appear at the bottom).
+  defp chat_display_entries(state) do
+    in_progress_entries =
+      state.chat_in_progress
+      |> Enum.sort_by(fn {_, %{started_at: t}} -> t end)
+      |> Enum.map(fn {agent_id, %{name: name, text: text}} ->
+        {:in_progress,
+         %{nick: agent_basename(name || agent_id), agent_id: agent_id, body: text}}
+      end)
+
+    state.chat_messages ++ in_progress_entries
+  end
+
+  # Stub command handlers — full implementations come in the slash
+  # commands step. For now they just append a system entry so the user
+  # gets feedback that the command was received.
+  defp chat_save(state) do
+    case state.chat_room_id do
+      nil ->
+        {state, []}
+
+      room_id ->
+        msg =
+          case Egghead.chat_save(room_id) do
+            {:ok, id} -> "saved → #{id}"
+            {:error, reason} -> "save failed: #{inspect(reason)}"
+          end
+
+        {append_system(state, msg, :info), []}
+    end
+  end
+
+  defp chat_continue(state) do
+    case state.chat_room_id do
+      nil ->
+        {state, []}
+
+      room_id ->
+        try do
+          Egghead.chat_continue(room_id)
+        catch
+          _, _ -> :ok
+        end
+
+        {append_system(state, "budget reset", :info), []}
+    end
+  end
+
+  defp chat_handoff(state) do
+    arg = String.trim(state.command_arg || "")
+
+    if arg == "" do
+      {append_system(state, "/handoff requires an agent id (e.g. /handoff scout)", :warning),
+       []}
+    else
+      target =
+        if String.contains?(arg, "/"),
+          do: arg,
+          else: "agents/" <> arg
+
+      result =
+        try do
+          Egghead.handoff(target, "")
+        catch
+          _, reason -> {:error, reason}
+        end
+
+      msg =
+        case result do
+          {:ok, delib_id} -> "#{arg} handed off → #{delib_id}"
+          {:error, reason} -> "handoff failed: #{inspect(reason)}"
+          _ -> "handoff requested for #{arg}"
+        end
+
+      {append_system(state, msg, :info), []}
+    end
+  end
+
+  defp append_system(state, text, kind) do
+    entry = {:system, %{text: text, kind: kind, ts: DateTime.utc_now()}}
+
+    %{state | chat_messages: state.chat_messages ++ [entry]}
+    |> recompute_chat_total_lines()
+  end
+
+  # Concatenate the multi-line input and ship it. Clears the input on
+  # success. The chat happens on a background task so we don't block the
+  # update loop on the LLM call (the room broadcasts back via PubSub).
+  defp chat_send(state) do
+    text =
+      (state.chat_input_extra_lines ++ [state.chat_input])
+      |> Enum.join("\n")
+      |> String.trim()
+
+    if text == "" or is_nil(state.chat_room_id) do
+      {state, []}
+    else
+      room_id = state.chat_room_id
+
+      Task.start(fn ->
+        try do
+          Egghead.chat(room_id, text)
+        catch
+          _, _ -> :ok
+        end
+      end)
+
+      new_state = %{
+        state
+        | chat_input: "",
+          chat_input_extra_lines: [],
+          chat_ghost: nil,
+          chat_scroll: 0
+      }
+
+      {new_state, []}
+    end
+  end
+
+  # Recompute the ghost-text completion: if the input ends with `@<prefix>`,
+  # find the first agent whose basename starts with prefix (case-insensitive)
+  # and store the missing suffix as ghost.
+  defp refresh_chat_ghost(state) do
+    case extract_mention_prefix(state.chat_input) do
+      nil ->
+        %{state | chat_ghost: nil}
+
+      "" ->
+        %{state | chat_ghost: nil}
+
+      prefix ->
+        suffix = find_mention_completion(state.chat_agents, prefix)
+        %{state | chat_ghost: suffix}
+    end
+  end
+
+  # Returns the prefix after the LAST `@` in the input, if it's followed
+  # only by alnum/`-`/`_`/`/` chars and no whitespace. Public for testing.
+  @doc false
+  def extract_mention_prefix(input) when is_binary(input) do
+    case Regex.run(~r/@([\w\/\-]*)$/, input) do
+      [_, prefix] -> prefix
+      _ -> nil
+    end
+  end
+
+  @doc false
+  def find_mention_completion([], _prefix), do: nil
+
+  def find_mention_completion(agents, prefix) do
+    p = String.downcase(prefix)
+
+    agents
+    |> Enum.find(fn agent ->
+      base = String.downcase(agent.name || agent_basename(agent.id))
+      String.starts_with?(base, p) and base != p
+    end)
+    |> case do
+      nil ->
+        nil
+
+      agent ->
+        base = agent.name || agent_basename(agent.id)
+        # Suffix to append to the prefix to complete the mention
+        String.slice(base, String.length(prefix)..-1//1)
+    end
+  end
+
+  defp compute_chat_max_scroll(state) do
+    h = max(1, state.height - 4 - input_box_height(state))
+    max(0, state.chat_total_lines - h)
   end
 
   # --- Stdin drain ---

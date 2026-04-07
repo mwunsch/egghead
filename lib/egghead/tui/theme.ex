@@ -42,6 +42,18 @@ defmodule Egghead.TUI.Theme do
   def link, do: Style.new(fg: :cyan, attrs: [:underline])
   def accent, do: Style.new(fg: :cyan)
 
+  # Stable per-agent color from a fixed palette of safe terminal colors.
+  # Hashes the agent id (or nick) so the same agent always gets the same
+  # color across runs and machines.
+  @agent_palette [:cyan, :green, :yellow, :magenta, :blue, :red]
+
+  def agent_color(id) when is_binary(id) do
+    i = :erlang.phash2(id, length(@agent_palette))
+    Style.new(fg: Enum.at(@agent_palette, i), attrs: [:bold])
+  end
+
+  def agent_color(_), do: Style.new(fg: :white, attrs: [:bold])
+
   # Markdown styles
   def md_h1, do: Style.new(fg: :cyan, attrs: [:bold])
   def md_h2, do: Style.new(fg: :cyan, attrs: [:bold])

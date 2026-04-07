@@ -562,4 +562,228 @@ defmodule Egghead.TUI.AppTest do
       Runtime.shutdown(runtime)
     end
   end
+
+  describe "chat mode" do
+    # Helper: synthesize a Room.Message struct for ingestion tests
+    defp user_msg(content, name \\ "tester") do
+      %{
+        id: "msg-#{:erlang.unique_integer([:positive])}",
+        room_id: "test-room",
+        sender: %{type: :user, id: name, name: name},
+        content: content,
+        timestamp: DateTime.utc_now(),
+        mentions: [],
+        usage: nil
+      }
+    end
+
+    defp agent_msg(content, agent_id, opts \\ []) do
+      %{
+        id: "msg-#{:erlang.unique_integer([:positive])}",
+        room_id: "test-room",
+        sender: %{type: :agent, id: agent_id, name: agent_id},
+        content: content,
+        timestamp: DateTime.utc_now(),
+        mentions: [],
+        usage: opts[:usage]
+      }
+    end
+
+    # Drive the runtime directly with a message (bypassing PubSub)
+    defp send_room_event(runtime, event) do
+      pid = runtime
+      send(pid, event)
+      Runtime.sync(runtime)
+    end
+
+    defp enter_chat_via_command(runtime) do
+      # Open command palette via "/", then "chat", then enter
+      send_char(runtime, "/")
+      Runtime.sync(runtime)
+      for c <- String.graphemes("chat"), do: send_char(runtime, c)
+      send_key(runtime, :enter)
+      Runtime.sync(runtime)
+    end
+
+    test "/chat enters chat mode" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      state = get_app_state(runtime)
+      assert state.mode == :chat
+      assert is_binary(state.chat_room_id)
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "esc leaves chat mode" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      send_key(runtime, :escape)
+      state = get_app_state(runtime)
+      assert state.mode == :records
+      assert state.chat_room_id == nil
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "typing in chat appends to chat_input" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      for c <- String.graphemes("hello"), do: send_char(runtime, c)
+      state = get_app_state(runtime)
+      assert state.chat_input == "hello"
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "Ctrl+J pushes current input to extras and starts new line" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      for c <- String.graphemes("first"), do: send_char(runtime, c)
+      send_key(runtime, "j", modifiers: [:ctrl])
+      for c <- String.graphemes("second"), do: send_char(runtime, c)
+
+      state = get_app_state(runtime)
+      assert state.chat_input_extra_lines == ["first"]
+      assert state.chat_input == "second"
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "user_message room event appends to transcript" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      send_room_event(runtime, {:user_message, user_msg("hi all")})
+
+      state = get_app_state(runtime)
+      assert length(state.chat_messages) == 1
+
+      [{:message, m}] = state.chat_messages
+      assert m.body == "hi all"
+      assert m.color == :user
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "agent_message with double-newline splits into multiple entries" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      send_room_event(
+        runtime,
+        {:agent_message, agent_msg("Para one.\n\nPara two.\n\nPara three.", "agents/scout")}
+      )
+
+      state = get_app_state(runtime)
+      messages = Enum.filter(state.chat_messages, &match?({:message, _}, &1))
+      assert length(messages) == 3
+      bodies = Enum.map(messages, fn {:message, m} -> m.body end)
+      assert bodies == ["Para one.", "Para two.", "Para three."]
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "agent_streaming accumulates in chat_in_progress" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      send_room_event(runtime, {:agent_streaming, "test-room", "agents/scout", "hello "})
+      send_room_event(runtime, {:agent_streaming, "test-room", "agents/scout", "world"})
+
+      state = get_app_state(runtime)
+      assert %{"agents/scout" => %{text: "hello world"}} = state.chat_in_progress
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "agent_message clears in_progress for that agent" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      send_room_event(runtime, {:agent_streaming, "test-room", "agents/scout", "draft"})
+      send_room_event(runtime, {:agent_message, agent_msg("final", "agents/scout")})
+
+      state = get_app_state(runtime)
+      assert state.chat_in_progress == %{}
+      assert Enum.any?(state.chat_messages, &match?({:message, %{body: "final"}}, &1))
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "agent_tool_call appends an action entry" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      send_room_event(
+        runtime,
+        {:agent_tool_call, "test-room", "agents/scout", "search_records",
+         %{"query" => "encryption"}}
+      )
+
+      state = get_app_state(runtime)
+      assert Enum.any?(state.chat_messages, &match?({:action, _}, &1))
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "budget_exhausted appends a system warning" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      send_room_event(runtime, :budget_exhausted)
+
+      state = get_app_state(runtime)
+      assert Enum.any?(state.chat_messages, fn
+               {:system, %{kind: :warning}} -> true
+               _ -> false
+             end)
+
+      Runtime.shutdown(runtime)
+    end
+
+    test "extract_mention_prefix returns prefix after @" do
+      assert Egghead.TUI.App.extract_mention_prefix("hi @sc") == "sc"
+      assert Egghead.TUI.App.extract_mention_prefix("hi @scout") == "scout"
+      assert Egghead.TUI.App.extract_mention_prefix("hi @") == ""
+      assert Egghead.TUI.App.extract_mention_prefix("plain text") == nil
+      assert Egghead.TUI.App.extract_mention_prefix("@agents/sc") == "agents/sc"
+      # Whitespace after @ token resets — only the last token
+      assert Egghead.TUI.App.extract_mention_prefix("@scout said hi") == nil
+    end
+
+    test "find_mention_completion returns suffix to complete the match" do
+      agents = [
+        %{id: "agents/scout", name: "scout"},
+        %{id: "agents/archivist", name: "archivist"}
+      ]
+
+      # "sc" → "out" to complete to "scout"
+      assert Egghead.TUI.App.find_mention_completion(agents, "sc") == "out"
+      # "arch" → "ivist"
+      assert Egghead.TUI.App.find_mention_completion(agents, "arch") == "ivist"
+      # No match
+      assert Egghead.TUI.App.find_mention_completion(agents, "xyz") == nil
+      # Exact match yields nil (no ghost when fully typed)
+      assert Egghead.TUI.App.find_mention_completion(agents, "scout") == nil
+    end
+
+    test "Ctrl+G clears the input and ghost" do
+      runtime = start_headless()
+      enter_chat_via_command(runtime)
+
+      for c <- String.graphemes("hello"), do: send_char(runtime, c)
+      send_key(runtime, "g", modifiers: [:ctrl])
+
+      state = get_app_state(runtime)
+      assert state.chat_input == ""
+      assert state.chat_ghost == nil
+
+      Runtime.shutdown(runtime)
+    end
+  end
 end

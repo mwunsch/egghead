@@ -7,7 +7,8 @@ defmodule Egghead.MixProject do
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      package: package()
     ]
   end
 
@@ -35,6 +36,13 @@ defmodule Egghead.MixProject do
       # Pinned to fix commit: append!/2 was silently discarding auto-flushed data,
       # causing blank screens on wide terminals. PR #16, before MDEx was added.
       {:term_ui, github: "pcharbon70/term_ui", ref: "a2db141"}
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["AGPL-3.0-or-later"],
+      links: %{}
     ]
   end
 end

@@ -61,3 +61,13 @@ Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_do
 ```bash
 mix docs
 ```
+
+## License
+
+Egghead is licensed under the [GNU Affero General Public License v3.0 or
+later](LICENSE) (AGPL-3.0-or-later). This is a strong copyleft license: if
+you run a modified version of Egghead and let users interact with it over
+a network, you must offer them the corresponding source code under the
+same license.
+
+If AGPL doesn't fit your use case, get in touch.

@@ -131,7 +131,6 @@ defmodule Egghead.TUI.RenderTest do
       # For 24 rows: body=19, list_h=6, so preview starts at row 2+6+1+1=10
       {_, label_row} = find_preview_label(buf, 24)
       text = TestHelpers.row_text(buf, label_row)
-      assert text =~ "preview:"
       assert text =~ state.preview.id
     end
 
@@ -310,9 +309,10 @@ defmodule Egghead.TUI.RenderTest do
 
   # Helper to find the preview label row by scanning for "preview:"
   defp find_preview_label(buf, height) do
+    # Preview label is a row beginning with " ── "
     Enum.find_value(1..height, fn row ->
       text = TestHelpers.row_text(buf, row)
-      if text =~ "preview:", do: {:found, row}
+      if String.starts_with?(text, " ── "), do: {:found, row}
     end) || {:not_found, 0}
   end
 end

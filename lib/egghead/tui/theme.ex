@@ -42,14 +42,6 @@ defmodule Egghead.TUI.Theme do
   def link, do: Style.new(fg: :cyan, attrs: [:underline])
   def accent, do: Style.new(fg: :cyan)
 
-  # Class badge colors — distinct color per record class for the list
-  # row indicator. Shown only when filter shows all classes.
-  def class_color(:durable), do: Style.new(fg: :green)
-  def class_color(:inbox), do: Style.new(fg: :yellow)
-  def class_color(:deliberation), do: Style.new(fg: :magenta)
-  def class_color(:agent), do: Style.new(fg: :blue)
-  def class_color(_), do: Style.new(fg: :bright_black)
-
   # Markdown styles
   def md_h1, do: Style.new(fg: :cyan, attrs: [:bold])
   def md_h2, do: Style.new(fg: :cyan, attrs: [:bold])

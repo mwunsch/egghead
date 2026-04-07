@@ -435,40 +435,23 @@ defmodule Egghead.TUI.App do
     title = record.title || record.id
     time = format_time(record.updated, state.date_format)
     time_str = " #{time} "
-    show_badge? = state.show_all_classes
-    badge_str = if show_badge?, do: " ● ", else: ""
-    title_max = max(1, w - String.length(time_str) - String.length(badge_str) - 2)
+    title_max = max(1, w - String.length(time_str) - 2)
     title_str = String.pad_trailing(String.slice(title, 0, title_max), title_max)
 
     if selected do
-      # Selected: entire row one style (badge is just a char, takes selection color)
-      text(" " <> title_str <> badge_str <> time_str, Theme.selected())
+      text(" " <> title_str <> time_str, Theme.selected())
     else
-      # Normal: title white, badge class-colored, time muted
-      base_spans = [
+      stack(:horizontal, [
         text(" " <> title_str, Theme.normal()),
         text(time_str, Theme.muted())
-      ]
-
-      spans =
-        if show_badge? do
-          [
-            text(" " <> title_str, Theme.normal()),
-            text(badge_str, Theme.class_color(record.class)),
-            text(time_str, Theme.muted())
-          ]
-        else
-          base_spans
-        end
-
-      stack(:horizontal, spans)
+      ])
     end
   end
 
   # --- Preview ---
 
   defp render_preview(%{preview: nil}, w, preview_h) do
-    label = render_preview_label("(no selection)", "", w)
+    label = render_preview_label([{"(no selection)", :muted}], w)
     [label | List.duplicate(text("", nil), max(0, preview_h - 1))]
   end
 
@@ -486,16 +469,22 @@ defmodule Egghead.TUI.App do
     max_scroll = max(0, total_count - content_h)
     scroll = min(scroll, max_scroll)
 
-    # Scroll position indicator in the label
-    scroll_info =
+    # Scroll position indicator
+    scroll_segment =
       if total_count > content_h do
         pos = if max_scroll > 0, do: round(scroll / max_scroll * 100), else: 0
-        " #{scroll + 1}-#{min(scroll + content_h, total_count)}/#{total_count} (#{pos}%)"
+        ["#{scroll + 1}-#{min(scroll + content_h, total_count)}/#{total_count} (#{pos}%)"]
       else
-        ""
+        ["#{total_count}L"]
       end
 
-    label = render_preview_label(record.id, scroll_info, w)
+    class_str = record.class |> to_string()
+
+    segments =
+      [{record.id, :normal}, {class_str, :muted}] ++
+        Enum.map(scroll_segment, &{&1, :muted})
+
+    label = render_preview_label(segments, w)
 
     # If a body wikilink is selected, find which line(s) contain it
     # and highlight them.
@@ -547,11 +536,32 @@ defmodule Egghead.TUI.App do
     [label] ++ visible ++ padding ++ gap ++ links_lines
   end
 
-  defp render_preview_label(name, scroll_info, w) do
-    label = " ── preview: #{name}#{scroll_info} "
-    pad = max(0, w - String.length(label))
-    text(label <> String.duplicate("─", pad), Theme.separator())
+  defp render_preview_label(segments, w) do
+    # segments :: [{text, :normal | :muted}]
+    # Render as: " ── seg1 ── seg2 ── seg3 ──────... "
+    sep = " ── "
+
+    body_spans =
+      segments
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {{txt, kind}, idx} ->
+        prefix = if idx == 0, do: " ── ", else: sep
+        style = if kind == :normal, do: Theme.normal(), else: Theme.muted()
+        [text(prefix, Theme.separator()), text(txt, style)]
+      end)
+
+    used =
+      Enum.reduce(body_spans, 0, fn span, acc ->
+        acc + String.length(span_text(span))
+      end)
+
+    pad = max(0, w - used - 1)
+    tail = text(" " <> String.duplicate("─", pad), Theme.separator())
+    stack(:horizontal, body_spans ++ [tail])
   end
+
+  defp span_text(%{content: t}) when is_binary(t), do: t
+  defp span_text(_), do: ""
 
   defp render_links(%{preview_links: []}, _w), do: []
 

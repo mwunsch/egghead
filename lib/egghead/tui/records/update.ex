@@ -8,7 +8,7 @@ defmodule Egghead.TUI.Records.Update do
   command. Pure function — no I/O. Side effects (record loads,
   $EDITOR spawns, etc.) are returned as commands.
 
-  Phase 5b key bindings:
+  Key bindings (records mode):
 
     * `↑ / ↓`           — move selection in the list
     * `Ctrl+F`           — toggle class filter (durable / all)
@@ -17,7 +17,11 @@ defmodule Egghead.TUI.Records.Update do
     * `Ctrl+N / Ctrl+P`  — scroll preview pane ±5 lines (emacs)
     * `printable char`   — append to filter
     * `backspace`        — pop last filter char
-    * `escape / ctrl+c`  — quit
+
+  Quit is `Ctrl+Q` (or `Ctrl+C` as belt-and-suspenders); both are
+  intercepted by `Egghead.OpenTUI.Runtime` directly so screens
+  don't see them. `Escape` is reserved for future use (link
+  deselect, command-mode exit) and currently does nothing.
 
   Later sub-phases add `enter` (open in $EDITOR / follow link),
   `tab` (cycle wikilinks), `/` (command palette), and so on.
@@ -28,10 +32,6 @@ defmodule Egghead.TUI.Records.Update do
   @preview_scroll_step 5
 
   @spec update(term(), Model.t()) :: {Model.t(), term()}
-  def update({:key, :ctrl_c}, model), do: {model, :halt}
-
-  def update({:key, :escape}, model), do: {model, :halt}
-
   def update({:key, :up}, model), do: {move_selection(model, -1), :none}
   def update({:key, :down}, model), do: {move_selection(model, +1), :none}
 

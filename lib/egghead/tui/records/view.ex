@@ -2,18 +2,26 @@ defmodule Egghead.TUI.Records.View do
   @moduledoc """
   Pure view function for the records-list screen.
 
-  Takes a `Egghead.TUI.Records.Model` plus the terminal dimensions
-  and returns a `Egghead.OpenTUI.View.tree`. No I/O. The
-  runtime calls this on every frame; the layout engine and
+  Takes a `Egghead.TUI.Records.Model` plus the terminal
+  dimensions and returns a `Egghead.OpenTUI.View.tree`. No I/O.
+  The runtime calls this on every frame; the layout engine and
   renderer turn the result into bridge calls.
 
-  Phase 5b additions over 5a:
+  Layout (top → bottom):
 
-    * Header includes class filter state (`durable` / `all`) and
-      both record counts.
-    * Date column respects `model.date_format` (relative or ISO).
-    * Preview pane slices its body by `model.preview_scroll`.
-    * Status bar shows the full key hint set.
+      header bar              (1 row, full-width styled bar)
+      search bar              (1 row, full-width styled bar)
+      separator               (1 row of `─`)
+      list pane               (≈⅓ of remaining body)
+      blank spacer            (1 row)
+      preview pane + scrollbar(≈⅔ of remaining body)
+      blank spacer            (1 row)
+      status bar              (1 row, full-width styled bar)
+
+  Mirrors the structure of `Egghead.TUI.App.records_view/1` on
+  `main`. Theming is intentionally not implemented yet — Phase
+  5b.5 uses fixed palette colors from `Egghead.OpenTUI.Colors`
+  as placeholders. A real theme module is a follow-on.
   """
 
   import Egghead.OpenTUI.View
@@ -23,16 +31,28 @@ defmodule Egghead.TUI.Records.View do
   @doc """
   Build the view tree for the given model. Width/height are
   passed in so list and preview panes can compute scroll
-  offsets and truncation widths.
+  offsets, truncation widths, and accurate scrollbar geometry.
+
+  The chrome (header + search + separator + 2 blanks + status)
+  is 6 rows. The remaining body is split 1/3 list / 2/3 preview,
+  matching `Egghead.TUI.App.records_view/1` on `main`. The
+  preview reserves one row for its label and the rest is body.
   """
   @spec render(Model.t(), pos_integer(), pos_integer()) :: Egghead.OpenTUI.View.tree()
-  def render(%Model{} = model, width, _height) do
+  def render(%Model{} = model, width, height) do
+    body_h = max(height - 6, 1)
+    list_h = max(div(body_h, 3), 1)
+    preview_h = max(body_h - list_h, 1)
+    content_h = max(preview_h - 1, 1)
+
     vbox([
       header(model, width),
       search(model, width),
-      list_pane(model, width),
-      divider(width),
-      preview_pane(model, width),
+      separator(width),
+      list_pane(model, width, list_h),
+      blank(width),
+      preview_pane(model, width, preview_h, content_h),
+      blank(width),
       status_bar(width)
     ])
   end
@@ -40,64 +60,34 @@ defmodule Egghead.TUI.Records.View do
   # ---- panes --------------------------------------------------------------
 
   defp header(model, width) do
-    class_label = if model.show_all_classes, do: "all", else: "durable"
+    left = " egghead"
+    count = length(model.filtered)
+    filter_label = if model.show_all_classes, do: "all", else: "durable"
+    right = "#{filter_label} · #{count} records "
 
-    label =
-      "egghead — #{class_label} · #{length(model.all)} records · " <>
-        "#{length(model.filtered)} shown"
+    pad_size = max(width - String.length(left) - String.length(right), 0)
+    line = left <> String.duplicate(" ", pad_size) <> right
 
-    text(truncate(label, width),
+    text(truncate(line, width),
       height: 1,
       fg: Colors.white(),
-      bg: Colors.bg()
+      bg: Colors.selected_bg()
     )
   end
 
   defp search(model, width) do
-    label = "❯ " <> model.filter <> "_"
+    content = " ❯ " <> model.filter <> "▌"
+    pad_size = max(width - String.length(content), 0)
+    line = content <> String.duplicate(" ", pad_size)
 
-    text(truncate(label, width),
+    text(truncate(line, width),
       height: 1,
       fg: Colors.cyan(),
       bg: Colors.bg()
     )
   end
 
-  defp list_pane(model, width) do
-    rows =
-      model.filtered
-      |> Enum.with_index()
-      |> Enum.map(fn {record, idx} ->
-        list_row(record, idx, model.selection, model.date_format, width)
-      end)
-
-    vbox([flex: 1], rows)
-  end
-
-  defp list_row(record, idx, selection, date_format, width) do
-    is_selected = idx == selection
-    label = record.id || ""
-    time_str = format_time(record.updated, date_format)
-
-    time_w = String.length(time_str)
-    label_w = max(width - time_w - 2, 0)
-
-    line =
-      " " <>
-        String.pad_trailing(truncate(label, label_w), label_w) <>
-        " " <>
-        time_str
-
-    line = truncate(line, width)
-
-    if is_selected do
-      text(line, height: 1, fg: Colors.white(), bg: Colors.dim())
-    else
-      text(line, height: 1, fg: Colors.white(), bg: Colors.bg())
-    end
-  end
-
-  defp divider(width) do
+  defp separator(width) do
     text(String.duplicate("─", width),
       height: 1,
       fg: Colors.dim(),
@@ -105,116 +95,258 @@ defmodule Egghead.TUI.Records.View do
     )
   end
 
-  defp preview_pane(model, width) do
-    case model.selected_id do
-      nil ->
-        vbox(
-          [flex: 2],
-          [text("(no selection)", height: 1, fg: Colors.dim(), bg: Colors.bg())]
-        )
-
-      id ->
-        scroll_label =
-          if model.preview_total_lines > 0 do
-            "  #{model.preview_scroll + 1}/#{model.preview_total_lines}"
-          else
-            ""
-          end
-
-        header_line = preview_header(id, scroll_label, width)
-
-        body_rows =
-          (model.selected_body || "")
-          |> String.split("\n")
-          |> Enum.drop(model.preview_scroll)
-          |> Enum.map(fn line ->
-            text(truncate(line, width),
-              height: 1,
-              fg: Colors.white(),
-              bg: Colors.bg()
-            )
-          end)
-
-        vbox([flex: 2], [header_line | body_rows])
-    end
-  end
-
-  defp preview_header(id, scroll_label, width) do
-    base = "── #{id}#{scroll_label} "
-    pad = max(width - String.length(base), 0)
-
-    text(truncate(base <> String.duplicate("─", pad), width),
+  defp blank(width) do
+    text(String.duplicate(" ", width),
       height: 1,
-      fg: Colors.dim(),
+      fg: Colors.white(),
       bg: Colors.bg()
     )
   end
 
-  defp status_bar(width) do
-    label =
-      " ↑↓ select · pgup/pgdn scroll · ^f class · ^t date · type filter · esc quit"
+  defp list_pane(model, width, list_h) do
+    # Scroll the visible window so the selected row stays visible.
+    offset = list_scroll_offset(model.selection, list_h)
 
-    text(truncate(label, width),
+    rows =
+      model.filtered
+      |> Enum.drop(offset)
+      |> Enum.take(list_h)
+      |> Enum.with_index(offset)
+      |> Enum.map(fn {record, idx} ->
+        list_row(record, idx == model.selection, model.date_format, width)
+      end)
+
+    vbox([height: list_h], rows)
+  end
+
+  defp list_scroll_offset(selection, list_h) when list_h > 0 do
+    cond do
+      selection < list_h - 2 -> 0
+      true -> selection - (list_h - 3)
+    end
+  end
+
+  defp list_scroll_offset(_selection, _list_h), do: 0
+
+  defp list_row(record, selected, date_format, width) do
+    title = record.title || record.id || ""
+    time = format_time(record.updated, date_format)
+    time_str = " " <> time <> " "
+    title_max = max(width - String.length(time_str) - 2, 1)
+    title_str = String.pad_trailing(slice(title, title_max), title_max)
+
+    line = " " <> title_str <> time_str
+
+    if selected do
+      text(truncate(line, width),
+        height: 1,
+        fg: Colors.white(),
+        bg: Colors.selected_bg()
+      )
+    else
+      # Two-segment hbox so the date column gets its own muted
+      # style without affecting the title styling.
+      hbox(
+        [height: 1],
+        [
+          text(" " <> title_str,
+            width: 1 + String.length(title_str),
+            fg: Colors.white(),
+            bg: Colors.bg()
+          ),
+          text(time_str,
+            width: String.length(time_str),
+            fg: Colors.muted(),
+            bg: Colors.bg()
+          )
+        ]
+      )
+    end
+  end
+
+  defp preview_pane(model, width, preview_h, content_h) do
+    case model.selected_id do
+      nil ->
+        vbox(
+          [height: preview_h],
+          [preview_label([{"(no selection)", :muted}], width)]
+        )
+
+      id ->
+        body = model.selected_body || ""
+        all_lines = String.split(body, "\n")
+        total_count = length(all_lines)
+
+        # Clamp scroll against the actual visible window so we
+        # never overscroll into a blank pane.
+        max_scroll = max(0, total_count - content_h)
+        scroll = min(model.preview_scroll, max_scroll)
+
+        scroll_segment =
+          if total_count > content_h do
+            pos =
+              if max_scroll > 0,
+                do: round(scroll / max_scroll * 100),
+                else: 0
+
+            "#{scroll + 1}-#{min(scroll + content_h, total_count)}/#{total_count} (#{pos}%)"
+          else
+            "#{total_count}L"
+          end
+
+        record_class = preview_class(model)
+
+        label =
+          preview_label(
+            [{id, :normal}, {record_class, :muted}, {scroll_segment, :muted}],
+            width
+          )
+
+        # Proportional scrollbar thumb. Mirrors main's render_preview/3:
+        #   bar_size  = round(content_h^2 / total_count), at least 1
+        #   travel    = content_h - bar_size
+        #   bar_start = round(scroll / max_scroll * travel)
+        {bar_start, bar_size} =
+          if total_count > content_h do
+            size = max(1, round(content_h * content_h / total_count))
+            travel = max(0, content_h - size)
+            start_pos = if max_scroll > 0, do: round(scroll / max_scroll * travel), else: 0
+            {start_pos, size}
+          else
+            {0, 0}
+          end
+
+        body_rows =
+          all_lines
+          |> Enum.drop(scroll)
+          |> Enum.take(content_h)
+          |> Enum.with_index()
+          |> Enum.map(fn {line, idx} ->
+            is_thumb = bar_size > 0 and idx >= bar_start and idx < bar_start + bar_size
+            scrollbar_char = if is_thumb, do: "▐", else: " "
+
+            content_w = max(width - 1, 1)
+            content_str = " " <> slice(line, content_w - 1)
+
+            hbox(
+              [height: 1],
+              [
+                text(content_str,
+                  width: content_w,
+                  fg: Colors.white(),
+                  bg: Colors.bg()
+                ),
+                text(scrollbar_char,
+                  width: 1,
+                  fg: Colors.dim(),
+                  bg: Colors.bg()
+                )
+              ]
+            )
+          end)
+
+        vbox([height: preview_h], [label | body_rows])
+    end
+  end
+
+  defp preview_class(%Model{selected_id: nil}), do: ""
+
+  defp preview_class(%Model{filtered: filtered, selection: sel}) do
+    case Enum.at(filtered, sel) do
+      nil -> ""
+      record -> record.class |> to_string()
+    end
+  end
+
+  # Render a preview label as " ── seg1 ── seg2 ── seg3 ─────... "
+  # `segments` is `[{text, :normal | :muted}]`.
+  defp preview_label(segments, width) do
+    sep = " ── "
+
+    {pieces, used} =
+      segments
+      |> Enum.with_index()
+      |> Enum.reduce({[], 0}, fn {{txt, kind}, idx}, {acc, used} ->
+        prefix = if idx == 0, do: " ── ", else: sep
+        style_fg = if kind == :normal, do: Colors.white(), else: Colors.dim()
+
+        prefix_node =
+          text(prefix,
+            width: String.length(prefix),
+            fg: Colors.dim(),
+            bg: Colors.bg()
+          )
+
+        text_node =
+          text(txt,
+            width: String.length(txt),
+            fg: style_fg,
+            bg: Colors.bg()
+          )
+
+        {acc ++ [prefix_node, text_node], used + String.length(prefix) + String.length(txt)}
+      end)
+
+    pad_count = max(width - used - 1, 0)
+
+    tail =
+      text(" " <> String.duplicate("─", pad_count),
+        width: 1 + pad_count,
+        fg: Colors.dim(),
+        bg: Colors.bg()
+      )
+
+    hbox([height: 1], pieces ++ [tail])
+  end
+
+  defp status_bar(width) do
+    line = " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^f filter │ ^t date │ ^q quit"
+    pad_size = max(width - String.length(line), 0)
+    padded = line <> String.duplicate(" ", pad_size)
+
+    text(truncate(padded, width),
       height: 1,
       fg: Colors.white(),
-      bg: Colors.dim()
+      bg: Colors.selected_bg()
     )
   end
 
-  # ---- helpers ------------------------------------------------------------
+  # ---- date formatters (mirror main's relative_time/iso_date) -------------
 
-  defp format_time(nil, _format), do: "         "
-
-  defp format_time(s, :iso) when is_binary(s) do
-    # ISO is the raw stored value, just trimmed to 19 chars (the
-    # YYYY-MM-DDTHH:MM:SS prefix) to avoid runaway widths.
-    String.slice(s, 0, 19)
-  end
+  defp format_time(nil, _), do: ""
 
   defp format_time(s, :relative) when is_binary(s) do
-    case parse_iso(s) do
-      {:ok, dt} -> humanize(dt)
-      _ -> String.slice(s, 0, 10)
-    end
-  end
-
-  defp parse_iso(s) do
-    # Records may be stored as `YYYY-MM-DDTHH:MM:SS[.fff]Z`, plain
-    # NaiveDateTime, or just `YYYY-MM-DD`. Try in order.
     case DateTime.from_iso8601(s) do
-      {:ok, dt, _offset} ->
-        {:ok, dt}
+      {:ok, dt, _} ->
+        diff = DateTime.diff(DateTime.utc_now(), dt, :second)
+
+        cond do
+          diff < 60 -> "#{diff}s"
+          diff < 3600 -> "#{div(diff, 60)}m"
+          diff < 86_400 -> "#{div(diff, 3600)}h"
+          diff < 604_800 -> "#{div(diff, 86_400)}d"
+          true -> "#{div(diff, 604_800)}w"
+        end
 
       _ ->
-        case NaiveDateTime.from_iso8601(s) do
-          {:ok, ndt} ->
-            {:ok, DateTime.from_naive!(ndt, "Etc/UTC")}
-
-          _ ->
-            case Date.from_iso8601(String.slice(s, 0, 10)) do
-              {:ok, d} -> {:ok, DateTime.new!(d, ~T[00:00:00], "Etc/UTC")}
-              _ -> :error
-            end
-        end
+        ""
     end
   end
 
-  defp humanize(%DateTime{} = dt) do
-    seconds_ago = DateTime.diff(DateTime.utc_now(), dt, :second)
-
-    cond do
-      seconds_ago < 60 -> "just now"
-      seconds_ago < 3600 -> "#{div(seconds_ago, 60)}m ago"
-      seconds_ago < 86_400 -> "#{div(seconds_ago, 3600)}h ago"
-      seconds_ago < 7 * 86_400 -> "#{div(seconds_ago, 86_400)}d ago"
-      seconds_ago < 30 * 86_400 -> "#{div(seconds_ago, 7 * 86_400)}w ago"
-      true -> "#{div(seconds_ago, 30 * 86_400)}mo ago"
+  defp format_time(s, :iso) when is_binary(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _} -> Calendar.strftime(dt, "%Y-%m-%d")
+      _ -> ""
     end
   end
 
-  defp truncate(str, max) when is_binary(str) and is_integer(max) and max > 0 do
+  # ---- string helpers ------------------------------------------------------
+
+  defp slice(str, max) when is_binary(str) and is_integer(max) and max > 0 do
     if String.length(str) <= max, do: str, else: String.slice(str, 0, max)
   end
 
-  defp truncate(_str, _max), do: ""
+  defp slice(_str, _max), do: ""
+
+  defp truncate(str, max), do: slice(str, max)
 end

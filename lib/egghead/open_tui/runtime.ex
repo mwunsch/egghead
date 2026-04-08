@@ -148,11 +148,11 @@ defmodule Egghead.OpenTUI.Runtime do
     if :keys in subs do
       key = Input.read_one_key()
 
-      # Default key→halt mapping. Screens can override by
-      # *handling* :ctrl_c / :escape in their update/2 and
-      # returning a non-:halt cmd.
+      # Universal quit keys that bypass the screen's update/2
+      # so any screen can be killed regardless of mode.
       case key do
         {:key, :ctrl_c} -> {:halt, state}
+        {:key, :ctrl_q} -> {:halt, state}
         _ -> {key_to_msg(key), state}
       end
     else

@@ -12,8 +12,10 @@ defmodule Egghead.OpenTUI.Input do
   Returns one of:
     * `{:char, "x"}` — a printable ASCII byte (0x20–0x7E)
     * `{:key, :escape}` — bare ESC
-    * `{:key, :ctrl_c | :ctrl_f | :ctrl_n | :ctrl_p | :ctrl_t}`
+    * `{:key, :ctrl_c | :ctrl_f | :ctrl_n | :ctrl_p | :ctrl_q | :ctrl_t}`
     * `{:key, :backspace}` — DEL (0x7F)
+    * `{:key, :tab}` — TAB (0x09)
+    * `{:key, :enter}` — CR (0x0D) / LF (0x0A)
     * `{:key, :up | :down | :left | :right}` — CSI arrows
     * `{:key, :page_up | :page_down}` — CSI 5~ / 6~
     * `{:key, {:byte, n}}` — an unrecognized control byte
@@ -38,8 +40,12 @@ defmodule Egghead.OpenTUI.Input do
     case read_byte(tty) do
       <<0x03>> -> {:key, :ctrl_c}
       <<0x06>> -> {:key, :ctrl_f}
+      <<0x09>> -> {:key, :tab}
+      <<0x0A>> -> {:key, :enter}
+      <<0x0D>> -> {:key, :enter}
       <<0x0E>> -> {:key, :ctrl_n}
       <<0x10>> -> {:key, :ctrl_p}
+      <<0x11>> -> {:key, :ctrl_q}
       <<0x14>> -> {:key, :ctrl_t}
       <<0x1B>> -> parse_escape(tty)
       <<0x7F>> -> {:key, :backspace}

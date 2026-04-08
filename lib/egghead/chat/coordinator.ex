@@ -358,56 +358,49 @@ defmodule Egghead.Chat.Coordinator do
       agents: room_state.agents
     }
 
-    # Initialize streaming buffer for in-progress transcript updates.
-    # We hold tokens locally and only emit downstream events on paragraph
-    # boundaries (\n\n) — no per-token streaming, no time-based flushing.
-    # This keeps the chat display readable: complete paragraphs appear
-    # one at a time instead of every individual token.
-    Process.put({:streaming_buffer, agent_id}, "")
+    # Streaming is RAW: every text delta is broadcast immediately to
+    # PubSub subscribers. Display-side buffering (e.g. paragraph batching
+    # for the TUI's IRC view) belongs to the consumer, not here. Other
+    # watchers — RoomLogger, MCP egghead_chat, future Phoenix Channels —
+    # need access to the unbuffered token stream.
+    #
+    # We still need a per-call cumulative accumulator so we can push
+    # the running total to Room.streaming_update (read by the [PASS]
+    # rescue path below and by tools that ask "what has this agent
+    # said so far?"). This MUST live in its own process: on_chunk runs
+    # inside the Session GenServer (where Req.post executes), not in
+    # this Task — so the process dictionary cannot be used here without
+    # leaking state across sequential prompts to the same Session and
+    # corrupting later messages with text from earlier turns.
+    {:ok, buffer_pid} = Agent.start_link(fn -> "" end)
+
+    # Belt-and-suspenders: ensure no stale in_progress text from a
+    # prior call lingers when this turn begins. Without this, even a
+    # transient bug in the accumulator could cause the [PASS] rescue
+    # path below to commit text from a previous turn.
+    Room.clear_in_progress(room_id, agent_id)
 
     on_chunk = fn
       {:text, delta} ->
-        current = Process.get({:streaming_buffer, agent_id}, "")
-        combined = current <> delta
+        Phoenix.PubSub.broadcast(
+          @pubsub,
+          Room.topic(room_id),
+          {:agent_streaming, room_id, agent_id, delta}
+        )
 
-        case String.split(combined, "\n\n") do
-          [single] ->
-            # No paragraph break yet — keep buffering silently, no broadcast
-            Process.put({:streaming_buffer, agent_id}, single)
+        cumulative =
+          Agent.get_and_update(buffer_pid, fn cum ->
+            new = cum <> delta
+            {new, new}
+          end)
 
-          parts ->
-            # Everything before the last segment is a finished paragraph.
-            # Broadcast the finished portion as one delta and keep the
-            # partial last segment in the buffer for next time.
-            {complete_parts, [partial]} = Enum.split(parts, length(parts) - 1)
-            to_emit = Enum.join(complete_parts, "\n\n") <> "\n\n"
-
-            Phoenix.PubSub.broadcast(
-              @pubsub,
-              Room.topic(room_id),
-              {:agent_streaming, room_id, agent_id, to_emit}
-            )
-
-            Process.put({:streaming_buffer, agent_id}, partial)
-
-            # Also update Room's in-progress transcript with the
-            # cumulative text (complete + partial). Other watchers
-            # (e.g. egghead_chat MCP tool) read from there.
-            cumulative =
-              if partial == "",
-                do: Enum.join(complete_parts, "\n\n"),
-                else: Enum.join(complete_parts, "\n\n") <> "\n\n" <> partial
-
-            Room.streaming_update(room_id, agent_id, cumulative)
-        end
+        Room.streaming_update(room_id, agent_id, cumulative)
 
       {:block_done, %{"type" => "tool_use", "name" => name} = block} ->
-        # Flush buffer before tool call
-        buffer = Process.get({:streaming_buffer, agent_id}, "")
-
-        if buffer != "" do
-          Room.streaming_update(room_id, agent_id, buffer)
-        end
+        # Reset the cumulative before the tool call so subsequent text
+        # streams (after the tool result comes back) don't double-count
+        # earlier text.
+        Agent.update(buffer_pid, fn _ -> "" end)
 
         Phoenix.PubSub.broadcast(
           @pubsub,
@@ -419,7 +412,16 @@ defmodule Egghead.Chat.Coordinator do
         :ok
     end
 
-    case Egghead.Agent.prompt(agent_id, message, room: room_context, on_chunk: on_chunk) do
+    result =
+      try do
+        Egghead.Agent.prompt(agent_id, message, room: room_context, on_chunk: on_chunk)
+      after
+        # Always tear down the buffer Agent so we don't leak processes
+        # if Egghead.Agent.prompt raises.
+        if Process.alive?(buffer_pid), do: Agent.stop(buffer_pid)
+      end
+
+    case result do
       {:ok, %{text: text, usage: usage}} ->
         if pass_response?(text) do
           # Check if the agent streamed substantive content to the room's

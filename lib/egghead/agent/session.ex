@@ -21,15 +21,24 @@ defmodule Egghead.Agent.Session do
   @compact_threshold 200
   @body_cap 500
 
-  @base_system_prompt """
+  @base_system_prompt_intro """
   You are an agent in Egghead, a shared knowledge base. Records are Markdown
   (with YAML frontmatter) or org-mode files, each with an id, title, tags,
   links to other records, a class (durable, inbox, deliberation, agent), and
   a body. Records are linked with [[wikilinks]].
+  """
+
+  # Tool-aware paragraph — only included when the agent actually has
+  # tools available. Otherwise, telling the LLM to "use your tools"
+  # makes it hallucinate XML <invoke> tags as plain text.
+  @base_system_prompt_tools """
 
   Use your tools to search and read records — don't guess about what's in
   the store. Reference records by their id. Create records to persist
   valuable knowledge, using meaningful ids and linking to related records.
+  """
+
+  @base_system_prompt_outro """
 
   Be concise and substantive.
   """
@@ -511,9 +520,17 @@ defmodule Egghead.Agent.Session do
   defp build_system_prompt(state, room \\ nil) do
     id = state.identity
     context_status = format_context_status(state)
+    has_tools? = (id[:capabilities] || []) != []
+
+    intro =
+      if has_tools? do
+        @base_system_prompt_intro <> @base_system_prompt_tools <> @base_system_prompt_outro
+      else
+        @base_system_prompt_intro <> @base_system_prompt_outro
+      end
 
     base = """
-    #{@base_system_prompt}
+    #{intro}
 
     You are **#{id[:name]}** (#{id[:id]}). #{context_status}
 
@@ -708,6 +725,13 @@ defmodule Egghead.Agent.Session do
           end
       end
 
+    # Drop the agent's own past messages — they are already present in
+    # state.history as assistant turns. Including them here too caused
+    # the LLM to see its own outputs twice and (in extreme cases) parrot
+    # them back concatenated. The transcript section is meant to be
+    # "what others said".
+    messages = Enum.reject(messages, &own_message?(&1, agent_id))
+
     if messages == [] do
       "(no new messages)"
     else
@@ -731,6 +755,9 @@ defmodule Egghead.Agent.Session do
       end)
     end
   end
+
+  defp own_message?(%{sender: %{id: id}}, agent_id), do: id == agent_id
+  defp own_message?(_, _), do: false
 
   # --- LLM dispatch ---
 

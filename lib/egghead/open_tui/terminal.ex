@@ -1,0 +1,164 @@
+defmodule Egghead.OpenTUI.Terminal do
+  @moduledoc """
+  Owns the terminal lifecycle for a single TUI session (spike scope).
+
+  OpenTUI's `setupTerminal` enters the alternate screen, saves cursor
+  state, detects capabilities, and enables the Kitty keyboard protocol —
+  but it does NOT put the tty into raw mode. We do that ourselves via
+  `stty`. On teardown, `destroyRenderer` restores everything OpenTUI
+  touched; this GenServer restores raw mode.
+
+  The GenServer traps exits and runs cleanup in `terminate/2` so that an
+  abnormal shutdown (crash, kill, Ctrl+C) still leaves the terminal
+  usable. This is the lesson from TermUI — do not rely on the happy
+  path for terminal restoration.
+  """
+
+  use GenServer
+
+  alias Egghead.OpenTUI.Bridge
+
+  # ---- API -----------------------------------------------------------------
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @doc "Return the active renderer handle."
+  def handle, do: GenServer.call(__MODULE__, :handle)
+
+  @doc "Return the renderer dimensions {width, height} in cells."
+  def dimensions, do: GenServer.call(__MODULE__, :dimensions)
+
+  @doc """
+  Draw the spike's hello-world frame. Kept in the GenServer so all
+  Bridge calls go through a single owning process.
+  """
+  def draw_hello(text) do
+    GenServer.call(__MODULE__, {:draw_hello, text})
+  end
+
+  @doc """
+  Run `fun.(handle, width, height)` inside the GenServer so the
+  draw sequence (begin_frame → draw calls → end_frame) is owned
+  by the single terminal process. The function's return value is
+  passed back to the caller.
+  """
+  def with_handle(fun) when is_function(fun, 3) do
+    GenServer.call(__MODULE__, {:with_handle, fun})
+  end
+
+  @doc """
+  Resize the renderer to `(width, height)` and update the cached
+  dimensions. Call after detecting a terminal size change.
+  """
+  def resize(width, height) when is_integer(width) and is_integer(height) do
+    GenServer.call(__MODULE__, {:resize, width, height})
+  end
+
+  @doc """
+  Tear down the OpenTUI renderer and leave raw mode so a foreign
+  process (e.g. `$EDITOR`) can take over the controlling terminal.
+  Use `resume/0` to restore the renderer afterwards. Idempotent.
+  """
+  def suspend, do: GenServer.call(__MODULE__, :suspend)
+
+  @doc """
+  Re-enter raw mode and create a new OpenTUI renderer at the
+  current TTY size. The handle changes; existing handles from
+  before `suspend/0` are invalid. Idempotent if not currently
+  suspended.
+  """
+  def resume, do: GenServer.call(__MODULE__, :resume)
+
+  # ---- Callbacks -----------------------------------------------------------
+
+  @impl true
+  def init(_opts) do
+    Process.flag(:trap_exit, true)
+
+    {width, height} =
+      case Bridge.tty_size() do
+        {:ok, {cols, rows}} -> {cols, rows}
+        _ -> {80, 24}
+      end
+
+    :ok = Bridge.enter_raw_mode()
+
+    {:ok, handle} = Bridge.create_renderer(width, height)
+    :ok = Bridge.setup_terminal(handle)
+
+    state = %{handle: handle, width: width, height: height, suspended?: false}
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:handle, _from, state), do: {:reply, state.handle, state}
+
+  def handle_call(:dimensions, _from, state),
+    do: {:reply, {state.width, state.height}, state}
+
+  def handle_call({:draw_hello, text}, _from, state) do
+    :ok = Bridge.draw_hello(state.handle, state.width, state.height, text)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:with_handle, fun}, _from, state) do
+    reply = fun.(state.handle, state.width, state.height)
+    {:reply, reply, state}
+  end
+
+  def handle_call({:resize, width, height}, _from, state) do
+    :ok = Bridge.resize(state.handle, width, height)
+    {:reply, :ok, %{state | width: width, height: height}}
+  end
+
+  def handle_call(:suspend, _from, %{suspended?: true} = state),
+    do: {:reply, :ok, state}
+
+  def handle_call(:suspend, _from, state) do
+    safe(fn -> Bridge.destroy_renderer(state.handle) end)
+    safe(fn -> Bridge.leave_raw_mode() end)
+    {:reply, :ok, %{state | handle: nil, suspended?: true}}
+  end
+
+  def handle_call(:resume, _from, %{suspended?: false} = state),
+    do: {:reply, :ok, state}
+
+  def handle_call(:resume, _from, state) do
+    {width, height} =
+      case Bridge.tty_size() do
+        {:ok, {cols, rows}} -> {cols, rows}
+        _ -> {state.width, state.height}
+      end
+
+    :ok = Bridge.enter_raw_mode()
+    {:ok, handle} = Bridge.create_renderer(width, height)
+    :ok = Bridge.setup_terminal(handle)
+
+    {:reply, :ok,
+     %{state | handle: handle, width: width, height: height, suspended?: false}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    # OpenTUI restores alt screen + terminal modes inside destroyRenderer.
+    # We restore termios afterwards so raw mode is off even on crash.
+    if state.handle do
+      safe(fn -> Bridge.destroy_renderer(state.handle) end)
+    end
+
+    safe(fn -> Bridge.leave_raw_mode() end)
+    :ok
+  end
+
+  # ---- helpers -------------------------------------------------------------
+
+  defp safe(f) do
+    try do
+      f.()
+    catch
+      _, _ -> :ok
+    end
+  end
+end

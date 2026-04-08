@@ -1,5 +1,158 @@
+defmodule Egghead.OpenTUIPaths do
+  @moduledoc """
+  Single source of truth for the OpenTUI bridge's on-disk layout.
+
+  build_dot_zig installs Zig artifacts under
+  `priv/$MIX_TARGET/lib/` (with `host` as the default subdir when
+  `MIX_TARGET` is unset). The OpenTUI prebuilt download must land
+  in the same dir so the bridge_nif's `@loader_path` / `$ORIGIN`
+  RPATH resolves to it as a sibling.
+
+  This module is defined inside `mix.exs` so both `MixProject`
+  and `Mix.Tasks.Compile.OpentuiFetch` can call it without a
+  load-order dance.
+  """
+
+  @opentui_version "v0.1.97"
+
+  def opentui_version, do: @opentui_version
+
+  @doc "Resolve the install dir (relative to the project root) for a target."
+  def lib_dir(target) do
+    Path.join(["priv", target_subdir(target), "lib"])
+  end
+
+  @doc """
+  build_dot_zig installs under `priv/$MIX_TARGET/lib/`, defaulting
+  to `priv/host/lib/` when `MIX_TARGET` is unset. We mirror that
+  here so OpentuiFetch puts libopentui in the same directory the
+  bridge_nif will be installed into, and `@loader_path` resolves.
+  """
+  def target_subdir(_zig_target) do
+    System.get_env("MIX_TARGET", "host")
+  end
+
+  @doc """
+  Map a `:zig_target` value to the OpenTUI release asset filename.
+
+  Phase 3 supports darwin-arm64 and linux-x86_64. Add more
+  triples here as we extend cross-compile coverage.
+  """
+  def opentui_asset(:host), do: opentui_asset_for_triple(host_triple())
+  def opentui_asset(triple) when is_binary(triple), do: opentui_asset_for_triple(triple)
+
+  defp opentui_asset_for_triple(triple) do
+    cond do
+      matches?(triple, ["aarch64-macos", "aarch64-apple-darwin"]) ->
+        "opentui-native-#{@opentui_version}-darwin-arm64.zip"
+
+      matches?(triple, ["x86_64-macos", "x86_64-apple-darwin"]) ->
+        "opentui-native-#{@opentui_version}-darwin-x64.zip"
+
+      matches?(triple, ["x86_64-linux"]) ->
+        "opentui-native-#{@opentui_version}-linux-x64.zip"
+
+      matches?(triple, ["aarch64-linux"]) ->
+        "opentui-native-#{@opentui_version}-linux-arm64.zip"
+
+      true ->
+        raise "OpentuiFetch: no OpenTUI asset mapped for target #{inspect(triple)}"
+    end
+  end
+
+  @doc "Filename of the libopentui shared library for a target."
+  def opentui_lib(:host), do: opentui_lib_for_triple(host_triple())
+  def opentui_lib(triple) when is_binary(triple), do: opentui_lib_for_triple(triple)
+
+  defp opentui_lib_for_triple(triple) do
+    cond do
+      matches?(triple, ["macos", "apple-darwin"]) -> "libopentui.dylib"
+      matches?(triple, ["linux"]) -> "libopentui.so"
+      true -> raise "OpentuiFetch: no libopentui filename for target #{inspect(triple)}"
+    end
+  end
+
+  defp matches?(triple, needles) do
+    Enum.any?(needles, &String.contains?(triple, &1))
+  end
+
+  defp host_triple do
+    :erlang.system_info(:system_architecture) |> List.to_string()
+  end
+end
+
+defmodule Mix.Tasks.Compile.OpentuiFetch do
+  @moduledoc """
+  Custom Mix compiler that downloads the upstream OpenTUI prebuilt
+  shared library for the configured `:zig_target`.
+
+  This is the OpenTUI-specific glue that `build_dot_zig` deliberately
+  doesn't do. Everything else (Zig toolchain pin, ERL include
+  detection, running `zig build`) is handled by `build_dot_zig`.
+  This compiler must run *before* `:build_dot_zig` so libopentui is
+  on disk when bridge_nif links against it.
+
+  Lives in `mix.exs` (rather than `lib/mix/tasks/compile/`) so it is
+  defined before the Elixir compiler runs — there's no chicken-and-egg
+  with compiling our own custom compiler.
+  """
+
+  use Mix.Task.Compiler
+
+  alias Egghead.OpenTUIPaths
+
+  @impl true
+  def run(_args) do
+    target = Mix.Project.config()[:zig_target] || :host
+    lib_dir = OpenTUIPaths.lib_dir(target)
+    File.mkdir_p!(lib_dir)
+
+    expected = Path.join(lib_dir, OpenTUIPaths.opentui_lib(target))
+
+    if File.exists?(expected) and File.stat!(expected).size > 0 do
+      :ok
+    else
+      asset = OpenTUIPaths.opentui_asset(target)
+      url = "https://github.com/sst/opentui/releases/download/#{OpenTUIPaths.opentui_version()}/#{asset}"
+
+      Mix.shell().info("==> downloading #{asset}")
+
+      tmp_zip = Path.join(System.tmp_dir!(), asset)
+
+      case System.cmd("curl", ["-fsSL", "-o", tmp_zip, url], stderr_to_stdout: true) do
+        {_, 0} -> :ok
+        {output, status} -> Mix.raise("curl download failed (#{status}):\n#{output}")
+      end
+
+      {:ok, _} = :zip.extract(String.to_charlist(tmp_zip), [{:cwd, String.to_charlist(lib_dir)}])
+      File.rm!(tmp_zip)
+
+      unless File.exists?(expected) do
+        Mix.raise("OpentuiFetch: #{expected} missing after extracting #{asset}")
+      end
+
+      Mix.shell().info("==> #{Path.basename(expected)} installed at #{expected}")
+      :ok
+    end
+  end
+
+  @impl true
+  def clean do
+    # We leave priv/<target>/ alone so the (relatively expensive)
+    # prebuilt download survives `mix clean`. `rm -rf priv/<target>`
+    # for a hard reset.
+    :ok
+  end
+end
+
 defmodule Egghead.MixProject do
   use Mix.Project
+
+  # Set to a target triple string (e.g. "x86_64-linux-gnu") for a
+  # cross-compile of the OpenTUI bridge. `:host` builds for this
+  # machine. The OpentuiFetch compiler reads this same value to
+  # decide which libopentui asset to download.
+  @zig_target :host
 
   def project do
     [
@@ -7,6 +160,11 @@ defmodule Egghead.MixProject do
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      compilers: [:opentui_fetch, :build_dot_zig] ++ Mix.compilers(),
+      zig_target: @zig_target,
+      zig_extra_options: [
+        opentui_dir: Egghead.OpenTUIPaths.lib_dir(@zig_target)
+      ],
       deps: deps(),
       package: package()
     ]
@@ -23,6 +181,7 @@ defmodule Egghead.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:build_dot_zig, "~> 0.7", runtime: false},
       {:yaml_elixir, "~> 2.11"},
       {:file_system, "~> 1.0"},
       {:earmark, "~> 1.4"},
@@ -32,10 +191,7 @@ defmodule Egghead.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:bandit, "~> 1.6"},
       {:plug, "~> 1.16"},
-      {:req, "~> 0.5"},
-      # Pinned to fix commit: append!/2 was silently discarding auto-flushed data,
-      # causing blank screens on wide terminals. PR #16, before MDEx was added.
-      {:term_ui, github: "pcharbon70/term_ui", ref: "a2db141"}
+      {:req, "~> 0.5"}
     ]
   end
 

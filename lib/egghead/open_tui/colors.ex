@@ -1,14 +1,18 @@
 defmodule Egghead.OpenTUI.Colors do
   @moduledoc """
-  Color binaries for the spike's drawing API.
+  Default palette as compile-time color binaries.
 
-  OpenTUI's C ABI takes colors as four little-endian f32s (r, g, b, a),
-  so the bridge NIF accepts a 16-byte binary in that exact layout. This
-  module precomputes the spike's palette at compile time so the render
-  loop never allocates color values.
+  OpenTUI's C ABI takes colors as four little-endian f32s
+  (r, g, b, a), so the bridge NIF accepts a 16-byte binary in
+  that exact layout. This module precomputes a small palette
+  at compile time so render loops never allocate color values.
 
-  Pass `transparent/0` (the empty binary) where the bridge expects a
-  bg argument that should mean "no background fill."
+  Pass `transparent/0` (the empty binary) where the bridge
+  expects a bg argument that should mean "no background fill."
+
+  Applications that need a richer palette can either build their
+  own binaries with `rgba/4` or define a domain-specific module
+  alongside this one.
   """
 
   @doc "Pack four 0.0–1.0 floats into a 16-byte little-endian color binary."
@@ -21,10 +25,10 @@ defmodule Egghead.OpenTUI.Colors do
   @spec transparent() :: binary()
   def transparent, do: <<>>
 
-  # ---- Spike palette -------------------------------------------------------
+  # ---- Default palette ----------------------------------------------------
   #
   # Distinct, saturated, easy to tell apart visually and in spans snapshots.
-  # Compile-time literals so the render loop reuses the same iolist refs.
+  # Compile-time literals so the render loop reuses the same binary refs.
 
   @bg <<0.06::float-32-little, 0.06::float-32-little, 0.08::float-32-little,
         1.0::float-32-little>>
@@ -72,8 +76,4 @@ defmodule Egghead.OpenTUI.Colors do
   def link, do: @link
   def muted, do: @muted
   def selected_bg, do: @selected_bg
-
-  @doc "Cycle the spike palette by index."
-  @spec palette() :: [binary()]
-  def palette, do: [@red, @green, @blue, @cyan, @magenta, @yellow, @white]
 end

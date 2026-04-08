@@ -1,26 +1,29 @@
 defmodule Egghead.OpenTUI.Bridge do
   @moduledoc """
-  NIF bridge to OpenTUI's Zig core (spike scope).
+  NIF bridge to OpenTUI's Zig core.
 
-  The native library is `priv/native/libbridge_nif.{dylib,so,dll}` and it
-  loads `libopentui.{dylib,so,dll}` as a sibling via `@loader_path`
-  (macOS) / `$ORIGIN` (Linux).
+  The native library is installed by `build_dot_zig` at
+  `priv/<target>/lib/libbridge_nif.so` and loads
+  `libopentui.{dylib,so}` as a sibling via `@loader_path`
+  (macOS) / `$ORIGIN` (Linux). The exact target subdirectory is
+  resolved at load time by `load_nif/0`.
 
   ## Handle discipline
 
-  All OpenTUI renderers live behind opaque integer handles registered in
-  the Zig shim. Elixir never holds a raw pointer. A bogus handle returns
-  `:badarg` — it cannot crash the BEAM.
+  All OpenTUI renderers live behind opaque integer handles
+  registered in the Zig shim. Elixir never holds a raw pointer.
+  A bogus handle returns `:badarg` — it cannot crash the BEAM.
 
-  ## Current surface (spike only)
+  ## Surface
 
-    * `create_renderer/2` — allocate renderer, return `{:ok, handle}`
-    * `setup_terminal/1` — enter alternate screen, enable terminal features
-    * `draw_hello/4` — clear buffer, draw centered text, flush a frame
-    * `destroy_renderer/1` — tear down, restore terminal state
+  Lifecycle:
+    * `create_renderer/2`, `setup_terminal/1`, `destroy_renderer/1`
+    * `enter_raw_mode/0`, `leave_raw_mode/0`
+    * `tty_size/0`, `drain_input/1`, `resize/3`
 
-  This is not the final bridge. It exists to prove the NIF round-trip
-  works end to end. See `records/design/opentui-bridge.md`.
+  Per-frame drawing:
+    * `begin_frame/1`, `end_frame/1`
+    * `clear/2`, `fill_rect/6`, `draw_text/7`
   """
 
   @on_load :load_nif
@@ -71,20 +74,6 @@ defmodule Egghead.OpenTUI.Bridge do
   """
   @spec setup_terminal(non_neg_integer()) :: :ok
   def setup_terminal(_handle), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Clear the next buffer, draw `text` horizontally centered, render the
-  frame. The caller must pass the same `width`/`height` it used for
-  `create_renderer/2`.
-  """
-  @spec draw_hello(
-          non_neg_integer(),
-          pos_integer(),
-          pos_integer(),
-          binary()
-        ) :: :ok
-  def draw_hello(_handle, _width, _height, _text),
-    do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Tear down the renderer. Restores terminal state (exits alt screen,

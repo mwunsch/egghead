@@ -21,6 +21,12 @@ defmodule Mix.Tasks.Egghead.Tui do
 
   @impl true
   def run(_args) do
+    # Honor EGGHEAD_RECORDS_DIR override before app.start so the
+    # RecordSupervisor picks up the override on boot.
+    if records_dir = System.get_env("EGGHEAD_RECORDS_DIR") do
+      Application.put_env(:egghead, :records_dir, records_dir)
+    end
+
     # Start the app FIRST — let it configure Logger however it wants
     Mix.Task.run("app.start")
 

@@ -7,10 +7,13 @@ defmodule Egghead.TUI.Records.View do
   runtime calls this on every frame; the layout engine and
   renderer turn the result into bridge calls.
 
-  Phase 5a renders the same six panes as the Phase 4 imperative
-  implementation: header, search bar, list, divider, preview,
-  status. Later sub-phases add markdown rendering, link nav
-  footer, command palette overlay, etc.
+  Phase 5b additions over 5a:
+
+    * Header includes class filter state (`durable` / `all`) and
+      both record counts.
+    * Date column respects `model.date_format` (relative or ISO).
+    * Preview pane slices its body by `model.preview_scroll`.
+    * Status bar shows the full key hint set.
   """
 
   import Egghead.OpenTUI.View
@@ -37,7 +40,11 @@ defmodule Egghead.TUI.Records.View do
   # ---- panes --------------------------------------------------------------
 
   defp header(model, width) do
-    label = "egghead — #{length(model.all)} records (#{length(model.filtered)} shown)"
+    class_label = if model.show_all_classes, do: "all", else: "durable"
+
+    label =
+      "egghead — #{class_label} · #{length(model.all)} records · " <>
+        "#{length(model.filtered)} shown"
 
     text(truncate(label, width),
       height: 1,
@@ -57,26 +64,20 @@ defmodule Egghead.TUI.Records.View do
   end
 
   defp list_pane(model, width) do
-    # The list flexes to fill the upper region. Inside, each row
-    # is its own single-row text leaf in a vbox so the renderer
-    # paints them at distinct y coordinates.
     rows =
       model.filtered
       |> Enum.with_index()
       |> Enum.map(fn {record, idx} ->
-        list_row(record, idx, model.selection, width)
+        list_row(record, idx, model.selection, model.date_format, width)
       end)
 
-    # Wrap rows in a vbox; the vbox itself is flex 1 so it
-    # takes the remaining space after the fixed header/search/
-    # divider/status panes.
     vbox([flex: 1], rows)
   end
 
-  defp list_row(record, idx, selection, width) do
+  defp list_row(record, idx, selection, date_format, width) do
     is_selected = idx == selection
     label = record.id || ""
-    time_str = format_time(record.updated)
+    time_str = format_time(record.updated, date_format)
 
     time_w = String.length(time_str)
     label_w = max(width - time_w - 2, 0)
@@ -113,11 +114,19 @@ defmodule Egghead.TUI.Records.View do
         )
 
       id ->
-        header_line = preview_header(id, width)
+        scroll_label =
+          if model.preview_total_lines > 0 do
+            "  #{model.preview_scroll + 1}/#{model.preview_total_lines}"
+          else
+            ""
+          end
+
+        header_line = preview_header(id, scroll_label, width)
 
         body_rows =
           (model.selected_body || "")
           |> String.split("\n")
+          |> Enum.drop(model.preview_scroll)
           |> Enum.map(fn line ->
             text(truncate(line, width),
               height: 1,
@@ -130,8 +139,8 @@ defmodule Egghead.TUI.Records.View do
     end
   end
 
-  defp preview_header(id, width) do
-    base = "── #{id} "
+  defp preview_header(id, scroll_label, width) do
+    base = "── #{id}#{scroll_label} "
     pad = max(width - String.length(base), 0)
 
     text(truncate(base <> String.duplicate("─", pad), width),
@@ -142,7 +151,8 @@ defmodule Egghead.TUI.Records.View do
   end
 
   defp status_bar(width) do
-    label = " ↑↓ select  ·  type to filter  ·  esc / ctrl-c quit"
+    label =
+      " ↑↓ select · pgup/pgdn scroll · ^f class · ^t date · type filter · esc quit"
 
     text(truncate(label, width),
       height: 1,
@@ -153,12 +163,52 @@ defmodule Egghead.TUI.Records.View do
 
   # ---- helpers ------------------------------------------------------------
 
-  defp format_time(nil), do: "         "
+  defp format_time(nil, _format), do: "         "
 
-  defp format_time(s) when is_binary(s) do
-    case String.split(s, "T", parts: 2) do
-      [date | _] -> date
-      _ -> s
+  defp format_time(s, :iso) when is_binary(s) do
+    # ISO is the raw stored value, just trimmed to 19 chars (the
+    # YYYY-MM-DDTHH:MM:SS prefix) to avoid runaway widths.
+    String.slice(s, 0, 19)
+  end
+
+  defp format_time(s, :relative) when is_binary(s) do
+    case parse_iso(s) do
+      {:ok, dt} -> humanize(dt)
+      _ -> String.slice(s, 0, 10)
+    end
+  end
+
+  defp parse_iso(s) do
+    # Records may be stored as `YYYY-MM-DDTHH:MM:SS[.fff]Z`, plain
+    # NaiveDateTime, or just `YYYY-MM-DD`. Try in order.
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _offset} ->
+        {:ok, dt}
+
+      _ ->
+        case NaiveDateTime.from_iso8601(s) do
+          {:ok, ndt} ->
+            {:ok, DateTime.from_naive!(ndt, "Etc/UTC")}
+
+          _ ->
+            case Date.from_iso8601(String.slice(s, 0, 10)) do
+              {:ok, d} -> {:ok, DateTime.new!(d, ~T[00:00:00], "Etc/UTC")}
+              _ -> :error
+            end
+        end
+    end
+  end
+
+  defp humanize(%DateTime{} = dt) do
+    seconds_ago = DateTime.diff(DateTime.utc_now(), dt, :second)
+
+    cond do
+      seconds_ago < 60 -> "just now"
+      seconds_ago < 3600 -> "#{div(seconds_ago, 60)}m ago"
+      seconds_ago < 86_400 -> "#{div(seconds_ago, 3600)}h ago"
+      seconds_ago < 7 * 86_400 -> "#{div(seconds_ago, 86_400)}d ago"
+      seconds_ago < 30 * 86_400 -> "#{div(seconds_ago, 7 * 86_400)}w ago"
+      true -> "#{div(seconds_ago, 30 * 86_400)}mo ago"
     end
   end
 

@@ -1,20 +1,27 @@
-// Egghead <-> OpenTUI NIF bridge (spike scope).
+// Egghead.OpenTUI NIF bridge — Elixir <-> OpenTUI's Zig core.
 //
-// Implements the minimum surface area needed to prove end-to-end rendering:
-//
-//   create_renderer(width, height) -> handle
+// Lifecycle NIFs:
+//   create_renderer(width, height) -> {ok, handle}
 //   setup_terminal(handle)
-//   draw_hello(handle, text_binary)
 //   destroy_renderer(handle)
+//   enter_raw_mode() / leave_raw_mode()
+//   tty_size() / drain_input(timeout_ms) / resize(handle, w, h)
 //
-// The invariant is that Elixir NEVER holds a raw pointer. Every OpenTUI
-// renderer lives behind an integer handle in this module's HashMap,
-// protected by a mutex. A bad handle returns badarg; it cannot crash the
-// BEAM by dereferencing random memory.
+// Per-frame draw NIFs:
+//   begin_frame(handle)
+//   clear(handle, bg_binary)
+//   fill_rect(handle, x, y, w, h, bg_binary)
+//   draw_text(handle, text, x, y, fg_binary, bg_binary_or_empty, attrs)
+//   end_frame(handle)
 //
-// All ops on a single frame (clear, draw text, render) happen in a single
-// NIF call to avoid per-call BEAM<->NIF transitions. For the spike this
-// means draw_hello/2 is a single indivisible unit.
+// Invariants:
+//   * Elixir NEVER holds a raw renderer pointer. Every renderer
+//     lives behind an integer handle in this module's HashMap,
+//     protected by a mutex. A bad handle returns badarg; it
+//     cannot crash the BEAM by dereferencing random memory.
+//   * begin_frame caches the back buffer pointer in the registry
+//     entry. Subsequent draw NIFs reuse it without re-resolving.
+//     end_frame clears the cached buffer and runs the diff render.
 
 const std = @import("std");
 
@@ -192,55 +199,6 @@ fn nif_setup_terminal(
 
     const ptr = registry().getRenderer(id) orelse return badarg(env);
     setupTerminal(ptr, true); // use alternate screen
-    return atom(env, "ok");
-}
-
-fn nif_draw_hello(
-    env: ?*erl.ErlNifEnv,
-    argc: c_int,
-    argv: [*c]const erl.ERL_NIF_TERM,
-) callconv(.c) erl.ERL_NIF_TERM {
-    if (argc != 4) return badarg(env);
-
-    var id: u64 = 0;
-    if (erl.enif_get_uint64(env, argv[0], &id) == 0) return badarg(env);
-
-    var width: c_uint = 0;
-    var height: c_uint = 0;
-    if (erl.enif_get_uint(env, argv[1], &width) == 0) return badarg(env);
-    if (erl.enif_get_uint(env, argv[2], &height) == 0) return badarg(env);
-
-    var text_bin: erl.ErlNifBinary = undefined;
-    if (erl.enif_inspect_binary(env, argv[3], &text_bin) == 0) return badarg(env);
-
-    const ptr = registry().getRenderer(id) orelse return badarg(env);
-
-    const buf = getNextBuffer(ptr);
-
-    // Dark gray background, bright cyan foreground — easy to see if it worked.
-    const bg: [4]f32 = .{ 0.08, 0.08, 0.10, 1.0 };
-    const fg: [4]f32 = .{ 0.36, 0.77, 0.77, 1.0 };
-
-    bufferClear(buf, &bg);
-
-    // Center the text. width/height are the renderer dimensions we created
-    // with; the buffer matches. We trust the caller passed the same values.
-    const text_len: u32 = @intCast(text_bin.size);
-    const cx: u32 = if (width > text_len) (width - text_len) / 2 else 0;
-    const cy: u32 = height / 2;
-
-    bufferDrawText(
-        buf,
-        @ptrCast(text_bin.data),
-        text_bin.size,
-        cx,
-        cy,
-        &fg,
-        null,
-        0,
-    );
-
-    render(ptr, true);
     return atom(env, "ok");
 }
 
@@ -558,7 +516,6 @@ fn nif_destroy_renderer(
 const nif_funcs = [_]erl.ErlNifFunc{
     .{ .name = "create_renderer", .arity = 2, .fptr = nif_create_renderer, .flags = 0 },
     .{ .name = "setup_terminal", .arity = 1, .fptr = nif_setup_terminal, .flags = 0 },
-    .{ .name = "draw_hello", .arity = 4, .fptr = nif_draw_hello, .flags = 0 },
     .{ .name = "destroy_renderer", .arity = 1, .fptr = nif_destroy_renderer, .flags = 0 },
     .{ .name = "enter_raw_mode", .arity = 0, .fptr = nif_enter_raw_mode, .flags = 0 },
     .{ .name = "leave_raw_mode", .arity = 0, .fptr = nif_leave_raw_mode, .flags = 0 },

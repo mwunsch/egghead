@@ -5,14 +5,15 @@ defmodule Egghead.OpenTUI.Runtime do
   A screen module implements this behaviour with four callbacks:
 
     * `init/1` — produces the initial model and any startup
-      command (e.g. load records from disk).
+      command (e.g. fetching data from disk).
     * `update/2` — pure reducer. Given a message and a model,
       returns a new model and a command.
-    * `view/1` — pure view function. Given a model, returns a
+    * `view/2` — pure view function. Given a model and the
+      current terminal dimensions, returns a
       `Egghead.OpenTUI.View.tree`.
     * `subscriptions/1` — declares which message sources the
-      runtime should pull from. Phase 5 supports `:keys` only;
-      `{:interval, ms, msg}` is reserved.
+      runtime should pull from. Currently `:keys` is the only
+      supported source; `{:interval, ms, msg}` is reserved.
 
   ## Loop
 
@@ -212,7 +213,7 @@ defmodule Egghead.OpenTUI.Runtime do
       Keyword.get(
         opts,
         :log_path,
-        Path.join(System.tmp_dir!(), "egghead-runtime.log")
+        Path.join(System.tmp_dir!(), "opentui-runtime.log")
       )
 
     try do

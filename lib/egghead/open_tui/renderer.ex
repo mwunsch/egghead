@@ -4,8 +4,8 @@ defmodule Egghead.OpenTUI.Renderer do
 
   This is the only module above `Bridge` that knows about color
   binaries and frame primitives. Everything upstream — the view
-  tree, the layout engine, the runtime, the Records module —
-  works with abstract `View.tree` values.
+  tree, the layout engine, the runtime, and any callers — works
+  with abstract `View.tree` values.
 
   ## Draw cycle
 
@@ -65,23 +65,13 @@ defmodule Egghead.OpenTUI.Renderer do
         bin -> bin
       end
 
-    # Single-row text leaves draw at row y.
-    # Multi-row leaves (e.g. preview body, list pane fill) repeat the
-    # same content per row at this stage — view code that needs
-    # different per-row content is expected to wrap each row in its
-    # own text leaf and put them in a vbox. Phase 5a does this.
+    # `:text` is a single-row primitive: only the first row of
+    # the assigned rect is painted. Multi-row text content should
+    # be expressed as a vbox of single-row `:text` leaves so each
+    # row gets its own y coordinate. We still paint the top row
+    # for `h > 1` so the leaf isn't silently invisible.
     line = truncate(content, w)
-
-    if h == 1 do
-      :ok = Bridge.draw_text(handle, line, x, y, fg, bg_for_text, 0)
-    else
-      # For Phase 5a we don't paint multi-line text leaves; the view
-      # always wraps per-row content in a vbox of single-row text
-      # leaves. This branch exists so a multi-row leaf still draws
-      # *something* visible at the top row instead of silently
-      # dropping the content.
-      :ok = Bridge.draw_text(handle, line, x, y, fg, bg_for_text, 0)
-    end
+    :ok = Bridge.draw_text(handle, line, x, y, fg, bg_for_text, 0)
   end
 
   defp draw_leaf(_handle, {:text, _content, _opts}, _rect), do: :ok

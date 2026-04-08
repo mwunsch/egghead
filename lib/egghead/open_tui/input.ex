@@ -1,19 +1,24 @@
 defmodule Egghead.OpenTUI.Input do
   @moduledoc """
-  Minimal raw-mode key reader for the spike.
+  Raw-mode key reader.
 
   Reads directly from `/dev/tty` to bypass the BEAM group leader.
-  Parses only what the spike needs: printable ASCII, escape, Ctrl+C,
-  and the four CSI arrow keys. A real input reader (Kitty keyboard
-  protocol, bracketed paste, mouse) is explicitly deferred.
+  Decodes printable ASCII, the common Ctrl+letter control bytes,
+  backspace (DEL, 0x7F), the four CSI arrow keys, and the CSI
+  Page Up / Page Down sequences. A fuller input reader (Kitty
+  keyboard protocol, bracketed paste, mouse, focus events) is
+  not yet implemented.
 
   Returns one of:
-    * `{:char, "x"}`      — a printable ASCII byte
-    * `{:key, :escape}`   — bare ESC
-    * `{:key, :ctrl_c}`   — ^C
+    * `{:char, "x"}` — a printable ASCII byte (0x20–0x7E)
+    * `{:key, :escape}` — bare ESC
+    * `{:key, :ctrl_c | :ctrl_f | :ctrl_n | :ctrl_p | :ctrl_t}`
     * `{:key, :backspace}` — DEL (0x7F)
-    * `{:key, :up | :down | :left | :right}` — CSI arrow keys
-    * `{:key, :unknown}`  — something we didn't recognize
+    * `{:key, :up | :down | :left | :right}` — CSI arrows
+    * `{:key, :page_up | :page_down}` — CSI 5~ / 6~
+    * `{:key, {:byte, n}}` — an unrecognized control byte
+    * `{:key, :unknown}` — an unrecognized escape sequence
+    * `{:key, :eof}` — the tty closed
   """
 
   @doc """
@@ -31,23 +36,16 @@ defmodule Egghead.OpenTUI.Input do
 
   defp parse_next(tty) do
     case read_byte(tty) do
-      <<0x03>> ->
-        {:key, :ctrl_c}
-
-      <<0x1B>> ->
-        parse_escape(tty)
-
-      <<0x7F>> ->
-        {:key, :backspace}
-
-      <<byte>> when byte >= 0x20 and byte < 0x7F ->
-        {:char, <<byte>>}
-
-      <<byte>> ->
-        {:key, {:byte, byte}}
-
-      :eof ->
-        {:key, :eof}
+      <<0x03>> -> {:key, :ctrl_c}
+      <<0x06>> -> {:key, :ctrl_f}
+      <<0x0E>> -> {:key, :ctrl_n}
+      <<0x10>> -> {:key, :ctrl_p}
+      <<0x14>> -> {:key, :ctrl_t}
+      <<0x1B>> -> parse_escape(tty)
+      <<0x7F>> -> {:key, :backspace}
+      <<byte>> when byte >= 0x20 and byte < 0x7F -> {:char, <<byte>>}
+      <<byte>> -> {:key, {:byte, byte}}
+      :eof -> {:key, :eof}
     end
   end
 
@@ -57,16 +55,32 @@ defmodule Egghead.OpenTUI.Input do
         {:key, :escape}
 
       <<?[>> ->
-        case read_byte(tty) do
-          <<?A>> -> {:key, :up}
-          <<?B>> -> {:key, :down}
-          <<?C>> -> {:key, :right}
-          <<?D>> -> {:key, :left}
-          _ -> {:key, :unknown}
-        end
+        parse_csi(tty)
 
       _ ->
         {:key, :escape}
+    end
+  end
+
+  # CSI sequences after `ESC [`. Single-letter arrow forms
+  # (`A`/`B`/`C`/`D`) and the digit-prefixed `5~` (Page Up) and
+  # `6~` (Page Down) forms.
+  defp parse_csi(tty) do
+    case read_byte(tty) do
+      <<?A>> -> {:key, :up}
+      <<?B>> -> {:key, :down}
+      <<?C>> -> {:key, :right}
+      <<?D>> -> {:key, :left}
+      <<?5>> -> consume_tilde(tty, :page_up)
+      <<?6>> -> consume_tilde(tty, :page_down)
+      _ -> {:key, :unknown}
+    end
+  end
+
+  defp consume_tilde(tty, key) do
+    case read_byte(tty) do
+      <<?~>> -> {:key, key}
+      _ -> {:key, :unknown}
     end
   end
 

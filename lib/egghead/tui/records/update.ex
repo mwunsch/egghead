@@ -8,32 +8,47 @@ defmodule Egghead.TUI.Records.Update do
   command. Pure function — no I/O. Side effects (record loads,
   $EDITOR spawns, etc.) are returned as commands.
 
-  Phase 5a only handles the same key bindings the Phase 4
-  imperative loop did:
+  Phase 5b key bindings:
 
-    * `↑ / ↓` — move selection
-    * `printable char` — append to filter
-    * `backspace` — pop last filter char
-    * `escape / ctrl+c` — quit
+    * `↑ / ↓`           — move selection in the list
+    * `Ctrl+F`           — toggle class filter (durable / all)
+    * `Ctrl+T`           — toggle date format (relative / iso)
+    * `PgUp / PgDn`      — scroll preview pane ±5 lines
+    * `Ctrl+N / Ctrl+P`  — scroll preview pane ±5 lines (emacs)
+    * `printable char`   — append to filter
+    * `backspace`        — pop last filter char
+    * `escape / ctrl+c`  — quit
 
-  Later sub-phases extend this with class filter (Ctrl+F), date
-  format (Ctrl+T), preview scroll, command mode, and so on.
+  Later sub-phases add `enter` (open in $EDITOR / follow link),
+  `tab` (cycle wikilinks), `/` (command palette), and so on.
   """
 
   alias Egghead.TUI.Records.Model
+
+  @preview_scroll_step 5
 
   @spec update(term(), Model.t()) :: {Model.t(), term()}
   def update({:key, :ctrl_c}, model), do: {model, :halt}
 
   def update({:key, :escape}, model), do: {model, :halt}
 
-  def update({:key, :up}, model) do
-    {move_selection(model, -1), :none}
-  end
+  def update({:key, :up}, model), do: {move_selection(model, -1), :none}
+  def update({:key, :down}, model), do: {move_selection(model, +1), :none}
 
-  def update({:key, :down}, model) do
-    {move_selection(model, +1), :none}
-  end
+  def update({:key, :ctrl_f}, model), do: {Model.toggle_class_filter(model), :none}
+  def update({:key, :ctrl_t}, model), do: {Model.toggle_date_format(model), :none}
+
+  def update({:key, :page_up}, model),
+    do: {Model.scroll_preview(model, -@preview_scroll_step), :none}
+
+  def update({:key, :page_down}, model),
+    do: {Model.scroll_preview(model, +@preview_scroll_step), :none}
+
+  def update({:key, :ctrl_p}, model),
+    do: {Model.scroll_preview(model, -@preview_scroll_step), :none}
+
+  def update({:key, :ctrl_n}, model),
+    do: {Model.scroll_preview(model, +@preview_scroll_step), :none}
 
   def update({:key, :backspace}, model) do
     new_filter = String.slice(model.filter, 0, max(String.length(model.filter) - 1, 0))

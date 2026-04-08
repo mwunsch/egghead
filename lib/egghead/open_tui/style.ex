@@ -4,8 +4,8 @@ defmodule Egghead.OpenTUI.Style do
 
   A `Style` carries an fg color binary, an optional bg color
   binary (use `:transparent` for "no background fill"), and an
-  attribute bitfield (bold, underline, reverse, etc. — currently
-  always 0 in Phase 5; reserved for later).
+  attribute bitfield (bold, underline, reverse, etc. — reserved
+  for future use; always 0 today).
 
   Color binaries are 16-byte little-endian f32 RGBA values, the
   same format `Egghead.OpenTUI.Bridge.draw_text/7` and

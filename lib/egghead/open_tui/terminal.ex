@@ -1,17 +1,18 @@
 defmodule Egghead.OpenTUI.Terminal do
   @moduledoc """
-  Owns the terminal lifecycle for a single TUI session (spike scope).
+  Owns the terminal lifecycle for a single TUI session.
 
-  OpenTUI's `setupTerminal` enters the alternate screen, saves cursor
-  state, detects capabilities, and enables the Kitty keyboard protocol —
-  but it does NOT put the tty into raw mode. We do that ourselves via
-  `stty`. On teardown, `destroyRenderer` restores everything OpenTUI
-  touched; this GenServer restores raw mode.
+  OpenTUI's `setupTerminal` enters the alternate screen, saves
+  cursor state, detects terminal capabilities, and enables the
+  Kitty keyboard protocol — but it does NOT put the tty into raw
+  mode. We do that ourselves through the bridge's
+  `enter_raw_mode/0`. On teardown, `destroyRenderer` restores
+  everything OpenTUI touched; this GenServer additionally
+  restores the saved termios state.
 
-  The GenServer traps exits and runs cleanup in `terminate/2` so that an
-  abnormal shutdown (crash, kill, Ctrl+C) still leaves the terminal
-  usable. This is the lesson from TermUI — do not rely on the happy
-  path for terminal restoration.
+  The GenServer traps exits and runs cleanup in `terminate/2` so
+  an abnormal shutdown (crash, kill, Ctrl+C) still leaves the
+  terminal usable.
   """
 
   use GenServer
@@ -29,14 +30,6 @@ defmodule Egghead.OpenTUI.Terminal do
 
   @doc "Return the renderer dimensions {width, height} in cells."
   def dimensions, do: GenServer.call(__MODULE__, :dimensions)
-
-  @doc """
-  Draw the spike's hello-world frame. Kept in the GenServer so all
-  Bridge calls go through a single owning process.
-  """
-  def draw_hello(text) do
-    GenServer.call(__MODULE__, {:draw_hello, text})
-  end
 
   @doc """
   Run `fun.(handle, width, height)` inside the GenServer so the
@@ -97,11 +90,6 @@ defmodule Egghead.OpenTUI.Terminal do
 
   def handle_call(:dimensions, _from, state),
     do: {:reply, {state.width, state.height}, state}
-
-  def handle_call({:draw_hello, text}, _from, state) do
-    :ok = Bridge.draw_hello(state.handle, state.width, state.height, text)
-    {:reply, :ok, state}
-  end
 
   def handle_call({:with_handle, fun}, _from, state) do
     reply = fun.(state.handle, state.width, state.height)

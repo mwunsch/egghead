@@ -19,8 +19,8 @@ defmodule Egghead.OpenTUI.View do
     * `:fg` / `:bg` — color binaries (see `Egghead.OpenTUI.Colors`)
     * `:padding` — non-negative integer (uniform) or
       `{top, right, bottom, left}`
-    * `:align` — `:left | :center | :right` (text only, in
-      Phase 5a unused)
+    * `:align` — `:left | :center | :right` (text only;
+      currently parsed but not enforced by the renderer)
 
   All constructors normalize their input into the same tuple
   shape so `Layout.arrange/2` and `Renderer.draw/3` can pattern-

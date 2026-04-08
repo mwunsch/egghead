@@ -25,11 +25,10 @@ defmodule Egghead.OpenTUI.Layout do
       proportional to flex weights, recurse into containers
       with their assigned rect.
 
-  This is **not** real flexbox. There is no shrink, no wrap, no
-  cross-axis alignment. It does just enough to express a
-  vertical stack with horizontally-split children, plus a
-  modal overlay. That covers the records list, a chat view,
-  and a command palette dropdown.
+  This is **not** real flexbox. There is no shrink, no wrap,
+  no cross-axis alignment. It does just enough to express a
+  vertical stack with horizontally-split children plus modal
+  overlays — the common shapes for full-screen TUI layouts.
   """
 
   @type rect ::

@@ -688,20 +688,31 @@ defmodule Egghead.TUI.AppTest do
       Runtime.shutdown(runtime)
     end
 
-    test "agent_streaming accumulates in chat_in_progress" do
+    test "agent_streaming buffers raw deltas in chat_streams" do
       runtime = start_headless()
       enter_chat_via_command(runtime)
 
+      # Single paragraph (no \n\n) — buffered, not committed
       send_room_event(runtime, {:agent_streaming, "test-room", "agents/scout", "hello "})
       send_room_event(runtime, {:agent_streaming, "test-room", "agents/scout", "world"})
 
       state = get_app_state(runtime)
-      assert %{"agents/scout" => %{text: "hello world"}} = state.chat_in_progress
+
+      assert %{"agents/scout" => %{committed: "", buffer: "hello world"}} =
+               state.chat_streams
+
+      # Crossing a paragraph boundary commits everything before \n\n
+      send_room_event(runtime, {:agent_streaming, "test-room", "agents/scout", "\n\nmore"})
+
+      state = get_app_state(runtime)
+
+      assert %{"agents/scout" => %{committed: "hello world\n\n", buffer: "more"}} =
+               state.chat_streams
 
       Runtime.shutdown(runtime)
     end
 
-    test "agent_message clears in_progress for that agent" do
+    test "agent_message clears chat_streams for that agent" do
       runtime = start_headless()
       enter_chat_via_command(runtime)
 
@@ -709,7 +720,7 @@ defmodule Egghead.TUI.AppTest do
       send_room_event(runtime, {:agent_message, agent_msg("final", "agents/scout")})
 
       state = get_app_state(runtime)
-      assert state.chat_in_progress == %{}
+      assert state.chat_streams == %{}
       assert Enum.any?(state.chat_messages, &match?({:message, %{body: "final"}}, &1))
 
       Runtime.shutdown(runtime)

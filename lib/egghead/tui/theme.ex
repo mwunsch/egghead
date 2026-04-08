@@ -41,6 +41,9 @@ defmodule Egghead.TUI.Theme do
   def status_bar_line, do: Style.new(fg: :white, bg: :bright_black)
   def link, do: Style.new(fg: :cyan, attrs: [:underline])
   def accent, do: Style.new(fg: :cyan)
+  # The local human's voice in chat — bright, bold so it stands out
+  # against agent messages.
+  def user, do: Style.new(fg: :bright_cyan, attrs: [:bold])
 
   # Stable per-agent color from a fixed palette of safe terminal colors.
   # Hashes the agent id (or nick) so the same agent always gets the same

@@ -138,6 +138,29 @@ defmodule Egghead.TUI.App do
   # Ignored coordinator signal — agents @-mentioning each other is internal
   def handle_info({:agent_mentions, _, _, _}, %{mode: :chat} = state), do: {state, []}
 
+  # Animation tick for the thinking-ellipsis. Increments the frame
+  # counter (state change → re-render) and reschedules another tick if
+  # any agent stream is still active. The %{mode: :chat} guard means
+  # ticks that arrive after leaving chat mode are no-ops.
+  def handle_info(:chat_anim_tick, %{mode: :chat} = state) do
+    state = %{
+      state
+      | chat_anim_frame: state.chat_anim_frame + 1,
+        chat_anim_pending: false
+    }
+
+    state =
+      if map_size(state.chat_streams) > 0 do
+        schedule_chat_anim_tick(state)
+      else
+        state
+      end
+
+    {state, []}
+  end
+
+  def handle_info(:chat_anim_tick, state), do: {%{state | chat_anim_pending: false}, []}
+
   # Catch-all: required to return {state, []} (NOT just state) — TermUI
   # expects a tuple from handle_info or it crashes the runtime.
   def handle_info(_msg, state), do: {state, []}
@@ -339,30 +362,89 @@ defmodule Egghead.TUI.App do
 
       # --- Chat mode input handling ---
       {:chat_char, c} ->
-        new_state = %{state | chat_input: state.chat_input <> c}
-        {refresh_chat_ghost(new_state), []}
+        {before, rest} = String.split_at(state.chat_input, state.chat_cursor)
+        new_input = before <> c <> rest
+        new_cursor = state.chat_cursor + String.length(c)
+
+        {refresh_chat_ghost(%{state | chat_input: new_input, chat_cursor: new_cursor}), []}
 
       :chat_backspace ->
         cond do
-          state.chat_input != "" ->
-            new_input = String.slice(state.chat_input, 0..-2//1)
-            {refresh_chat_ghost(%{state | chat_input: new_input}), []}
+          state.chat_cursor > 0 ->
+            {before, rest} = String.split_at(state.chat_input, state.chat_cursor)
+            new_before = String.slice(before, 0, String.length(before) - 1)
+            new_input = new_before <> rest
+            new_cursor = state.chat_cursor - 1
 
-          state.chat_input_extra_lines != [] ->
+            {refresh_chat_ghost(%{state | chat_input: new_input, chat_cursor: new_cursor}), []}
+
+          state.chat_input == "" and state.chat_input_extra_lines != [] ->
             extras = state.chat_input_extra_lines
             last = List.last(extras)
             new_extras = Enum.drop(extras, -1)
 
-            {refresh_chat_ghost(%{state | chat_input_extra_lines: new_extras, chat_input: last}),
-             []}
+            {refresh_chat_ghost(%{
+               state
+               | chat_input_extra_lines: new_extras,
+                 chat_input: last,
+                 chat_cursor: String.length(last)
+             }), []}
 
           true ->
             {state, []}
         end
 
+      :chat_delete ->
+        # Forward delete (Ctrl+D when buffer non-empty)
+        if state.chat_cursor < String.length(state.chat_input) do
+          {before, rest} = String.split_at(state.chat_input, state.chat_cursor)
+          new_rest = String.slice(rest, 1, String.length(rest))
+          {refresh_chat_ghost(%{state | chat_input: before <> new_rest}), []}
+        else
+          {state, []}
+        end
+
+      :chat_cursor_left ->
+        {%{state | chat_cursor: max(0, state.chat_cursor - 1)}, []}
+
+      :chat_cursor_right ->
+        {%{state | chat_cursor: min(String.length(state.chat_input), state.chat_cursor + 1)}, []}
+
+      :chat_cursor_home ->
+        {%{state | chat_cursor: 0}, []}
+
+      :chat_cursor_end ->
+        {%{state | chat_cursor: String.length(state.chat_input)}, []}
+
+      :chat_kill_line ->
+        # Ctrl+K — delete from cursor to end of line
+        {before, _rest} = String.split_at(state.chat_input, state.chat_cursor)
+        {refresh_chat_ghost(%{state | chat_input: before}), []}
+
+      :chat_kill_to_start ->
+        # Ctrl+U — delete from start of line to cursor
+        {_before, rest} = String.split_at(state.chat_input, state.chat_cursor)
+        {refresh_chat_ghost(%{state | chat_input: rest, chat_cursor: 0}), []}
+
+      :chat_kill_word ->
+        # Ctrl+W — delete previous word
+        {before, rest} = String.split_at(state.chat_input, state.chat_cursor)
+
+        new_before =
+          before
+          |> String.reverse()
+          |> String.replace(~r/^\s*\S+/, "")
+          |> String.reverse()
+
+        {refresh_chat_ghost(%{
+           state
+           | chat_input: new_before <> rest,
+             chat_cursor: String.length(new_before)
+         }), []}
+
       :chat_newline ->
         new_extras = state.chat_input_extra_lines ++ [state.chat_input]
-        {%{state | chat_input_extra_lines: new_extras, chat_input: "", chat_ghost: nil}, []}
+        {%{state | chat_input_extra_lines: new_extras, chat_input: "", chat_cursor: 0, chat_ghost: nil}, []}
 
       :chat_send ->
         chat_send(state)
@@ -373,14 +455,26 @@ defmodule Egghead.TUI.App do
       :chat_accept_ghost ->
         case state.chat_ghost do
           ghost when is_binary(ghost) and ghost != "" ->
-            {refresh_chat_ghost(%{state | chat_input: state.chat_input <> ghost}), []}
+            new_input = state.chat_input <> ghost
+
+            {refresh_chat_ghost(%{
+               state
+               | chat_input: new_input,
+                 chat_cursor: String.length(new_input)
+             }), []}
 
           _ ->
             {state, []}
         end
 
       :chat_cancel ->
-        {%{state | chat_input: "", chat_input_extra_lines: [], chat_ghost: nil}, []}
+        {%{
+           state
+           | chat_input: "",
+             chat_input_extra_lines: [],
+             chat_cursor: 0,
+             chat_ghost: nil
+         }, []}
 
       :chat_scroll_down ->
         new_scroll = max(0, state.chat_scroll - 5)
@@ -401,7 +495,7 @@ defmodule Egghead.TUI.App do
   defp handle_room_event({:user_message, msg}, state) do
     state
     |> append_chat_entries(message_to_entries(msg))
-    |> Map.put(:chat_in_progress, %{})
+    |> Map.put(:chat_streams, %{})
     |> recompute_chat_total_lines()
     |> auto_pin_to_bottom()
   end
@@ -411,7 +505,7 @@ defmodule Egghead.TUI.App do
     entries = message_to_entries(msg)
 
     state
-    |> Map.update!(:chat_in_progress, &Map.delete(&1, agent_id))
+    |> Map.update!(:chat_streams, &Map.delete(&1, agent_id))
     |> update_agent_ctx(agent_id, msg)
     |> append_chat_entries(entries)
     |> recompute_chat_total_lines()
@@ -421,15 +515,32 @@ defmodule Egghead.TUI.App do
   defp handle_room_event({:agent_streaming, agent_id, delta}, state) do
     name = chat_agent_name(state, agent_id)
 
-    in_progress =
-      Map.update(
-        state.chat_in_progress,
-        agent_id,
-        %{name: name, text: delta, started_at: System.monotonic_time()},
-        fn existing -> %{existing | text: existing.text <> delta} end
-      )
+    current =
+      Map.get(state.chat_streams, agent_id, %{
+        name: name,
+        committed: "",
+        buffer: "",
+        started_at: System.monotonic_time()
+      })
 
-    %{state | chat_in_progress: in_progress}
+    combined = current.buffer <> delta
+
+    {new_committed, new_buffer} =
+      case String.split(combined, "\n\n") do
+        [single] ->
+          {current.committed, single}
+
+        parts ->
+          {complete, [partial]} = Enum.split(parts, length(parts) - 1)
+          flushed = Enum.join(complete, "\n\n") <> "\n\n"
+          {current.committed <> flushed, partial}
+      end
+
+    updated = %{current | committed: new_committed, buffer: new_buffer}
+    streams = Map.put(state.chat_streams, agent_id, updated)
+
+    %{state | chat_streams: streams}
+    |> maybe_start_animation_tick()
     |> recompute_chat_total_lines()
     |> auto_pin_to_bottom()
   end
@@ -445,15 +556,15 @@ defmodule Egghead.TUI.App do
     |> auto_pin_to_bottom()
   end
 
-  defp handle_room_event({:agents_activated, count}, state) do
-    append_system(state, "#{count} agent#{if count == 1, do: "", else: "s"} activated", :info)
-  end
+  # Activation is conveyed visually by the side-panel bullets and the
+  # thinking-ellipsis indicator — no need for a transcript line.
+  defp handle_room_event({:agents_activated, _count}, state), do: state
 
   defp handle_room_event({:agent_passed, agent_id}, state) do
     nick = chat_agent_name(state, agent_id)
 
     state
-    |> Map.update!(:chat_in_progress, &Map.delete(&1, agent_id))
+    |> Map.update!(:chat_streams, &Map.delete(&1, agent_id))
     |> append_system("#{nick} passed", :info)
   end
 
@@ -581,33 +692,130 @@ defmodule Egghead.TUI.App do
     h = state.height
 
     # Layout regions (top → bottom):
-    # 1) chat header (1)
-    # 2) presence bar (1)
-    # 3) transcript (flex, scrolls)
-    # 4) command dropdown (only when command_mode, replaces some transcript)
-    # 5) input box border (1)
-    # 6) input box (1+, capped at 5 by extras)
-    # 7) status bar (1)
+    # 1) chat header             (1)
+    # 2) transcript region       (flex)
+    #    - wide:   transcript │ side panel  (side-by-side)
+    #    - narrow: full-width transcript
+    # 3) command dropdown        (only when command_mode)
+    # 4) status strip            (1, narrow mode only)
+    # 5) input box border        (1)
+    # 6) input box               (1+, capped by extras)
+    # 7) status bar              (1)
+    side_panel? = use_side_panel?(state)
+    strip_h = if side_panel?, do: 0, else: 1
     dropdown_h = if state.command_mode, do: chat_dropdown_height(state), else: 0
-    chrome = 4 + dropdown_h + input_box_height(state)
+    # +1 for the blank row above the status bar
+    chrome = 4 + strip_h + dropdown_h + input_box_height(state)
     transcript_h = max(1, h - chrome)
 
-    transcript = render_chat_transcript(state, w, transcript_h)
+    transcript_region =
+      if side_panel? do
+        render_chat_split(state, w, transcript_h)
+      else
+        render_chat_transcript(state, w, transcript_h)
+      end
+
     dropdown = if state.command_mode, do: render_chat_dropdown(state, w, dropdown_h), else: []
     input_lines = render_chat_input_box(state, w)
+    strip = if side_panel?, do: [], else: [render_chat_status_strip(state, w)]
 
     sep_line = text(String.duplicate("─", w), Theme.separator())
 
     lines =
       [render_chat_header(state, w)] ++
-        [render_chat_presence(state, w)] ++
-        transcript ++
+        transcript_region ++
         dropdown ++
+        strip ++
         [sep_line] ++
         input_lines ++
+        [text(String.duplicate(" ", w), nil)] ++
         [render_chat_status(state, w)]
 
     stack(:vertical, lines)
+  end
+
+  # Threshold for showing the right-side agents column.
+  @side_panel_min_width 80
+  @side_panel_width 18
+
+  defp use_side_panel?(state), do: state.width >= @side_panel_min_width
+
+  # Side-by-side layout: transcript on the left, agents column on the
+  # right separated by a vertical bar. Both columns have the same height
+  # (`h`); each row is a horizontal stack so TermUI lays them side by side.
+  defp render_chat_split(state, w, h) do
+    panel_w = @side_panel_width
+    sep_w = 1
+    trans_w = max(10, w - panel_w - sep_w)
+
+    transcript_rows = render_chat_transcript(state, trans_w, h)
+    panel_rows = render_chat_side_panel(state, panel_w, h)
+
+    sep_row = text("│", Theme.separator())
+
+    Enum.zip_with([transcript_rows, panel_rows], fn [t_row, p_row] ->
+      stack(:horizontal, [t_row, sep_row, p_row])
+    end)
+  end
+
+  # Right-side agents column. Each agent gets one row:
+  #   ● scout         23%
+  # Filled bullet (●) when streaming, hollow (○) when idle.
+  defp render_chat_side_panel(state, w, h) do
+    active_ids = Map.keys(state.chat_streams)
+
+    rows =
+      Enum.map(state.chat_agents, fn agent ->
+        active? = agent.id in active_ids
+        bullet = if active?, do: "●", else: "○"
+        bullet_style = Theme.agent_color(agent.id)
+
+        name = agent.name || agent_basename(agent.id)
+        ctx = if agent.ctx_pct > 0, do: "#{agent.ctx_pct}%", else: "--"
+
+        # Layout: " ● name<pad>ctx " totalling w cells.
+        # Bullet span: " ● " (3 cells)
+        # Trailing margin: 1 cell
+        avail = max(1, w - 3 - String.length(ctx) - 1)
+        name_str = String.slice(name, 0, avail)
+        name_padded = String.pad_trailing(name_str, avail)
+
+        name_style = if active?, do: Theme.normal(), else: Theme.muted()
+
+        stack(:horizontal, [
+          text(" " <> bullet <> " ", bullet_style),
+          text(name_padded <> ctx <> " ", name_style)
+        ])
+      end)
+
+    # Clamp to h, then pad with blank rows so the column matches the
+    # transcript height for clean horizontal stacking.
+    rows = Enum.take(rows, h)
+    blank = text(String.duplicate(" ", w), nil)
+    rows ++ List.duplicate(blank, max(0, h - length(rows)))
+  end
+
+  # Narrow-mode 1-row strip: a horizontal list of bullets+nicks above
+  # the input box, replacing the side panel.
+  defp render_chat_status_strip(state, w) do
+    active_ids = Map.keys(state.chat_streams)
+
+    case state.chat_agents do
+      [] ->
+        text(String.pad_trailing(" present: (none)", w), Theme.muted())
+
+      agents ->
+        parts =
+          Enum.map(agents, fn agent ->
+            bullet = if agent.id in active_ids, do: "●", else: "○"
+            bullet <> (agent.name || agent_basename(agent.id))
+          end)
+
+        line = " present: " <> Enum.join(parts, " ")
+        clipped = String.slice(line, 0, w)
+        pad = max(0, w - String.length(clipped))
+        text(clipped <> String.duplicate(" ", pad), Theme.muted())
+    end
   end
 
   # Number of rows the chat-mode command dropdown should occupy.
@@ -646,26 +854,6 @@ defmodule Egghead.TUI.App do
     text(left <> String.duplicate(" ", pad) <> right, Theme.header_bar())
   end
 
-  defp render_chat_presence(state, w) do
-    presence_text =
-      case state.chat_agents do
-        [] ->
-          " ── no agents present ──"
-
-        agents ->
-          parts =
-            Enum.map(agents, fn %{name: n, ctx_pct: pct} ->
-              if pct > 0, do: "#{n} (#{pct}%)", else: n
-            end)
-
-          " ── present: " <> Enum.join(parts, " · ") <> " ──"
-      end
-
-    line = String.slice(presence_text, 0, w)
-    pad = max(0, w - String.length(line))
-    text(line <> String.duplicate("─", pad), Theme.separator())
-  end
-
   defp render_chat_transcript(state, w, h) do
     entries = chat_display_entries(state)
     lines = Egghead.TUI.ChatRender.render_entries(entries, w)
@@ -676,13 +864,7 @@ defmodule Egghead.TUI.App do
     skip = max(0, total - h - state.chat_scroll)
     visible = lines |> Enum.drop(skip) |> Enum.take(h)
 
-    # Pad with empty lines so the transcript region always fills h rows
-    rendered =
-      Enum.map(visible, fn {content, style} ->
-        clean = String.replace(content, "\n", " ")
-        padded = clean |> String.slice(0, w) |> String.pad_trailing(w)
-        text(padded, style || Theme.normal())
-      end)
+    rendered = Enum.map(visible, &render_chat_line(&1, w))
 
     padding_count = max(0, h - length(visible))
     padding = List.duplicate(text(String.duplicate(" ", w), nil), padding_count)
@@ -692,6 +874,30 @@ defmodule Egghead.TUI.App do
     padding ++ rendered
   end
 
+  # Single-style line: a `{string, style}` tuple from ChatRender.
+  defp render_chat_line({content, style}, w) do
+    clean = String.replace(content, "\n", " ")
+    padded = clean |> String.slice(0, w) |> String.pad_trailing(w)
+    text(padded, style || Theme.normal())
+  end
+
+  # Multi-span line: a list of `{string, style}` tuples to be composed
+  # horizontally. Used for right-aligned timestamps.
+  defp render_chat_line(spans, w) when is_list(spans) do
+    used =
+      Enum.reduce(spans, 0, fn {t, _}, acc -> acc + String.length(t) end)
+
+    rendered =
+      Enum.map(spans, fn {t, s} ->
+        clean = String.replace(t, "\n", " ")
+        text(clean, s || Theme.normal())
+      end)
+
+    pad = max(0, w - used)
+    tail = text(String.duplicate(" ", pad), nil)
+    stack(:horizontal, rendered ++ [tail])
+  end
+
   defp render_chat_input_box(state, w) do
     if state.command_mode do
       content = " /" <> state.command_input <> "▌"
@@ -699,20 +905,27 @@ defmodule Egghead.TUI.App do
       [text(content <> String.duplicate(" ", pad), Theme.prompt())]
     else
       # Multi-line input: extras are previous lines (in order), chat_input
-      # is the current line being edited.
+      # is the current line being edited. Only the active (last) line
+      # gets the cursor inserted at chat_cursor.
       all_lines = state.chat_input_extra_lines ++ [state.chat_input]
+      last_idx = length(all_lines) - 1
 
       Enum.with_index(all_lines)
       |> Enum.map(fn {line, idx} ->
         prefix = if idx == 0, do: " ❯ ", else: "   "
-        cursor = if idx == length(all_lines) - 1, do: "▌", else: ""
+        active? = idx == last_idx
 
-        ghost =
-          if idx == length(all_lines) - 1 and is_binary(state.chat_ghost),
-            do: state.chat_ghost,
-            else: ""
+        body =
+          if active? do
+            cursor_at = min(state.chat_cursor, String.length(line))
+            {before, rest} = String.split_at(line, cursor_at)
+            ghost = if is_binary(state.chat_ghost), do: state.chat_ghost, else: ""
+            before <> "▌" <> rest <> ghost
+          else
+            line
+          end
 
-        base = prefix <> line <> cursor <> ghost
+        base = prefix <> body
         base = String.slice(base, 0, w)
         pad = max(0, w - String.length(base))
         text(base <> String.duplicate(" ", pad), Theme.prompt())
@@ -1116,6 +1329,18 @@ defmodule Egghead.TUI.App do
       :backspace ->
         {:msg, :chat_backspace}
 
+      :left ->
+        {:msg, :chat_cursor_left}
+
+      :right ->
+        {:msg, :chat_cursor_right}
+
+      :home ->
+        {:msg, :chat_cursor_home}
+
+      :end_ ->
+        {:msg, :chat_cursor_end}
+
       :tab ->
         if is_binary(state.chat_ghost), do: {:msg, :chat_accept_ghost}, else: :ignore
 
@@ -1136,6 +1361,32 @@ defmodule Egghead.TUI.App do
           # Ctrl+G: cancel (clear input + ghost)
           event.key == "g" and :ctrl in event.modifiers ->
             {:msg, :chat_cancel}
+
+          # Readline-style cursor movement
+          event.key == "a" and :ctrl in event.modifiers ->
+            {:msg, :chat_cursor_home}
+
+          event.key == "e" and :ctrl in event.modifiers ->
+            {:msg, :chat_cursor_end}
+
+          event.key == "b" and :ctrl in event.modifiers ->
+            {:msg, :chat_cursor_left}
+
+          event.key == "f" and :ctrl in event.modifiers ->
+            {:msg, :chat_cursor_right}
+
+          # Readline-style kill operations
+          event.key == "k" and :ctrl in event.modifiers ->
+            {:msg, :chat_kill_line}
+
+          event.key == "u" and :ctrl in event.modifiers ->
+            {:msg, :chat_kill_to_start}
+
+          event.key == "w" and :ctrl in event.modifiers ->
+            {:msg, :chat_kill_word}
+
+          event.key == "d" and :ctrl in event.modifiers ->
+            {:msg, :chat_delete}
 
           true ->
             case event.char do
@@ -1703,8 +1954,9 @@ defmodule Egghead.TUI.App do
           | mode: :chat,
             chat_room_id: room_id,
             chat_messages: messages,
-            chat_in_progress: %{},
+            chat_streams: %{},
             chat_input: "",
+            chat_cursor: 0,
             chat_input_extra_lines: [],
             chat_scroll: 0,
             chat_agents: agents,
@@ -1731,13 +1983,33 @@ defmodule Egghead.TUI.App do
       end
     end
 
+    # Reload records from the store. The TUI's `all_records` cache is
+    # populated at init/1 and goes stale during a session — anything
+    # written while in chat mode (e.g. /save persisting the transcript
+    # as a deliberation record) won't appear in the records list
+    # otherwise. Egghead.create_record upserts the index synchronously,
+    # so a fresh list_records call sees the new record immediately.
+    all_records =
+      try do
+        Egghead.list_records()
+      catch
+        _, _ -> state.all_records
+      end
+
+    results = filter_and_sort(all_records, state.show_all_classes, state.query)
+    selected = min(state.selected, max(0, length(results) - 1))
+
     new_state = %{
       state
       | mode: :records,
+        all_records: all_records,
+        results: results,
+        selected: selected,
         chat_room_id: nil,
         chat_messages: [],
-        chat_in_progress: %{},
+        chat_streams: %{},
         chat_input: "",
+        chat_cursor: 0,
         chat_input_extra_lines: [],
         chat_scroll: 0,
         chat_total_lines: 0,
@@ -1752,7 +2024,7 @@ defmodule Egghead.TUI.App do
         command_arg: ""
     }
 
-    {new_state, []}
+    {set_preview(new_state, preview_for_selection(new_state, selected)), []}
   end
 
   defp safe_chat_transcript(room_id) do
@@ -1826,6 +2098,22 @@ defmodule Egghead.TUI.App do
 
   defp agent_basename(_), do: ""
 
+  # Schedule a single :chat_anim_tick if one isn't already pending and
+  # there's at least one active stream. Idempotent — call this from any
+  # path that may have introduced a new stream.
+  defp maybe_start_animation_tick(state) do
+    if state.chat_anim_pending or map_size(state.chat_streams) == 0 do
+      state
+    else
+      schedule_chat_anim_tick(state)
+    end
+  end
+
+  defp schedule_chat_anim_tick(state) do
+    Process.send_after(self(), :chat_anim_tick, 350)
+    %{state | chat_anim_pending: true}
+  end
+
   defp recompute_chat_total_lines(state) do
     width = max(20, state.width)
     lines = Egghead.TUI.ChatRender.render_entries(chat_display_entries(state), width)
@@ -1833,17 +2121,26 @@ defmodule Egghead.TUI.App do
   end
 
   # Combine committed messages + in-progress streams in display order
-  # (in-progress entries appear at the bottom).
+  # (in-progress entries appear at the bottom). Each stream becomes
+  # either a :thinking action (no committed paragraphs yet) or an
+  # :in_progress message (committed paragraphs + a streaming cursor).
   defp chat_display_entries(state) do
-    in_progress_entries =
-      state.chat_in_progress
+    frame = state.chat_anim_frame
+
+    streaming_entries =
+      state.chat_streams
       |> Enum.sort_by(fn {_, %{started_at: t}} -> t end)
-      |> Enum.map(fn {agent_id, %{name: name, text: text}} ->
-        {:in_progress,
-         %{nick: agent_basename(name || agent_id), agent_id: agent_id, body: text}}
+      |> Enum.map(fn {agent_id, %{name: name, committed: committed}} ->
+        nick = agent_basename(name || agent_id)
+
+        if committed == "" do
+          {:thinking, %{nick: nick, agent_id: agent_id, frame: frame}}
+        else
+          {:in_progress, %{nick: nick, agent_id: agent_id, body: committed}}
+        end
       end)
 
-    state.chat_messages ++ in_progress_entries
+    state.chat_messages ++ streaming_entries
   end
 
   # Stub command handlers — full implementations come in the slash
@@ -1943,6 +2240,7 @@ defmodule Egghead.TUI.App do
       new_state = %{
         state
         | chat_input: "",
+          chat_cursor: 0,
           chat_input_extra_lines: [],
           chat_ghost: nil,
           chat_scroll: 0

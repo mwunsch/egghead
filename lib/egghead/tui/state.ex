@@ -46,10 +46,25 @@ defmodule Egghead.TUI.State do
     chat_room_id: nil,
     # Display-ordered list of chat_entry() — see chat_render.ex
     chat_messages: [],
-    # %{agent_id => %{name, text, started_at}} for streaming/in-progress
-    chat_in_progress: %{},
+    # %{agent_id => %{name, committed, buffer, started_at}} — TUI-side
+    # paragraph buffering of agent streams. `committed` holds paragraphs
+    # that crossed a \n\n boundary; `buffer` holds the still-accumulating
+    # tail. Display rules:
+    #   buffer != "" and committed == "" → :thinking entry
+    #   committed != ""                  → :in_progress message entry
+    chat_streams: %{},
+    # Animation frame counter for the thinking-ellipsis. Incremented by
+    # the chat_anim_tick handler; the dirty state triggers a re-render.
+    chat_anim_frame: 0,
+    # Whether a :chat_anim_tick timer is currently scheduled (avoids
+    # stacking multiple timers).
+    chat_anim_pending: false,
     # Current draft message (latest line — earlier lines are in extras)
     chat_input: "",
+    # Cursor position (character index 0..String.length(chat_input)) for
+    # readline-style editing on the current line. Earlier lines are
+    # immutable until the user backspaces over the line break.
+    chat_cursor: 0,
     # Earlier lines from Ctrl+J multi-line composition (in order)
     chat_input_extra_lines: [],
     # Transcript scroll offset; 0 = pinned to bottom (auto-follow new msgs)

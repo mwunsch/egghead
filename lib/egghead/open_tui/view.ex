@@ -29,7 +29,10 @@ defmodule Egghead.OpenTUI.View do
   """
 
   @type opts :: map()
-  @type leaf :: {:text, String.t(), opts()} | {:fill, opts()}
+  @type leaf ::
+          {:text, String.t(), opts()}
+          | {:fill, opts()}
+          | {:cursor, opts()}
   @type container ::
           {:vbox, opts(), [tree()]}
           | {:hbox, opts(), [tree()]}
@@ -104,6 +107,24 @@ defmodule Egghead.OpenTUI.View do
   @doc "Empty placeholder; arrangement skips it entirely."
   @spec nothing() :: tree()
   def nothing, do: :nothing
+
+  @doc """
+  Marks where the terminal's text cursor should be placed.
+
+  A `:cursor` leaf occupies zero columns of layout space, so it
+  can sit between two text leaves in an hbox without shifting
+  them. The renderer extracts its assigned `(x, y)` and calls
+  `Bridge.set_cursor_position/4` to place the OS-level cursor
+  there. If multiple cursor leaves appear in a single tree, the
+  last one wins.
+
+  When no cursor leaf is in the tree, the renderer hides the
+  cursor for that frame.
+  """
+  @spec cursor(keyword()) :: leaf()
+  def cursor(opts \\ []) do
+    {:cursor, normalize_opts(opts)}
+  end
 
   # ---- helpers ------------------------------------------------------------
 

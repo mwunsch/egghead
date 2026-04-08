@@ -171,4 +171,21 @@ defmodule Egghead.OpenTUI.Bridge do
   @spec resize(non_neg_integer(), pos_integer(), pos_integer()) :: :ok
   def resize(_handle, _width, _height),
     do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Place (or hide) the terminal's text cursor at `(x, y)`.
+
+  When `visible` is `true`, OpenTUI emits the ANSI escape to
+  position the cursor and show it; the terminal then highlights
+  the cell at that coordinate using whatever cursor style is
+  configured (block by default in most terminals). When `false`,
+  the cursor is hidden.
+
+  This is the right way to render an in-line text cursor — the
+  alternative (drawing a glyph like `▌` into the buffer) takes
+  up its own column and shifts the surrounding content.
+  """
+  @spec set_cursor_position(non_neg_integer(), non_neg_integer(), non_neg_integer(), boolean()) :: :ok
+  def set_cursor_position(_handle, _x, _y, _visible),
+    do: :erlang.nif_error(:nif_not_loaded)
 end

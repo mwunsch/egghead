@@ -14,7 +14,24 @@ defmodule Egghead.OpenTUI.Renderer do
         ├── Bridge.clear(handle, default_bg)
         ├── Layout.arrange(tree, viewport)        # → [{leaf, rect}, ...]
         ├── for each leaf, draw via the bridge
+        ├── place or hide the terminal cursor
         └── Bridge.end_frame(handle)
+
+  ## Cursor handling
+
+  Cursor placement is *not* expressed by drawing a glyph into
+  the buffer (which would consume a column and shift the
+  surrounding text). Instead, screens place a `:cursor` leaf in
+  their view tree at the desired position. The leaf has zero
+  width and zero height in the layout pass, so it can sit
+  between two text leaves in an hbox without displacing them.
+  After all leaves are drawn, the renderer either:
+
+    * calls `Bridge.set_cursor_position/4` with the leaf's
+      assigned `(x, y)` and `visible: true`, or
+    * hides the cursor entirely if no `:cursor` leaf was found.
+
+  If multiple `:cursor` leaves appear, the last one wins.
   """
 
   alias Egghead.OpenTUI.{Bridge, Colors, Layout}
@@ -30,12 +47,31 @@ defmodule Egghead.OpenTUI.Renderer do
     :ok = Bridge.begin_frame(handle)
     :ok = Bridge.clear(handle, Colors.bg())
 
-    tree
-    |> Layout.arrange(viewport)
-    |> Enum.each(fn {leaf, rect} -> draw_leaf(handle, leaf, rect) end)
+    leaves = Layout.arrange(tree, viewport)
+    Enum.each(leaves, fn {leaf, rect} -> draw_leaf(handle, leaf, rect) end)
+
+    place_cursor(handle, leaves)
 
     :ok = Bridge.end_frame(handle)
     :ok
+  end
+
+  # Find the last :cursor leaf in draw order and place the
+  # terminal cursor there. If none, hide the cursor for this
+  # frame.
+  defp place_cursor(handle, leaves) do
+    cursor =
+      leaves
+      |> Enum.reverse()
+      |> Enum.find_value(fn
+        {{:cursor, _opts}, {x, y, _w, _h}} -> {x, y}
+        _ -> nil
+      end)
+
+    case cursor do
+      {x, y} -> Bridge.set_cursor_position(handle, x, y, true)
+      nil -> Bridge.set_cursor_position(handle, 0, 0, false)
+    end
   end
 
   # ---- leaves -------------------------------------------------------------
@@ -75,6 +111,10 @@ defmodule Egghead.OpenTUI.Renderer do
   end
 
   defp draw_leaf(_handle, {:text, _content, _opts}, _rect), do: :ok
+
+  # The cursor leaf carries no glyph; placement happens in
+  # place_cursor/2 after all other leaves are drawn.
+  defp draw_leaf(_handle, {:cursor, _opts}, _rect), do: :ok
 
   # ---- helpers ------------------------------------------------------------
 

@@ -58,6 +58,8 @@ defmodule Egghead.OpenTUI.Layout do
 
   defp arrange_node({:fill, _opts} = leaf, rect), do: [{leaf, rect}]
 
+  defp arrange_node({:cursor, _opts} = leaf, rect), do: [{leaf, rect}]
+
   defp arrange_node({:overlay, children}, rect) do
     Enum.map(children, &arrange_node(&1, rect))
   end
@@ -103,6 +105,7 @@ defmodule Egghead.OpenTUI.Layout do
     do: Map.get(opts, :width, String.length(content))
   defp fixed_main({:fill, opts}, :vertical), do: Map.get(opts, :height, 0)
   defp fixed_main({:fill, opts}, :horizontal), do: Map.get(opts, :width, 0)
+  defp fixed_main({:cursor, _opts}, _), do: 0
   defp fixed_main({:overlay, _children}, _), do: 0
   defp fixed_main(:nothing, _), do: 0
 

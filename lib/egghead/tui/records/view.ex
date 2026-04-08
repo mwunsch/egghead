@@ -78,23 +78,40 @@ defmodule Egghead.TUI.Records.View do
     )
   end
 
-  defp search(model, width) do
-    # Split the filter at the cursor and place the ▌ glyph
-    # between the two halves so the user can see where new
-    # input will go. This is the only piece of the screen that
-    # tracks an in-line cursor.
-    cursor = model.filter_cursor
-    prefix = String.slice(model.filter, 0, cursor)
-    suffix = String.slice(model.filter, cursor, String.length(model.filter))
+  defp search(model, _width) do
+    # Split the filter at the cursor and emit a `cursor` leaf
+    # between the two halves. The cursor leaf has zero layout
+    # width, so the prefix and suffix sit flush against each
+    # other; the renderer reads the cursor leaf's `(x, y)` and
+    # places the terminal's text cursor there.
+    cursor_idx = model.filter_cursor
+    prompt = " ❯ "
+    prefix = String.slice(model.filter, 0, cursor_idx)
+    suffix = String.slice(model.filter, cursor_idx, String.length(model.filter))
 
-    content = " ❯ " <> prefix <> "▌" <> suffix
-    pad_size = max(width - String.length(content), 0)
-    line = content <> String.duplicate(" ", pad_size)
+    fg = Colors.cyan()
+    bg = Colors.bg()
 
-    text(truncate(line, width),
-      height: 1,
-      fg: Colors.cyan(),
-      bg: Colors.bg()
+    prompt_w = String.length(prompt)
+    prefix_w = String.length(prefix)
+    suffix_w = String.length(suffix)
+
+    hbox(
+      [height: 1],
+      [
+        text(prompt <> prefix,
+          width: prompt_w + prefix_w,
+          fg: fg,
+          bg: bg
+        ),
+        cursor(),
+        text(suffix,
+          width: suffix_w,
+          fg: fg,
+          bg: bg
+        ),
+        fill(flex: 1, bg: bg)
+      ]
     )
   end
 

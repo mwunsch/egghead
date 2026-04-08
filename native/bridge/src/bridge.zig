@@ -64,6 +64,7 @@ extern fn bufferFillRect(
     bg: [*]const f32,
 ) void;
 extern fn resizeRenderer(renderer: *anyopaque, width: u32, height: u32) void;
+extern fn setCursorPosition(renderer: *anyopaque, x: i32, y: i32, visible: bool) void;
 
 // ---- Handle registry -------------------------------------------------------
 
@@ -496,6 +497,38 @@ fn nif_resize(
     return atom(env, "ok");
 }
 
+fn nif_set_cursor_position(
+    env: ?*erl.ErlNifEnv,
+    argc: c_int,
+    argv: [*c]const erl.ERL_NIF_TERM,
+) callconv(.c) erl.ERL_NIF_TERM {
+    // set_cursor_position(handle, x, y, visible)
+    //
+    // Our entire bridge API is 0-indexed (draw_text, fill_rect,
+    // etc. all use top-left = (0, 0)). OpenTUI's setCursorPosition
+    // is 1-indexed (ANSI-style; it clamps coordinates to
+    // max(1, ...) internally), so we add 1 here at the boundary
+    // to keep callers consistent.
+    if (argc != 4) return badarg(env);
+
+    var id: u64 = 0;
+    if (erl.enif_get_uint64(env, argv[0], &id) == 0) return badarg(env);
+
+    var x: c_uint = 0;
+    var y: c_uint = 0;
+    if (erl.enif_get_uint(env, argv[1], &x) == 0) return badarg(env);
+    if (erl.enif_get_uint(env, argv[2], &y) == 0) return badarg(env);
+
+    // visible arg is :true or :false atom
+    const visible_atom = argv[3];
+    const true_atom = atom(env, "true");
+    const visible = erl.enif_compare(visible_atom, true_atom) == 0;
+
+    const ptr = registry().getRenderer(id) orelse return badarg(env);
+    setCursorPosition(ptr, @intCast(x + 1), @intCast(y + 1), visible);
+    return atom(env, "ok");
+}
+
 fn nif_destroy_renderer(
     env: ?*erl.ErlNifEnv,
     argc: c_int,
@@ -527,6 +560,7 @@ const nif_funcs = [_]erl.ErlNifFunc{
     .{ .name = "end_frame", .arity = 1, .fptr = nif_end_frame, .flags = 0 },
     .{ .name = "fill_rect", .arity = 6, .fptr = nif_fill_rect, .flags = 0 },
     .{ .name = "resize", .arity = 3, .fptr = nif_resize, .flags = 0 },
+    .{ .name = "set_cursor_position", .arity = 4, .fptr = nif_set_cursor_position, .flags = 0 },
 };
 
 fn on_load(

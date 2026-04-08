@@ -29,17 +29,20 @@ defmodule Egghead.TUI.Records.View do
   alias Egghead.TUI.Records.Model
 
   @doc """
-  Build the view tree for the given model. Width/height are
-  passed in so list and preview panes can compute scroll
-  offsets, truncation widths, and accurate scrollbar geometry.
+  Build the view tree for the given model. The model carries
+  its own `width` and `height` (kept in sync by the runtime via
+  `{:resize, w, h}` messages), so this function is a pure
+  derivation of `model → tree`.
 
   The chrome (header + search + separator + 2 blanks + status)
   is 6 rows. The remaining body is split 1/3 list / 2/3 preview,
   matching `Egghead.TUI.App.records_view/1` on `main`. The
   preview reserves one row for its label and the rest is body.
   """
-  @spec render(Model.t(), pos_integer(), pos_integer()) :: Egghead.OpenTUI.View.tree()
-  def render(%Model{} = model, width, height) do
+  @spec render(Model.t()) :: Egghead.OpenTUI.View.tree()
+  def render(%Model{} = model) do
+    width = model.width
+    height = model.height
     body_h = max(height - 6, 1)
     list_h = max(div(body_h, 3), 1)
     preview_h = max(body_h - list_h, 1)
@@ -53,7 +56,7 @@ defmodule Egghead.TUI.Records.View do
       blank(width),
       preview_pane(model, width, preview_h, content_h),
       blank(width),
-      status_bar(width)
+      status_bar(model, width)
     ])
   end
 
@@ -76,7 +79,15 @@ defmodule Egghead.TUI.Records.View do
   end
 
   defp search(model, width) do
-    content = " ❯ " <> model.filter <> "▌"
+    # Split the filter at the cursor and place the ▌ glyph
+    # between the two halves so the user can see where new
+    # input will go. This is the only piece of the screen that
+    # tracks an in-line cursor.
+    cursor = model.filter_cursor
+    prefix = String.slice(model.filter, 0, cursor)
+    suffix = String.slice(model.filter, cursor, String.length(model.filter))
+
+    content = " ❯ " <> prefix <> "▌" <> suffix
     pad_size = max(width - String.length(content), 0)
     line = content <> String.duplicate(" ", pad_size)
 
@@ -107,7 +118,7 @@ defmodule Egghead.TUI.Records.View do
     # Scroll the visible window so the selected row stays visible.
     offset = list_scroll_offset(model.selection, list_h)
 
-    rows =
+    record_rows =
       model.filtered
       |> Enum.drop(offset)
       |> Enum.take(list_h)
@@ -116,7 +127,39 @@ defmodule Egghead.TUI.Records.View do
         list_row(record, idx == model.selection, model.date_format, width)
       end)
 
-    vbox([height: list_h], rows)
+    # Phantom create row appears at length(filtered), only when
+    # there's still room in the visible window.
+    phantom_rows =
+      case Model.creation_target(model) do
+        nil ->
+          []
+
+        {title, slug} ->
+          if length(record_rows) < list_h do
+            [phantom_row(title, slug, Model.phantom_selected?(model), width)]
+          else
+            []
+          end
+      end
+
+    vbox([height: list_h], record_rows ++ phantom_rows)
+  end
+
+  defp phantom_row(title, slug, selected, width) do
+    label =
+      if title == slug do
+        " + Create \"#{title}\""
+      else
+        " + Create \"#{title}\"  → #{slug}"
+      end
+
+    pad = max(width - String.length(label), 0)
+    line = label <> String.duplicate(" ", pad)
+
+    fg = if selected, do: Colors.white(), else: Colors.accent()
+    bg = if selected, do: Colors.selected_bg(), else: Colors.bg()
+
+    text(truncate(line, width), height: 1, fg: fg, bg: bg)
   end
 
   defp list_scroll_offset(selection, list_h) when list_h > 0 do
@@ -299,8 +342,16 @@ defmodule Egghead.TUI.Records.View do
     hbox([height: 1], pieces ++ [tail])
   end
 
-  defp status_bar(width) do
-    line = " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^f filter │ ^t date │ ^q quit"
+  defp status_bar(model, width) do
+    line =
+      cond do
+        Model.phantom_selected?(model) ->
+          " NEW │ ⏎ create │ ↑ back to results │ ^q quit"
+
+        true ->
+          " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^f filter │ ^t date │ ^q quit"
+      end
+
     pad_size = max(width - String.length(line), 0)
     padded = line <> String.duplicate(" ", pad_size)
 

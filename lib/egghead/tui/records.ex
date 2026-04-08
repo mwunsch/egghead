@@ -25,8 +25,8 @@ defmodule Egghead.TUI.Records do
   end
 
   @impl true
-  def view(model, {width, height}) do
-    View.render(model, width, height)
+  def view(model) do
+    View.render(model)
   end
 
   @impl true

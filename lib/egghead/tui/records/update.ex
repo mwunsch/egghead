@@ -6,34 +6,77 @@ defmodule Egghead.TUI.Records.Update do
   (`Egghead.OpenTUI.Runtime`) and a current model
   (`Egghead.TUI.Records.Model`) and returns a new model plus a
   command. Pure function — no I/O. Side effects (record loads,
-  $EDITOR spawns, etc.) are returned as commands.
+  $EDITOR spawns, etc.) are returned as commands the runtime
+  executes.
 
   Key bindings (records mode):
 
-    * `↑ / ↓`           — move selection in the list
-    * `Ctrl+F`           — toggle class filter (durable / all)
-    * `Ctrl+T`           — toggle date format (relative / iso)
-    * `PgUp / PgDn`      — scroll preview pane ±5 lines
-    * `Ctrl+N / Ctrl+P`  — scroll preview pane ±5 lines (emacs)
-    * `printable char`   — append to filter
-    * `backspace`        — pop last filter char
+    Selection / scroll
+      ↑ / ↓              move selection in the list
+      Enter              edit selected record (or create + edit
+                          when the phantom create row is selected)
+      PgUp / PgDn        scroll preview pane ±5 lines
+      Ctrl+N / Ctrl+P    scroll preview pane ±5 lines (emacs)
 
-  Quit is `Ctrl+Q` (or `Ctrl+C` as belt-and-suspenders); both are
-  intercepted by `Egghead.OpenTUI.Runtime` directly so screens
-  don't see them. `Escape` is reserved for future use (link
-  deselect, command-mode exit) and currently does nothing.
+    Toggles
+      Ctrl+F             toggle class filter (durable / all)
+      Ctrl+T             toggle date format (relative / iso)
 
-  Later sub-phases add `enter` (open in $EDITOR / follow link),
-  `tab` (cycle wikilinks), `/` (command palette), and so on.
+    Search bar (readline-style)
+      printable char     insert at cursor
+      ← / →              move cursor left / right
+      Ctrl+A             move cursor to beginning
+      Ctrl+E             move cursor to end
+      Ctrl+K             kill from cursor to end of line
+      Ctrl+U             kill from beginning of line to cursor
+      Ctrl+W             kill the previous word
+      Alt+B (Option+B)   move cursor backward one word
+      Alt+F (Option+F)   move cursor forward one word
+      Alt+D (Option+D)   kill the next word
+      Alt+Backspace      kill the previous word (alt to Ctrl+W)
+      Backspace          delete char before cursor
+
+  Quit is `Ctrl+Q` (or `Ctrl+C`); both are intercepted by
+  `Egghead.OpenTUI.Runtime` directly so screens don't see them.
+  Ctrl+Z is also intercepted by the runtime to suspend the
+  process to the background. Ctrl+L is accepted as a no-op
+  redraw hint (we redraw every frame anyway).
+
+  ## Synthetic messages
+
+  The runtime also dispatches:
+
+    * `{:resize, w, h}` — whenever the terminal dimensions change.
+    * `{:editor_returned, id}` — after a `:suspend` cmd that ran
+      `$EDITOR` returns. The reducer reloads the record list and
+      re-selects `id` (which may be the just-created record).
   """
 
+  alias Egghead.RecordStore
   alias Egghead.TUI.Records.Model
 
   @preview_scroll_step 5
 
   @spec update(term(), Model.t()) :: {Model.t(), term()}
+
+  # ---- runtime-synthesized messages ---------------------------------------
+
+  def update({:resize, w, h}, model) do
+    {Model.set_dimensions(model, w, h), :none}
+  end
+
+  def update({:editor_returned, id}, model) do
+    {Model.reload(model, id), :none}
+  end
+
+  def update({:editor_failed, _reason}, model), do: {model, :none}
+
+  # ---- key bindings -------------------------------------------------------
+
   def update({:key, :up}, model), do: {move_selection(model, -1), :none}
   def update({:key, :down}, model), do: {move_selection(model, +1), :none}
+
+  def update({:key, :enter}, model), do: handle_enter(model)
 
   def update({:key, :ctrl_f}, model), do: {Model.toggle_class_filter(model), :none}
   def update({:key, :ctrl_t}, model), do: {Model.toggle_date_format(model), :none}
@@ -51,27 +94,112 @@ defmodule Egghead.TUI.Records.Update do
     do: {Model.scroll_preview(model, +@preview_scroll_step), :none}
 
   def update({:key, :backspace}, model) do
-    new_filter = String.slice(model.filter, 0, max(String.length(model.filter) - 1, 0))
-    {set_filter(model, new_filter), :none}
+    {Model.delete_before_cursor(model), :none}
   end
 
   def update({:char, c}, model) when is_binary(c) do
-    {set_filter(model, model.filter <> c), :none}
+    {Model.insert_at_cursor(model, c), :none}
   end
+
+  # Readline-style cursor + kill commands within the search bar.
+  def update({:key, :ctrl_a}, model), do: {Model.move_cursor_to_start(model), :none}
+  def update({:key, :ctrl_e}, model), do: {Model.move_cursor_to_end(model), :none}
+  def update({:key, :ctrl_k}, model), do: {Model.kill_to_eol(model), :none}
+  def update({:key, :ctrl_u}, model), do: {Model.kill_to_bol(model), :none}
+  def update({:key, :ctrl_w}, model), do: {Model.kill_word(model), :none}
+  def update({:key, :left}, model), do: {Model.move_cursor_left(model), :none}
+  def update({:key, :right}, model), do: {Model.move_cursor_right(model), :none}
+
+  # Meta-key (Option-as-Meta) word movement and forward kill.
+  def update({:key, :alt_b}, model), do: {Model.move_cursor_word_left(model), :none}
+  def update({:key, :alt_f}, model), do: {Model.move_cursor_word_right(model), :none}
+  def update({:key, :alt_d}, model), do: {Model.kill_word_forward(model), :none}
+  def update({:key, :alt_backspace}, model), do: {Model.kill_word(model), :none}
+
+  # Ctrl+L is the POSIX clear/redraw convention. Our renderer
+  # already redraws every frame, so we just accept the keystroke
+  # so it isn't surfaced as an unknown byte.
+  def update({:key, :ctrl_l}, model), do: {model, :none}
 
   def update(_other, model), do: {model, :none}
 
-  # ---- internals ----------------------------------------------------------
+  # ---- enter dispatch -----------------------------------------------------
 
-  defp set_filter(model, filter) do
-    %{model | filter: filter}
-    |> Model.refilter()
-    |> Model.clamp_selection()
-    |> Model.hydrate_selection()
+  defp handle_enter(model) do
+    cond do
+      Model.phantom_selected?(model) ->
+        case Model.creation_target(model) do
+          {title, slug} -> {model, create_and_edit_cmd(slug, title)}
+          nil -> {model, :none}
+        end
+
+      record = Enum.at(model.filtered, model.selection) ->
+        case record.source_path do
+          nil -> {model, :none}
+          path -> {model, edit_existing_cmd(path, record.id)}
+        end
+
+      true ->
+        {model, :none}
+    end
   end
 
+  # ---- editor cmds --------------------------------------------------------
+
+  defp edit_existing_cmd(path, id) do
+    {:suspend,
+     fn ->
+       _ = spawn_editor(path)
+       {:editor_returned, id}
+     end}
+  end
+
+  defp create_and_edit_cmd(slug, title) do
+    {:suspend,
+     fn ->
+       attrs =
+         %{id: slug, class: :durable}
+         |> maybe_put_title(slug, title)
+
+       case RecordStore.create_record(attrs) do
+         {:ok, record} ->
+           _ = spawn_editor(record.source_path)
+           {:editor_returned, record.id}
+
+         {:error, reason} ->
+           {:editor_failed, reason}
+       end
+     end}
+  end
+
+  defp maybe_put_title(attrs, slug, title) when slug == title, do: attrs
+  defp maybe_put_title(attrs, _slug, title), do: Map.put(attrs, :title, title)
+
+  # Spawn `$EDITOR` (or nano) on `path` via a shell port with
+  # `:nouse_stdio` so the editor inherits the BEAM's controlling
+  # tty directly. Mirrors the pattern in `Egghead.tui_loop/0` on
+  # `main` (lib/egghead.ex). Blocks until the editor exits.
+  defp spawn_editor(path) do
+    sh = System.find_executable("sh") || "/bin/sh"
+    editor = System.get_env("EDITOR") || System.get_env("VISUAL") || "nano"
+    escaped = String.replace(path, "'", "'\\''")
+
+    port =
+      Port.open({:spawn_executable, sh}, [
+        :nouse_stdio,
+        :exit_status,
+        args: ["-c", "#{editor} '#{escaped}'"]
+      ])
+
+    receive do
+      {^port, {:exit_status, status}} -> status
+    end
+  end
+
+  # ---- internals ----------------------------------------------------------
+
   defp move_selection(model, delta) do
-    n = length(model.filtered)
+    n = Model.list_total(model)
 
     new_sel =
       cond do

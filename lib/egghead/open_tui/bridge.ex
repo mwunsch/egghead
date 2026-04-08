@@ -110,6 +110,31 @@ defmodule Egghead.OpenTUI.Bridge do
   def drain_input(_timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Read one byte from `/dev/tty`, blocking up to `timeout_ms` ms.
+
+  `timeout_ms = 0` means block forever (until a byte arrives or
+  the tty closes). Otherwise, the call returns within roughly
+  `timeout_ms` ms regardless of input.
+
+  Returns:
+
+    * `{:ok, byte}` — one byte was read
+    * `:timeout`    — `timeout_ms` elapsed with no byte
+    * `:eof`        — the tty closed or could not be opened
+
+  This is the only path bytes flow through into the input parser.
+  Mixing it with `:file.read/2` on `/dev/tty` would race for the
+  same line-discipline bytes, so the parser uses this exclusively.
+
+  Implemented as a dirty I/O NIF so the infinite-blocking case
+  parks on a dirty scheduler thread instead of pegging a normal
+  scheduler.
+  """
+  @spec read_key(non_neg_integer()) ::
+          {:ok, byte()} | :timeout | :eof
+  def read_key(_timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Begin a new frame on `handle`. Caches OpenTUI's back buffer in the
   shim's per-handle state so subsequent `clear/2` and `draw_text/7`
   calls don't have to re-resolve it. Must be paired with `end_frame/1`.

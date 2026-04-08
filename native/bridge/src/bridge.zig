@@ -136,6 +136,13 @@ var raw_mode_tty_fd: c_int = -1;
 var raw_mode_saved: posix.termios = undefined;
 var raw_mode_active: bool = false;
 
+// Dedicated O_NONBLOCK fd for read_key. Opened lazily on first call
+// (after setup_terminal + drain_input have run) so we don't compete
+// with OpenTUI's capability-query reads. Stays open for the lifetime
+// of the process — the line discipline is shared with raw_mode_tty_fd
+// regardless of which fd we read from.
+var input_tty_fd: c_int = -1;
+
 fn registry() *Registry {
     if (!registry_initialized) {
         registry_storage = Registry.init(gpa.allocator());
@@ -302,6 +309,60 @@ fn nif_drain_input(
     }
 
     return atom(env, "ok");
+}
+
+fn nif_read_key(
+    env: ?*erl.ErlNifEnv,
+    argc: c_int,
+    argv: [*c]const erl.ERL_NIF_TERM,
+) callconv(.c) erl.ERL_NIF_TERM {
+    // read_key(timeout_ms): block up to `timeout_ms` for one byte from
+    // the controlling terminal. `timeout_ms = 0` means block forever.
+    //
+    // Returns `{:ok, byte}` on success, atom `:timeout` if no byte
+    // arrived within the budget, or atom `:eof` on tty error.
+    //
+    // The 50ms timeout form is the standard ESC-disambiguation trick:
+    // after reading 0x1B, peek for ~50ms; if nothing arrives, the user
+    // pressed bare ESC. If a byte arrives, it's part of an ESC sequence
+    // (`ESC [` for CSI, `ESC b` for Alt-b, etc.).
+    if (argc != 1) return badarg(env);
+
+    var timeout_ms: c_uint = 0;
+    if (erl.enif_get_uint(env, argv[0], &timeout_ms) == 0) return badarg(env);
+
+    if (input_tty_fd < 0) {
+        const fd = posix.open("/dev/tty", posix.O_RDONLY | posix.O_NONBLOCK);
+        if (fd < 0) return atom(env, "eof");
+        input_tty_fd = fd;
+    }
+
+    const slice_us: u32 = 5_000; // 5ms slices
+    const infinite = (timeout_ms == 0);
+    var elapsed_ms: u32 = 0;
+    var byte: u8 = 0;
+
+    while (true) {
+        const n = posix.read(input_tty_fd, &byte, 1);
+        if (n == 1) {
+            const ok = atom(env, "ok");
+            const b = erl.enif_make_uint(env, byte);
+            return erl.enif_make_tuple2(env, ok, b);
+        }
+        if (n == 0) {
+            // EOF on /dev/tty — vanishingly unlikely under normal
+            // operation, but report it cleanly so the runtime can exit.
+            return atom(env, "eof");
+        }
+        // n < 0: assume EAGAIN/EWOULDBLOCK from O_NONBLOCK and retry.
+        // Other errors (EBADF, EIO, ...) are functionally fatal here;
+        // we let them retry until timeout, then surface as :timeout.
+        if (!infinite and elapsed_ms >= timeout_ms) {
+            return atom(env, "timeout");
+        }
+        _ = posix.usleep(slice_us);
+        elapsed_ms += slice_us / 1000;
+    }
 }
 
 fn nif_leave_raw_mode(
@@ -554,6 +615,10 @@ const nif_funcs = [_]erl.ErlNifFunc{
     .{ .name = "leave_raw_mode", .arity = 0, .fptr = nif_leave_raw_mode, .flags = 0 },
     .{ .name = "tty_size", .arity = 0, .fptr = nif_tty_size, .flags = 0 },
     .{ .name = "drain_input", .arity = 1, .fptr = nif_drain_input, .flags = 0 },
+    // read_key is a dirty I/O NIF: with timeout_ms=0 it blocks
+    // indefinitely waiting for a tty byte, which would peg a normal
+    // scheduler thread. ERL_NIF_DIRTY_JOB_IO_BOUND == 2.
+    .{ .name = "read_key", .arity = 1, .fptr = nif_read_key, .flags = 2 },
     .{ .name = "begin_frame", .arity = 1, .fptr = nif_begin_frame, .flags = 0 },
     .{ .name = "clear", .arity = 2, .fptr = nif_clear, .flags = 0 },
     .{ .name = "draw_text", .arity = 7, .fptr = nif_draw_text, .flags = 0 },

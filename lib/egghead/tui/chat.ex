@@ -3,10 +3,10 @@ defmodule Egghead.TUI.Chat do
   Chat screen as an `Egghead.OpenTUI.Runtime` behaviour, mirroring
   the shape of `Egghead.TUI.Records`.
 
-  Phase 6a is a placeholder — the screen renders a static panel
-  and exits back to records on Esc. Phases 6c onward fill in the
-  transcript, streaming, input, presence sidebar, and slash
-  commands.
+  The screen subscribes to its room's PubSub topic, hydrates the
+  existing transcript on entry, and renders streaming agent
+  output live as it arrives. Esc on an empty input returns to
+  records mode.
 
   Although this module declares the runtime behaviour, it is not
   launched directly. The shell at `Egghead.TUI.App` wraps it and
@@ -28,5 +28,12 @@ defmodule Egghead.TUI.Chat do
   def view(model), do: View.render(model)
 
   @impl true
-  def subscriptions(_model), do: [:keys]
+  def subscriptions(%Model{room_id: nil}), do: [:keys]
+
+  def subscriptions(%Model{room_id: room_id}) do
+    [
+      :keys,
+      {:pubsub, Egghead.Chat.Room.topic(room_id), &{:room_event, &1}}
+    ]
+  end
 end

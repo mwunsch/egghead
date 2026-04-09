@@ -39,10 +39,17 @@ defmodule Egghead.TUI.AppTest do
     end
 
     test "the chat model survives a round trip through records mode" do
+      original_chat = %Chat.Model{
+        width: 99,
+        height: 33,
+        room_id: "marker-room",
+        status_message: "marker"
+      }
+
       state = %App{
         screen: :chat,
         records: %Records.Model{},
-        chat: %Chat.Model{width: 99, height: 33, opts: [marker: :original]}
+        chat: original_chat
       }
 
       # Chat → records via Esc.
@@ -53,8 +60,11 @@ defmodule Egghead.TUI.AppTest do
       state = drive(state, [{:char, "/"}, {:char, "c"}, {:char, "h"}, {:char, "a"}, {:char, "t"}])
       {state, _} = App.update({:key, :enter}, state)
       assert state.screen == :chat
-      assert state.chat.opts == [marker: :original],
+
+      assert state.chat.room_id == "marker-room",
              "App.handle_cmd should resume the existing chat model, not re-init"
+
+      assert state.chat.status_message == "marker"
     end
   end
 

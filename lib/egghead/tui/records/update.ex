@@ -293,11 +293,14 @@ defmodule Egghead.TUI.Records.Update do
   end
 
   defp execute_command(%{name: "chat"}, model) do
-    # Phase 6a: leave the records screen and let the App shell
-    # take over. The shell intercepts `:switch_screen` and
-    # initialises the chat screen lazily on first entry; later
-    # entries resume the existing chat model.
-    {Model.exit_command_mode(model), {:switch_screen, :chat, []}}
+    # Leave the records screen and let the App shell take over.
+    # The shell intercepts `:switch_screen` and initialises the
+    # chat screen lazily on first entry, passing the default
+    # room id so the screen can subscribe to its PubSub topic
+    # and hydrate the existing transcript. Later entries just
+    # resume the existing chat model with its accumulated state.
+    init_arg = [room_id: Egghead.default_room()]
+    {Model.exit_command_mode(model), {:switch_screen, :chat, init_arg}}
   end
 
   defp execute_command(%{name: "system"}, model) do

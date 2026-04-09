@@ -101,10 +101,16 @@ defmodule Egghead.TUI.App do
   # Switch into chat. Lazily initialise on first entry; subsequent
   # entries resume the existing model so the transcript and input
   # state survive round trips through records mode.
+  #
+  # Lazy init means a fresh chat model carries its struct defaults
+  # (80x24) and won't see a `{:resize, w, h}` until the terminal
+  # actually changes size. We seed it with the records model's
+  # current dimensions so the very first frame is sized correctly.
   defp handle_cmd({:switch_screen, :chat, init_arg}, state) do
     case state.chat do
       nil ->
         {chat_model, chat_cmd} = Chat.init(init_arg || [])
+        chat_model = seed_dimensions(chat_model, state.records)
         {%{state | screen: :chat, chat: chat_model}, chat_cmd}
 
       _existing ->
@@ -119,4 +125,10 @@ defmodule Egghead.TUI.App do
   # Anything we don't intercept is a normal runtime command and
   # passes through unchanged.
   defp handle_cmd(cmd, state), do: {state, cmd}
+
+  defp seed_dimensions(chat_model, %{width: w, height: h}) do
+    %{chat_model | width: w, height: h}
+  end
+
+  defp seed_dimensions(chat_model, _), do: chat_model
 end

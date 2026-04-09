@@ -87,45 +87,63 @@ defmodule Egghead.OpenTUI.Input do
   key tuple. Safe to call from any process — the underlying NIF
   is dirty I/O bound and parks on a dirty scheduler thread while
   blocked.
+
+  Pass an optional `timeout_ms` to wait at most that many
+  milliseconds for the *first* byte. If nothing arrives in that
+  window, returns `:timeout` (the runtime treats this as "no
+  input ready, check the mailbox"). Once the first byte does
+  arrive, follow-up bytes for multi-byte sequences are read with
+  the standard ~50 ms disambiguation window regardless of the
+  initial timeout.
   """
-  def read_one_key, do: parse(&Bridge.read_key/1)
+  @spec read_one_key(non_neg_integer()) :: term() | :timeout
+  def read_one_key(timeout_ms \\ 0) do
+    case Bridge.read_key(timeout_ms) do
+      :timeout -> :timeout
+      :eof -> {:key, :eof}
+      {:ok, byte} -> dispatch_byte(byte, &Bridge.read_key/1)
+    end
+  end
 
   @doc """
   Parse one event using the supplied byte-source function.
   Used directly by tests; the production reader is
-  `read_one_key/0`.
+  `read_one_key/1`.
   """
   @spec parse(reader()) :: term()
   def parse(reader) when is_function(reader, 1) do
-    parse_next(reader)
-  end
-
-  defp parse_next(reader) do
     case reader.(0) do
-      {:ok, 0x01} -> {:key, :ctrl_a}
-      {:ok, 0x03} -> {:key, :ctrl_c}
-      {:ok, 0x05} -> {:key, :ctrl_e}
-      {:ok, 0x06} -> {:key, :ctrl_f}
-      {:ok, 0x09} -> {:key, :tab}
-      {:ok, 0x0A} -> {:key, :enter}
-      {:ok, 0x0B} -> {:key, :ctrl_k}
-      {:ok, 0x0C} -> {:key, :ctrl_l}
-      {:ok, 0x0D} -> {:key, :enter}
-      {:ok, 0x0E} -> {:key, :ctrl_n}
-      {:ok, 0x10} -> {:key, :ctrl_p}
-      {:ok, 0x11} -> {:key, :ctrl_q}
-      {:ok, 0x14} -> {:key, :ctrl_t}
-      {:ok, 0x15} -> {:key, :ctrl_u}
-      {:ok, 0x17} -> {:key, :ctrl_w}
-      {:ok, 0x1A} -> {:key, :ctrl_z}
-      {:ok, 0x1B} -> parse_escape(reader)
-      {:ok, 0x7F} -> {:key, :backspace}
-      {:ok, byte} when byte >= 0x20 and byte < 0x7F -> {:char, <<byte>>}
-      {:ok, byte} -> {:key, {:byte, byte}}
+      {:ok, byte} -> dispatch_byte(byte, reader)
       :timeout -> {:key, :eof}
       :eof -> {:key, :eof}
     end
   end
+
+  # Dispatch a single first byte. Multi-byte sequences (CSI,
+  # Alt-letter, paste) recurse via the supplied reader.
+  defp dispatch_byte(0x01, _reader), do: {:key, :ctrl_a}
+  defp dispatch_byte(0x03, _reader), do: {:key, :ctrl_c}
+  defp dispatch_byte(0x05, _reader), do: {:key, :ctrl_e}
+  defp dispatch_byte(0x06, _reader), do: {:key, :ctrl_f}
+  defp dispatch_byte(0x09, _reader), do: {:key, :tab}
+  defp dispatch_byte(0x0A, _reader), do: {:key, :enter}
+  defp dispatch_byte(0x0B, _reader), do: {:key, :ctrl_k}
+  defp dispatch_byte(0x0C, _reader), do: {:key, :ctrl_l}
+  defp dispatch_byte(0x0D, _reader), do: {:key, :enter}
+  defp dispatch_byte(0x0E, _reader), do: {:key, :ctrl_n}
+  defp dispatch_byte(0x10, _reader), do: {:key, :ctrl_p}
+  defp dispatch_byte(0x11, _reader), do: {:key, :ctrl_q}
+  defp dispatch_byte(0x14, _reader), do: {:key, :ctrl_t}
+  defp dispatch_byte(0x15, _reader), do: {:key, :ctrl_u}
+  defp dispatch_byte(0x17, _reader), do: {:key, :ctrl_w}
+  defp dispatch_byte(0x1A, _reader), do: {:key, :ctrl_z}
+  defp dispatch_byte(0x1B, reader), do: parse_escape(reader)
+  defp dispatch_byte(0x7F, _reader), do: {:key, :backspace}
+
+  defp dispatch_byte(byte, _reader) when byte >= 0x20 and byte < 0x7F,
+    do: {:char, <<byte>>}
+
+  defp dispatch_byte(byte, _reader), do: {:key, {:byte, byte}}
 
   # After 0x1B: peek with a short timeout. No byte → bare ESC.
   defp parse_escape(reader) do

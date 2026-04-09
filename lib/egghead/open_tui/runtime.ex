@@ -69,7 +69,10 @@ defmodule Egghead.OpenTUI.Runtime do
           | {:suspend, (-> term())}
           | {:batch, [cmd()]}
 
-  @type subscription :: :keys | {:interval, pos_integer(), msg()}
+  @type subscription ::
+          :keys
+          | {:interval, pos_integer(), msg()}
+          | {:pubsub, topic :: String.t(), wrap_fn :: (term() -> msg())}
 
   @callback init(opts :: keyword()) :: {model(), cmd()}
   @callback update(msg(), model()) :: {model(), cmd()}
@@ -103,7 +106,19 @@ defmodule Egghead.OpenTUI.Runtime do
       :ok = Bridge.drain_input(300)
 
       {model, cmd} = behaviour.init(opts)
-      state = %{model: model, inbox: [], halt?: false, last_dimensions: nil}
+
+      state = %{
+        model: model,
+        inbox: [],
+        halt?: false,
+        last_dimensions: nil,
+        # Currently-active PubSub subscription, if any. We track
+        # exactly one topic per runtime — multi-topic can grow
+        # later if a screen ever needs it. The wrap fn turns the
+        # raw broadcast message into a screen-domain message.
+        pubsub: nil
+      }
+
       state = execute(cmd, state, behaviour)
 
       loop(behaviour, state)
@@ -122,6 +137,7 @@ defmodule Egghead.OpenTUI.Runtime do
 
   defp loop(behaviour, state) do
     state = sync_dimensions(behaviour, state)
+    state = sync_pubsub(behaviour, state)
     :ok = draw(behaviour, state.model)
 
     {msg, state} = next_msg(behaviour, state)
@@ -129,6 +145,9 @@ defmodule Egghead.OpenTUI.Runtime do
     case msg do
       :halt ->
         :ok
+
+      :no_msg ->
+        loop(behaviour, state)
 
       _ ->
         {model, cmd} = behaviour.update(msg, state.model)
@@ -172,6 +191,12 @@ defmodule Egghead.OpenTUI.Runtime do
 
   # ---- message sources ----------------------------------------------------
 
+  # How long to wait for a key on each idle iteration. Short
+  # enough that PubSub messages and (eventually) interval ticks
+  # feel responsive; long enough that the loop isn't a busy
+  # spin when nothing is happening.
+  @input_poll_ms 30
+
   defp next_msg(_behaviour, %{inbox: [head | tail]} = state) do
     {head, %{state | inbox: tail}}
   end
@@ -179,38 +204,114 @@ defmodule Egghead.OpenTUI.Runtime do
   defp next_msg(behaviour, %{inbox: []} = state) do
     subs = behaviour.subscriptions(state.model)
 
-    if :keys in subs do
-      key = Input.read_one_key()
+    cond do
+      # Process-mailbox messages always win — these come from
+      # PubSub broadcasts (and, later, interval timers). Drained
+      # one per loop iteration so the screen sees them in arrival
+      # order. We use `receive after 0` so the loop never blocks
+      # here; blocking happens in the input read below.
+      msg = drain_mailbox(state) ->
+        msg
 
-      # Runtime-level key intercepts. These bypass the screen's
-      # update/2 entirely so any screen gets the same convention.
-      case key do
-        {:key, :ctrl_c} ->
-          {:halt, state}
+      :keys in subs ->
+        case Input.read_one_key(@input_poll_ms) do
+          :timeout ->
+            {:no_msg, state}
 
-        {:key, :ctrl_q} ->
-          {:halt, state}
+          key ->
+            handle_key(key, state)
+        end
 
-        {:key, :ctrl_z} ->
-          # Suspend to background. Tear the terminal down (the
-          # user's shell takes back the tty), send SIGSTOP to
-          # ourselves, and wait. When the user runs `fg`, the
-          # kernel sends SIGCONT, the BEAM resumes, and we
-          # restore the terminal. Returning :no_msg lets the
-          # loop fall through cleanly; clearing last_dimensions
-          # forces the next sync_dimensions/2 to dispatch a
-          # fresh :resize in case the window changed while we
-          # were stopped.
-          suspend_to_background()
-          {:no_msg, %{state | last_dimensions: nil}}
-
-        _ ->
-          {key_to_msg(key), state}
-      end
-    else
-      # No active subscription; nothing to wait on. Bail out.
-      {:halt, state}
+      true ->
+        # No active subscription; nothing to wait on. Bail out.
+        {:halt, state}
     end
+  end
+
+  # Drain at most one mailbox message per call. Returns the
+  # tagged `{msg, state}` tuple so the caller can substitute it
+  # for an input event, or `nil` if the mailbox is empty.
+  defp drain_mailbox(state) do
+    receive do
+      raw ->
+        case state.pubsub do
+          {_topic, wrap} when is_function(wrap, 1) ->
+            {wrap.(raw), state}
+
+          _ ->
+            # Unexpected mail with no active wrapper. Surface as
+            # an opaque tuple rather than crash; the screen can
+            # ignore it via the catch-all clause it already
+            # needs for unknown messages.
+            {{:unknown_msg, raw}, state}
+        end
+    after
+      0 -> nil
+    end
+  end
+
+  # Runtime-level key intercepts. These bypass the screen's
+  # update/2 entirely so any screen gets the same convention.
+  defp handle_key({:key, :ctrl_c}, state), do: {:halt, state}
+  defp handle_key({:key, :ctrl_q}, state), do: {:halt, state}
+
+  defp handle_key({:key, :ctrl_z}, state) do
+    # Suspend to background. Tear the terminal down (the
+    # user's shell takes back the tty), send SIGSTOP to
+    # ourselves, and wait. When the user runs `fg`, the
+    # kernel sends SIGCONT, the BEAM resumes, and we
+    # restore the terminal. Returning :no_msg lets the
+    # loop fall through cleanly; clearing last_dimensions
+    # forces the next sync_dimensions/2 to dispatch a
+    # fresh :resize in case the window changed while we
+    # were stopped.
+    suspend_to_background()
+    {:no_msg, %{state | last_dimensions: nil}}
+  end
+
+  defp handle_key(key, state), do: {key_to_msg(key), state}
+
+  # ---- pubsub subscription management ------------------------------------
+
+  # Reconcile the screen's declared subscriptions with the
+  # runtime's currently-active PubSub subscription. We track
+  # exactly one topic; if the screen swaps to a different one,
+  # the old topic is unsubscribed first.
+  defp sync_pubsub(behaviour, state) do
+    subs = behaviour.subscriptions(state.model)
+
+    desired =
+      Enum.find_value(subs, fn
+        {:pubsub, topic, wrap} when is_function(wrap, 1) -> {topic, wrap}
+        _ -> nil
+      end)
+
+    case {state.pubsub, desired} do
+      {nil, nil} ->
+        state
+
+      {{_topic, _}, nil} ->
+        unsubscribe_pubsub(state.pubsub)
+        %{state | pubsub: nil}
+
+      {nil, {topic, _wrap} = sub} ->
+        :ok = Phoenix.PubSub.subscribe(Egghead.PubSub, topic)
+        %{state | pubsub: sub}
+
+      {{topic, _}, {topic, _wrap} = sub} ->
+        # Same topic, possibly a refreshed wrapper closure.
+        %{state | pubsub: sub}
+
+      {_old, {topic, _wrap} = sub} ->
+        unsubscribe_pubsub(state.pubsub)
+        :ok = Phoenix.PubSub.subscribe(Egghead.PubSub, topic)
+        %{state | pubsub: sub}
+    end
+  end
+
+  defp unsubscribe_pubsub({topic, _wrap}) do
+    _ = Phoenix.PubSub.unsubscribe(Egghead.PubSub, topic)
+    :ok
   end
 
   # Suspend the BEAM to the background, the way Ctrl+Z does for

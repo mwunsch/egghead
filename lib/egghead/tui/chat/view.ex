@@ -25,24 +25,30 @@ defmodule Egghead.TUI.Chat.View do
 
   import Egghead.OpenTUI.View
 
-  alias Egghead.OpenTUI.Colors
+  alias Egghead.OpenTUI.{Colors, EditBuffer}
   alias Egghead.TUI.Chat.{Entry, Model, Stream}
 
   @prompt "❯ "
+  @continuation "  "
+  @max_input_rows 8
 
   @spec render(Model.t()) :: Egghead.OpenTUI.View.tree()
   def render(%Model{} = model) do
     width = model.width
     height = model.height
-    transcript_height = max(height - 3, 1)
+
+    input_height = clamp(EditBuffer.line_count(model.input), 1, @max_input_rows)
+    transcript_height = max(height - 2 - input_height, 1)
 
     vbox([
       header(model, width),
       transcript_region(model, width, transcript_height),
-      input_row(model, width),
+      input_box(model, width, input_height),
       status_bar(model, width)
     ])
   end
+
+  defp clamp(n, lo, hi), do: n |> max(lo) |> min(hi)
 
   # ---- header --------------------------------------------------------------
 
@@ -200,27 +206,71 @@ defmodule Egghead.TUI.Chat.View do
 
   # ---- input ---------------------------------------------------------------
 
-  defp input_row(%Model{input: input, cursor: cursor}, _width) do
-    # Split the input at the cursor and emit a zero-width
-    # `cursor` leaf between the two halves. Same pattern as the
-    # records search bar — see `Egghead.TUI.Records.View.search/2`.
-    prefix = String.slice(input, 0, cursor)
-    suffix = String.slice(input, cursor, String.length(input))
+  # Render the EditBuffer as a stack of `input_height` rows. The
+  # first visible line carries the `❯ ` prompt; continuation lines
+  # are indented to the same width so the buffer hangs under the
+  # prompt the way Claude Code's input box does. The cursor leaf
+  # is emitted on the cursor row, splitting that row's text at
+  # `col` so the renderer can paint a real terminal cursor (same
+  # pattern as `Egghead.TUI.Records.View.search/2`).
+  defp input_box(%Model{input: buffer}, _width, input_height) do
+    {cursor_row, cursor_col} = EditBuffer.cursor(buffer)
+    lines = buffer.lines
+    total = length(lines)
 
+    # If the buffer has more lines than the cap, scroll so the
+    # cursor row stays visible. Pin to the bottom by default; only
+    # shift up when the cursor leaves the window.
+    visible_top =
+      cond do
+        total <= input_height -> 0
+        cursor_row >= total - input_height -> total - input_height
+        cursor_row < input_height -> 0
+        true -> cursor_row - input_height + 1
+      end
+
+    visible_lines =
+      lines
+      |> Enum.drop(visible_top)
+      |> Enum.take(input_height)
+
+    rows =
+      visible_lines
+      |> Enum.with_index(visible_top)
+      |> Enum.map(fn {line, idx} ->
+        prompt = if idx == 0, do: @prompt, else: @continuation
+        render_input_row(line, prompt, idx == cursor_row, cursor_col)
+      end)
+
+    vbox([height: input_height], rows)
+  end
+
+  defp render_input_row(line, prompt, false, _cursor_col) do
     fg = Colors.white()
+    prompt_w = String.length(prompt)
 
-    hbox(
-      [height: 1],
-      [
-        text(@prompt <> prefix,
-          width: String.length(@prompt) + String.length(prefix),
-          fg: fg
-        ),
-        cursor(),
-        text(suffix, width: String.length(suffix), fg: fg),
-        fill(flex: 1)
-      ]
-    )
+    hbox([height: 1], [
+      text(prompt, width: prompt_w, fg: fg),
+      text(line, width: String.length(line), fg: fg),
+      fill(flex: 1)
+    ])
+  end
+
+  defp render_input_row(line, prompt, true, cursor_col) do
+    fg = Colors.white()
+    prompt_w = String.length(prompt)
+    line_len = String.length(line)
+    col = min(cursor_col, line_len)
+
+    prefix = String.slice(line, 0, col)
+    suffix = String.slice(line, col, line_len)
+
+    hbox([height: 1], [
+      text(prompt <> prefix, width: prompt_w + String.length(prefix), fg: fg),
+      cursor(),
+      text(suffix, width: String.length(suffix), fg: fg),
+      fill(flex: 1)
+    ])
   end
 
   # ---- status --------------------------------------------------------------

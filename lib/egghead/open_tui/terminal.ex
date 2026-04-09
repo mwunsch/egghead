@@ -81,6 +81,7 @@ defmodule Egghead.OpenTUI.Terminal do
     {:ok, handle} = Bridge.create_renderer(width, height)
     :ok = Bridge.setup_terminal(handle)
     :ok = Bridge.enable_mouse(handle, false)
+    :ok = enable_bracketed_paste()
 
     state = %{handle: handle, width: width, height: height, suspended?: false}
     {:ok, state}
@@ -106,6 +107,7 @@ defmodule Egghead.OpenTUI.Terminal do
     do: {:reply, :ok, state}
 
   def handle_call(:suspend, _from, state) do
+    safe(fn -> disable_bracketed_paste() end)
     safe(fn -> Bridge.destroy_renderer(state.handle) end)
     safe(fn -> Bridge.leave_raw_mode() end)
     {:reply, :ok, %{state | handle: nil, suspended?: true}}
@@ -125,6 +127,7 @@ defmodule Egghead.OpenTUI.Terminal do
     {:ok, handle} = Bridge.create_renderer(width, height)
     :ok = Bridge.setup_terminal(handle)
     :ok = Bridge.enable_mouse(handle, false)
+    :ok = enable_bracketed_paste()
 
     {:reply, :ok,
      %{state | handle: handle, width: width, height: height, suspended?: false}}
@@ -134,6 +137,8 @@ defmodule Egghead.OpenTUI.Terminal do
   def terminate(_reason, state) do
     # OpenTUI restores alt screen + terminal modes inside destroyRenderer.
     # We restore termios afterwards so raw mode is off even on crash.
+    safe(fn -> disable_bracketed_paste() end)
+
     if state.handle do
       safe(fn -> Bridge.destroy_renderer(state.handle) end)
     end
@@ -149,6 +154,29 @@ defmodule Egghead.OpenTUI.Terminal do
       f.()
     catch
       _, _ -> :ok
+    end
+  end
+
+  # Bracketed paste mode (xterm DECSET 2004). When enabled, the
+  # terminal wraps pasted bytes in `ESC[200~ … ESC[201~` so we can
+  # tell typed input from pasted input. The `Egghead.OpenTUI.Input`
+  # parser already decodes the wrapper into `{:paste, text}`; this
+  # is the wire-level enable that the parser depends on.
+  #
+  # We write to /dev/tty directly rather than through stdout so the
+  # sequence isn't dependent on the BEAM's group leader plumbing.
+  defp enable_bracketed_paste, do: write_tty("\e[?2004h")
+  defp disable_bracketed_paste, do: write_tty("\e[?2004l")
+
+  defp write_tty(bytes) do
+    case :file.open(~c"/dev/tty", [:write, :raw, :binary]) do
+      {:ok, fd} ->
+        _ = :file.write(fd, bytes)
+        _ = :file.close(fd)
+        :ok
+
+      _ ->
+        :ok
     end
   end
 end

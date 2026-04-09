@@ -21,6 +21,7 @@ defmodule Egghead.TUI.Chat.Model do
   model in sync with new room events.
   """
 
+  alias Egghead.OpenTUI.EditBuffer
   alias Egghead.TUI.Chat.{Entry, Stream}
 
   defmodule AgentPresence do
@@ -50,8 +51,7 @@ defmodule Egghead.TUI.Chat.Model do
           pending_activated: MapSet.t(),
           agents: [AgentPresence.t()],
           scroll: non_neg_integer(),
-          input: String.t(),
-          cursor: non_neg_integer(),
+          input: EditBuffer.t(),
           status_message: String.t() | nil,
           anim_frame: non_neg_integer()
         }
@@ -64,8 +64,7 @@ defmodule Egghead.TUI.Chat.Model do
             pending_activated: MapSet.new(),
             agents: [],
             scroll: 0,
-            input: "",
-            cursor: 0,
+            input: %EditBuffer{},
             status_message: nil,
             anim_frame: 0
 
@@ -164,13 +163,19 @@ defmodule Egghead.TUI.Chat.Model do
 
   # ---- input ---------------------------------------------------------------
 
-  @spec set_input(t(), String.t(), non_neg_integer()) :: t()
-  def set_input(%__MODULE__{} = m, input, cursor) do
-    %{m | input: input, cursor: cursor}
+  @spec set_buffer(t(), EditBuffer.t()) :: t()
+  def set_buffer(%__MODULE__{} = m, %EditBuffer{} = buffer) do
+    %{m | input: buffer}
   end
 
   @spec clear_input(t()) :: t()
-  def clear_input(%__MODULE__{} = m), do: %{m | input: "", cursor: 0}
+  def clear_input(%__MODULE__{} = m), do: %{m | input: EditBuffer.new()}
+
+  @spec input_text(t()) :: String.t()
+  def input_text(%__MODULE__{input: buffer}), do: EditBuffer.to_text(buffer)
+
+  @spec input_empty?(t()) :: boolean()
+  def input_empty?(%__MODULE__{input: buffer}), do: EditBuffer.empty?(buffer)
 
   # ---- internals -----------------------------------------------------------
 

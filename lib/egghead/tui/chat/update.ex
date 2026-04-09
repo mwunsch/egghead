@@ -18,7 +18,7 @@ defmodule Egghead.TUI.Chat.Update do
   pure.
   """
 
-  alias Egghead.OpenTUI.Readline
+  alias Egghead.OpenTUI.EditBuffer
   alias Egghead.TUI.Chat.{Entry, Model}
 
   @spec update(term(), Model.t()) :: {Model.t(), term()}
@@ -41,97 +41,104 @@ defmodule Egghead.TUI.Chat.Update do
 
   # ---- key bindings: leave / send -----------------------------------------
 
-  def update({:key, :escape}, %Model{input: ""} = model) do
-    {model, {:switch_screen, :records, []}}
-  end
-
   def update({:key, :escape}, %Model{} = model) do
-    {Model.clear_input(model), :none}
+    if Model.input_empty?(model) do
+      {model, {:switch_screen, :records, []}}
+    else
+      {Model.clear_input(model), :none}
+    end
   end
-
-  def update({:key, :enter}, %Model{input: ""} = model), do: {model, :none}
-
-  def update({:key, :enter}, %Model{room_id: nil} = model), do: {model, :none}
 
   def update({:key, :enter}, %Model{} = model) do
-    text = model.input
-    room_id = model.room_id
-    cmd = {:exec, fn -> send_message(room_id, text) end}
-    {Model.clear_input(model), cmd}
+    cond do
+      Model.input_empty?(model) ->
+        {model, :none}
+
+      model.room_id == nil ->
+        {model, :none}
+
+      true ->
+        text = Model.input_text(model)
+        room_id = model.room_id
+        cmd = {:exec, fn -> send_message(room_id, text) end}
+        {Model.clear_input(model), cmd}
+    end
   end
 
-  # ---- input editing (single-line in 6c; replaced by EditBuffer in 6d) ---
+  # Shift+Enter and Alt+Enter insert a literal newline. Shift+Enter
+  # only arrives from Kitty-protocol terminals (iTerm, kitty, ghostty,
+  # WezTerm); Alt+Enter is the universal fallback (Apple Terminal,
+  # tmux without passthrough, …).
+  def update({:key, chord}, %Model{} = model) when chord in [:shift_enter, :alt_enter] do
+    {edit(model, &EditBuffer.insert_newline/1), :none}
+  end
+
+  # ---- input editing (multi-line via EditBuffer) -------------------------
 
   def update({:char, c}, %Model{} = model) when is_binary(c) do
-    {input, cursor} = Readline.insert(model.input, model.cursor, c)
-    {Model.set_input(model, input, cursor), :none}
+    {edit(model, &EditBuffer.insert(&1, c)), :none}
   end
 
   def update({:key, :backspace}, %Model{} = model) do
-    {input, cursor} = Readline.delete_before(model.input, model.cursor)
-    {Model.set_input(model, input, cursor), :none}
+    {edit(model, &EditBuffer.delete_before/1), :none}
   end
 
   def update({:key, :left}, %Model{} = model) do
-    {_, cursor} = Readline.move_left(model.input, model.cursor)
-    {Model.set_input(model, model.input, cursor), :none}
+    {edit(model, &EditBuffer.move_left/1), :none}
   end
 
   def update({:key, :right}, %Model{} = model) do
-    {_, cursor} = Readline.move_right(model.input, model.cursor)
-    {Model.set_input(model, model.input, cursor), :none}
+    {edit(model, &EditBuffer.move_right/1), :none}
+  end
+
+  def update({:key, :up}, %Model{} = model) do
+    {edit(model, &EditBuffer.move_up/1), :none}
+  end
+
+  def update({:key, :down}, %Model{} = model) do
+    {edit(model, &EditBuffer.move_down/1), :none}
   end
 
   def update({:key, :ctrl_a}, %Model{} = model) do
-    {Model.set_input(model, model.input, 0), :none}
+    {edit(model, &EditBuffer.move_to_line_start/1), :none}
   end
 
   def update({:key, :ctrl_e}, %Model{} = model) do
-    {Model.set_input(model, model.input, String.length(model.input)), :none}
+    {edit(model, &EditBuffer.move_to_line_end/1), :none}
   end
 
   def update({:key, :ctrl_k}, %Model{} = model) do
-    {input, cursor} = Readline.kill_to_eol(model.input, model.cursor)
-    {Model.set_input(model, input, cursor), :none}
+    {edit(model, &EditBuffer.kill_to_eol/1), :none}
   end
 
   def update({:key, :ctrl_u}, %Model{} = model) do
-    {input, cursor} = Readline.kill_to_bol(model.input, model.cursor)
-    {Model.set_input(model, input, cursor), :none}
+    {edit(model, &EditBuffer.kill_to_bol/1), :none}
   end
 
   def update({:key, :ctrl_w}, %Model{} = model) do
-    {input, cursor} = Readline.kill_word(model.input, model.cursor)
-    {Model.set_input(model, input, cursor), :none}
+    {edit(model, &EditBuffer.kill_word/1), :none}
   end
 
   def update({:key, :alt_b}, %Model{} = model) do
-    {_, cursor} = Readline.move_word_left(model.input, model.cursor)
-    {Model.set_input(model, model.input, cursor), :none}
+    {edit(model, &EditBuffer.move_word_left/1), :none}
   end
 
   def update({:key, :alt_f}, %Model{} = model) do
-    {_, cursor} = Readline.move_word_right(model.input, model.cursor)
-    {Model.set_input(model, model.input, cursor), :none}
+    {edit(model, &EditBuffer.move_word_right/1), :none}
   end
 
   def update({:key, :alt_d}, %Model{} = model) do
-    {input, _} = Readline.kill_word_forward(model.input, model.cursor)
-    {Model.set_input(model, input, model.cursor), :none}
+    {edit(model, &EditBuffer.kill_word_forward/1), :none}
   end
 
   def update({:key, :alt_backspace}, %Model{} = model) do
-    {input, cursor} = Readline.kill_word(model.input, model.cursor)
-    {Model.set_input(model, input, cursor), :none}
+    {edit(model, &EditBuffer.kill_word/1), :none}
   end
 
-  # Pasting in 6c just inserts the text inline, stripping any
-  # newlines (single-line input). 6d will preserve them via
-  # EditBuffer.
+  # Bracketed paste arrives as a single message with newlines
+  # preserved. EditBuffer.paste honours embedded `\n` as line breaks.
   def update({:paste, text}, %Model{} = model) when is_binary(text) do
-    flat = String.replace(text, "\n", " ")
-    {input, cursor} = Readline.insert(model.input, model.cursor, flat)
-    {Model.set_input(model, input, cursor), :none}
+    {edit(model, &EditBuffer.paste(&1, text)), :none}
   end
 
   # Mouse and unrecognized input are silently swallowed in 6c.
@@ -206,6 +213,11 @@ defmodule Egghead.TUI.Chat.Update do
   defp handle_room_event(_other, model), do: model
 
   # ---- helpers ------------------------------------------------------------
+
+  # Apply a pure EditBuffer transformation to the model's input.
+  defp edit(%Model{input: buffer} = model, fun) when is_function(fun, 1) do
+    Model.set_buffer(model, fun.(buffer))
+  end
 
   defp clear_status(%Model{} = model), do: %{model | status_message: nil}
 

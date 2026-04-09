@@ -1,8 +1,13 @@
 defmodule Egghead.TUI.Chat.UpdateTest do
   use ExUnit.Case, async: true
 
+  alias Egghead.OpenTUI.EditBuffer
   alias Egghead.TUI.Chat.{Entry, Model, Update}
   alias Egghead.Chat.Room.{Message, Sender}
+
+  defp put_input(model, text) do
+    %{model | input: EditBuffer.from_text(text)}
+  end
 
   defp model(opts \\ []) do
     %Model{
@@ -125,51 +130,75 @@ defmodule Egghead.TUI.Chat.UpdateTest do
     end
 
     test "escape with input clears the input instead of leaving" do
-      m = %{model() | input: "draft", cursor: 5}
+      m = put_input(model(), "draft")
       {m, cmd} = Update.update({:key, :escape}, m)
-      assert m.input == ""
+      assert Model.input_text(m) == ""
       assert cmd == :none
     end
 
     test "enter on empty input is a no-op" do
       {m, cmd} = Update.update({:key, :enter}, model())
-      assert m.input == ""
+      assert Model.input_text(m) == ""
       assert cmd == :none
     end
 
     test "enter with text fires an :exec command and clears the input" do
-      m = %{model() | input: "hello", cursor: 5}
+      m = put_input(model(), "hello")
       {m, cmd} = Update.update({:key, :enter}, m)
-      assert m.input == ""
-      assert m.cursor == 0
+      assert Model.input_text(m) == ""
       assert match?({:exec, fun} when is_function(fun, 0), cmd)
     end
 
     test "printable char inserts at the cursor" do
       {m, :none} = Update.update({:char, "h"}, model())
       {m, :none} = Update.update({:char, "i"}, m)
-      assert m.input == "hi"
-      assert m.cursor == 2
+      assert Model.input_text(m) == "hi"
+      assert EditBuffer.cursor(m.input) == {0, 2}
     end
 
     test "backspace deletes the previous char" do
-      m = %{model() | input: "hi", cursor: 2}
+      m = put_input(model(), "hi")
       {m, :none} = Update.update({:key, :backspace}, m)
-      assert m.input == "h"
-      assert m.cursor == 1
+      assert Model.input_text(m) == "h"
+      assert EditBuffer.cursor(m.input) == {0, 1}
     end
 
     test "ctrl_a / ctrl_e jump to ends of the line" do
-      m = %{model() | input: "hello", cursor: 2}
+      m = put_input(model(), "hello")
+      m = %{m | input: %{m.input | col: 2}}
       {m1, :none} = Update.update({:key, :ctrl_a}, m)
-      assert m1.cursor == 0
+      assert EditBuffer.cursor(m1.input) == {0, 0}
       {m2, :none} = Update.update({:key, :ctrl_e}, m)
-      assert m2.cursor == 5
+      assert EditBuffer.cursor(m2.input) == {0, 5}
     end
 
-    test "paste flattens newlines for the single-line input (Phase 6c)" do
+    test "shift_enter inserts a literal newline" do
+      m = put_input(model(), "first")
+      {m, :none} = Update.update({:key, :shift_enter}, m)
+      {m, :none} = Update.update({:char, "s"}, m)
+      assert Model.input_text(m) == "first\ns"
+      assert EditBuffer.cursor(m.input) == {1, 1}
+    end
+
+    test "alt_enter is a fallback newline chord" do
+      m = put_input(model(), "a")
+      {m, :none} = Update.update({:key, :alt_enter}, m)
+      assert Model.input_text(m) == "a\n"
+    end
+
+    test "paste preserves newlines as line breaks" do
       {m, :none} = Update.update({:paste, "line one\nline two"}, model())
-      assert m.input == "line one line two"
+      assert Model.input_text(m) == "line one\nline two"
+      assert EditBuffer.line_count(m.input) == 2
+    end
+
+    test "up / down navigates between buffer rows" do
+      m = put_input(model(), "alpha\nbeta")
+      m = %{m | input: %{m.input | row: 0, col: 3}}
+      {m_down, :none} = Update.update({:key, :down}, m)
+      assert EditBuffer.cursor(m_down.input) == {1, 3}
+      {m_up, :none} = Update.update({:key, :up}, m_down)
+      assert EditBuffer.cursor(m_up.input) == {0, 3}
     end
   end
 

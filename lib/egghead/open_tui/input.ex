@@ -25,6 +25,7 @@ defmodule Egghead.OpenTUI.Input do
       movement and kill
     * `{:key, :backspace}` — DEL (0x7F)
     * `{:key, :tab}` — TAB (0x09)
+    * `{:key, :shift_tab}` — Shift+TAB (CSI Z, a.k.a. CBT / cursor back tab)
     * `{:key, :enter}` — CR (0x0D) / LF (0x0A)
     * `{:key, :up | :down | :left | :right}` — CSI arrows
     * `{:key, :page_up | :page_down}` — CSI 5~ / 6~
@@ -110,6 +111,7 @@ defmodule Egghead.OpenTUI.Input do
       {:ok, ?B} -> {:key, :down}
       {:ok, ?C} -> {:key, :right}
       {:ok, ?D} -> {:key, :left}
+      {:ok, ?Z} -> {:key, :shift_tab}
       {:ok, ?5} -> consume_tilde(:page_up)
       {:ok, ?6} -> consume_tilde(:page_down)
       _ -> {:key, :unknown}

@@ -145,21 +145,28 @@ defmodule Egghead.OpenTUI.Runtime do
     end)
   end
 
-  # Pre-loop dimensions check. Polls Terminal once per iteration;
-  # if the size has changed since the last :resize dispatch (or
-  # if there's never been one), synthesizes a `{:resize, w, h}`
-  # message and runs it through the screen's update/2 + cmd
-  # pipeline before the draw. This is how Elm-style screens stay
-  # in sync with the terminal — model owns its own dimensions.
+  # Pre-loop dimensions check. Polls the live tty size once per
+  # iteration; if it differs from the last :resize dispatch, this
+  # tells the OpenTUI renderer to resize its back buffer, then
+  # synthesizes a `{:resize, w, h}` message and runs it through
+  # the screen's update/2 + cmd pipeline before the draw. This is
+  # how Elm-style screens stay in sync with the terminal — model
+  # owns its own dimensions.
+  #
+  # We poll `Bridge.tty_size/0` directly (a fresh `ioctl(TIOCGWINSZ)`
+  # on `/dev/tty`) instead of `Terminal.dimensions/0`, because the
+  # latter returns the GenServer's cached size, which only changes
+  # when someone explicitly calls `Terminal.resize/2`.
   defp sync_dimensions(behaviour, state) do
-    {w, h} = Terminal.dimensions()
+    case Bridge.tty_size() do
+      {:ok, {w, h}} when {w, h} != state.last_dimensions ->
+        :ok = Terminal.resize(w, h)
+        {model, cmd} = behaviour.update({:resize, w, h}, state.model)
+        state = %{state | model: model, last_dimensions: {w, h}}
+        execute(cmd, state, behaviour)
 
-    if {w, h} != state.last_dimensions do
-      {model, cmd} = behaviour.update({:resize, w, h}, state.model)
-      state = %{state | model: model, last_dimensions: {w, h}}
-      execute(cmd, state, behaviour)
-    else
-      state
+      _ ->
+        state
     end
   end
 

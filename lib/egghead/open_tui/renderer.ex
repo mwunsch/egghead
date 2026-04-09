@@ -87,6 +87,7 @@ defmodule Egghead.OpenTUI.Renderer do
        when w > 0 and h > 0 do
     fg = Map.get(opts, :fg, Colors.white())
     bg = Map.get(opts, :bg, :transparent)
+    attrs = Map.get(opts, :attrs, 0)
 
     # Optional bg fill behind the text rect, so multi-row text
     # leaves with a background look correct.
@@ -107,7 +108,7 @@ defmodule Egghead.OpenTUI.Renderer do
     # row gets its own y coordinate. We still paint the top row
     # for `h > 1` so the leaf isn't silently invisible.
     line = truncate(content, w)
-    :ok = Bridge.draw_text(handle, line, x, y, fg, bg_for_text, 0)
+    :ok = Bridge.draw_text(handle, line, x, y, fg, bg_for_text, attrs)
   end
 
   defp draw_leaf(_handle, {:text, _content, _opts}, _rect), do: :ok

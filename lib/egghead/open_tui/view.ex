@@ -17,6 +17,9 @@ defmodule Egghead.OpenTUI.View do
     * `:height` — fixed cell height (vbox children)
     * `:width` — fixed cell width (hbox children)
     * `:fg` / `:bg` — color binaries (see `Egghead.OpenTUI.Colors`)
+    * `:attrs` — text attribute bitfield (see `Egghead.OpenTUI.Attrs`).
+      OR-ed combination of bold/dim/italic/underline/blink/strikethrough.
+      Forwarded to `Bridge.draw_text/7` as the `attributes: u32` arg.
     * `:padding` — non-negative integer (uniform) or
       `{top, right, bottom, left}`
     * `:align` — `:left | :center | :right` (text only;

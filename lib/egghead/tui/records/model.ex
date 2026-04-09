@@ -15,6 +15,7 @@ defmodule Egghead.TUI.Records.Model do
   instead of threading dimensions through call sites.
   """
 
+  alias Egghead.OpenTUI.Markdown
   alias Egghead.RecordStore
   alias Egghead.TUI.Records.Slug
 
@@ -33,7 +34,9 @@ defmodule Egghead.TUI.Records.Model do
           show_all_classes: boolean(),
           date_format: date_format(),
           preview_scroll: non_neg_integer(),
-          preview_total_lines: non_neg_integer()
+          preview_total_lines: non_neg_integer(),
+          preview_rendered: Markdown.rendered() | nil,
+          preview_rendered_width: pos_integer() | nil
         }
 
   defstruct width: 80,
@@ -48,7 +51,9 @@ defmodule Egghead.TUI.Records.Model do
             show_all_classes: false,
             date_format: :relative,
             preview_scroll: 0,
-            preview_total_lines: 0
+            preview_total_lines: 0,
+            preview_rendered: nil,
+            preview_rendered_width: nil
 
   @doc "Build the initial model by listing records from the store."
   @spec init() :: t()
@@ -64,10 +69,20 @@ defmodule Egghead.TUI.Records.Model do
 
   # ---- transformations ----------------------------------------------------
 
-  @doc "Update cached width and height. Called from the `:resize` handler."
+  @doc """
+  Update cached width and height. Called from the `:resize`
+  handler. If the width changed and a record is currently
+  selected, the markdown preview cache is recomputed at the new
+  width so the scrollbar geometry stays consistent.
+  """
   @spec set_dimensions(t(), pos_integer(), pos_integer()) :: t()
   def set_dimensions(%__MODULE__{} = model, w, h) when w > 0 and h > 0 do
-    %{model | width: w, height: h}
+    width_changed = model.width != w
+    model = %{model | width: w, height: h}
+
+    if width_changed and is_binary(model.selected_body),
+      do: recompute_preview(model),
+      else: model
   end
 
   @doc "Reload records from the store, preserving filter / selection / toggles."
@@ -136,7 +151,8 @@ defmodule Egghead.TUI.Records.Model do
   Hydrate the body of the currently selected record. Cheap if
   the selection hasn't changed since last hydration (id check).
   Resets `:preview_scroll` to 0 whenever the selected record
-  changes, and caches `:preview_total_lines` for clamp logic.
+  changes, and (re)computes the markdown render cache so
+  `preview_total_lines` reflects the wrapped row count.
   """
   @spec hydrate_selection(t()) :: t()
   def hydrate_selection(%__MODULE__{} = model) do
@@ -147,21 +163,19 @@ defmodule Egghead.TUI.Records.Model do
           | selected_body: nil,
             selected_id: nil,
             preview_scroll: 0,
-            preview_total_lines: 0
+            preview_total_lines: 0,
+            preview_rendered: nil,
+            preview_rendered_width: nil
         }
 
       record ->
         if record.id == model.selected_id do
           model
         else
-          {body, total_lines} =
+          body =
             case RecordStore.get_record(record.id) do
-              {:ok, full} ->
-                b = full.body || ""
-                {b, line_count(b)}
-
-              _ ->
-                {"(failed to load)", 1}
+              {:ok, full} -> full.body || ""
+              _ -> "(failed to load)"
             end
 
           %{
@@ -169,10 +183,61 @@ defmodule Egghead.TUI.Records.Model do
             | selected_body: body,
               selected_id: record.id,
               preview_scroll: 0,
-              preview_total_lines: total_lines
+              preview_rendered: nil,
+              preview_rendered_width: nil
           }
+          |> recompute_preview()
         end
     end
+  end
+
+  @doc """
+  Re-render the cached markdown preview at the model's current
+  text width. Idempotent — safe to call repeatedly even when
+  nothing has changed (it short-circuits if the cache is already
+  fresh for the current `(body, width)` pair).
+  """
+  @spec recompute_preview(t()) :: t()
+  def recompute_preview(%__MODULE__{selected_body: nil} = model) do
+    %{
+      model
+      | preview_rendered: nil,
+        preview_rendered_width: nil,
+        preview_total_lines: 0
+    }
+  end
+
+  def recompute_preview(%__MODULE__{} = model) do
+    width = preview_text_width(model)
+
+    if model.preview_rendered != nil and model.preview_rendered_width == width do
+      model
+    else
+      rendered = Markdown.render(model.selected_body, width)
+
+      %{
+        model
+        | preview_rendered: rendered,
+          preview_rendered_width: width,
+          preview_total_lines: length(rendered)
+      }
+      |> clamp_preview_scroll()
+    end
+  end
+
+  @doc """
+  Width available for rendered markdown text inside the preview
+  pane. Mirrors the inner-text math in
+  `Egghead.TUI.Records.View.preview_pane/4`: 1 column for the
+  scrollbar plus 1 column of leading padding leaves
+  `model.width - 2` for actual prose.
+  """
+  @spec preview_text_width(t()) :: pos_integer()
+  def preview_text_width(%__MODULE__{width: w}), do: max(w - 2, 1)
+
+  defp clamp_preview_scroll(%__MODULE__{} = model) do
+    max_scroll = max(model.preview_total_lines - content_h(model), 0)
+    %{model | preview_scroll: min(model.preview_scroll, max_scroll)}
   end
 
   @doc """
@@ -431,9 +496,4 @@ defmodule Egghead.TUI.Records.Model do
   defp sort_key(%{updated: nil}), do: ""
   defp sort_key(%{updated: u}) when is_binary(u), do: u
   defp sort_key(_), do: ""
-
-  defp line_count(""), do: 1
-  defp line_count(body) when is_binary(body) do
-    body |> String.split("\n") |> length()
-  end
 end

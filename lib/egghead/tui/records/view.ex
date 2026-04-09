@@ -233,9 +233,8 @@ defmodule Egghead.TUI.Records.View do
         )
 
       id ->
-        body = model.selected_body || ""
-        all_lines = String.split(body, "\n")
-        total_count = length(all_lines)
+        rendered = model.preview_rendered || []
+        total_count = length(rendered)
 
         # Clamp scroll against the actual visible window so we
         # never overscroll into a blank pane.
@@ -276,37 +275,65 @@ defmodule Egghead.TUI.Records.View do
             {0, 0}
           end
 
+        # Width budgeting for each rendered row:
+        #   1 col leading pad + (width - 2) cols of prose + 1 col scrollbar
+        # The markdown renderer was already called with `width - 2`
+        # in `Model.recompute_preview/1`, so spans never exceed it.
+        text_w = max(width - 2, 1)
+
         body_rows =
-          all_lines
+          rendered
           |> Enum.drop(scroll)
           |> Enum.take(content_h)
           |> Enum.with_index()
-          |> Enum.map(fn {line, idx} ->
+          |> Enum.map(fn {row, idx} ->
             is_thumb = bar_size > 0 and idx >= bar_start and idx < bar_start + bar_size
             scrollbar_char = if is_thumb, do: "▐", else: " "
-
-            content_w = max(width - 1, 1)
-            content_str = " " <> slice(line, content_w - 1)
-
-            hbox(
-              [height: 1],
-              [
-                text(content_str,
-                  width: content_w,
-                  fg: Colors.white(),
-                  bg: Colors.bg()
-                ),
-                text(scrollbar_char,
-                  width: 1,
-                  fg: Colors.dim(),
-                  bg: Colors.bg()
-                )
-              ]
-            )
+            render_preview_row(row, text_w, scrollbar_char)
           end)
 
         vbox([height: preview_h], [label | body_rows])
     end
+  end
+
+  # Build a single preview row from a list of markdown spans.
+  # Layout: " " + spans (padded to text_w) + scrollbar char.
+  defp render_preview_row(row, text_w, scrollbar_char) do
+    span_leaves =
+      Enum.map(row, fn span ->
+        text(span.text,
+          width: String.length(span.text),
+          fg: span.fg || Colors.white(),
+          bg: Colors.bg(),
+          attrs: span.attrs
+        )
+      end)
+
+    used = Enum.reduce(row, 0, fn span, acc -> acc + String.length(span.text) end)
+    pad_w = max(text_w - used, 0)
+
+    pad_leaf =
+      text(String.duplicate(" ", pad_w),
+        width: pad_w,
+        fg: Colors.white(),
+        bg: Colors.bg()
+      )
+
+    leading =
+      text(" ",
+        width: 1,
+        fg: Colors.white(),
+        bg: Colors.bg()
+      )
+
+    scrollbar =
+      text(scrollbar_char,
+        width: 1,
+        fg: Colors.dim(),
+        bg: Colors.bg()
+      )
+
+    hbox([height: 1], [leading | span_leaves] ++ [pad_leaf, scrollbar])
   end
 
   defp preview_class(%Model{selected_id: nil}), do: ""

@@ -9,10 +9,9 @@ defmodule Egghead.OpenTUI.Input do
 
   Decodes printable ASCII, the common Ctrl+letter control bytes,
   backspace (DEL, 0x7F), the four CSI arrow keys, the CSI
-  Page Up / Page Down sequences, and a handful of Meta-key
-  (Option-as-Meta) sequences. A fuller input reader (Kitty
-  keyboard protocol, bracketed paste, mouse, focus events) is
-  not yet implemented.
+  Page Up / Page Down sequences, SGR mouse events, the Kitty
+  keyboard protocol's `CSI <code>;<mods> u` form (for chords
+  like Shift+Enter), and bracketed paste payloads.
 
   Returns one of:
     * `{:char, "x"}` — a printable ASCII byte (0x20–0x7E)
@@ -27,6 +26,8 @@ defmodule Egghead.OpenTUI.Input do
     * `{:key, :tab}` — TAB (0x09)
     * `{:key, :shift_tab}` — Shift+TAB (CSI Z, a.k.a. CBT / cursor back tab)
     * `{:key, :enter}` — CR (0x0D) / LF (0x0A)
+    * `{:key, :shift_enter | :alt_enter | :ctrl_enter}` — Kitty
+      keyboard protocol disambiguated Enter chords
     * `{:key, :up | :down | :left | :right}` — CSI arrows
     * `{:key, :page_up | :page_down}` — CSI 5~ / 6~
     * `{:mouse, %{kind: :wheel_up | :wheel_down | :other,
@@ -34,6 +35,9 @@ defmodule Egghead.OpenTUI.Input do
       — SGR mouse event (mode ?1006). Wheel events arrive as
       kind `:wheel_up` (button 64) / `:wheel_down` (button 65);
       everything else (clicks, drags, motion) is `:other`.
+    * `{:paste, text}` — bracketed paste payload (everything between
+      `CSI 200~` and `CSI 201~`, with control characters other than
+      `\\n` and `\\t` stripped)
     * `{:key, {:byte, n}}` — an unrecognized control byte
     * `{:key, :unknown}` — an unrecognized escape sequence
     * `{:key, :eof}` — the tty closed
@@ -45,6 +49,13 @@ defmodule Egghead.OpenTUI.Input do
   byte arrives, it's the start of an escape sequence (`[` for
   CSI, `b`/`d`/`f` for Alt-letter, etc.). If 50ms passes with
   nothing, the user pressed bare ESC.
+
+  ## Test seam
+
+  `parse/1` takes an explicit byte-source function so the parser
+  can be unit tested without going through the NIF. The
+  production entry point `read_one_key/0` supplies
+  `&Bridge.read_key/1`.
   """
 
   alias Egghead.OpenTUI.Bridge
@@ -54,18 +65,43 @@ defmodule Egghead.OpenTUI.Input do
   # remote tty, short enough that bare ESC feels responsive.
   @esc_timeout_ms 50
 
+  # Cap a paste payload at 1 MiB. Anything longer is almost
+  # certainly a stuck terminal or a malicious peer; bail out
+  # rather than building an unbounded binary.
+  @paste_max_bytes 1_048_576
+
+  @typedoc """
+  A function that reads one byte from the underlying byte source.
+  Mirrors the shape of `Egghead.OpenTUI.Bridge.read_key/1`:
+
+    * `{:ok, byte()}`
+    * `:timeout`
+    * `:eof`
+  """
+  @type reader ::
+          (non_neg_integer() ->
+             {:ok, byte()} | :timeout | :eof)
+
   @doc """
   Block until one key is read from `/dev/tty`. Returns a parsed
   key tuple. Safe to call from any process — the underlying NIF
   is dirty I/O bound and parks on a dirty scheduler thread while
   blocked.
   """
-  def read_one_key do
-    parse_next()
+  def read_one_key, do: parse(&Bridge.read_key/1)
+
+  @doc """
+  Parse one event using the supplied byte-source function.
+  Used directly by tests; the production reader is
+  `read_one_key/0`.
+  """
+  @spec parse(reader()) :: term()
+  def parse(reader) when is_function(reader, 1) do
+    parse_next(reader)
   end
 
-  defp parse_next do
-    case Bridge.read_key(0) do
+  defp parse_next(reader) do
+    case reader.(0) do
       {:ok, 0x01} -> {:key, :ctrl_a}
       {:ok, 0x03} -> {:key, :ctrl_c}
       {:ok, 0x05} -> {:key, :ctrl_e}
@@ -82,7 +118,7 @@ defmodule Egghead.OpenTUI.Input do
       {:ok, 0x15} -> {:key, :ctrl_u}
       {:ok, 0x17} -> {:key, :ctrl_w}
       {:ok, 0x1A} -> {:key, :ctrl_z}
-      {:ok, 0x1B} -> parse_escape()
+      {:ok, 0x1B} -> parse_escape(reader)
       {:ok, 0x7F} -> {:key, :backspace}
       {:ok, byte} when byte >= 0x20 and byte < 0x7F -> {:char, <<byte>>}
       {:ok, byte} -> {:key, {:byte, byte}}
@@ -92,44 +128,158 @@ defmodule Egghead.OpenTUI.Input do
   end
 
   # After 0x1B: peek with a short timeout. No byte → bare ESC.
-  defp parse_escape do
-    case Bridge.read_key(@esc_timeout_ms) do
+  defp parse_escape(reader) do
+    case reader.(@esc_timeout_ms) do
       :timeout -> {:key, :escape}
       :eof -> {:key, :escape}
-      {:ok, ?[} -> parse_csi()
+      {:ok, ?[} -> parse_csi(reader)
       {:ok, ?b} -> {:key, :alt_b}
       {:ok, ?d} -> {:key, :alt_d}
       {:ok, ?f} -> {:key, :alt_f}
+      {:ok, 0x0D} -> {:key, :alt_enter}
+      {:ok, 0x0A} -> {:key, :alt_enter}
       {:ok, 0x7F} -> {:key, :alt_backspace}
       {:ok, _} -> {:key, :escape}
     end
   end
 
-  # CSI sequences after `ESC [`. Single-letter arrow forms
-  # (`A`/`B`/`C`/`D`), the digit-prefixed `5~` (Page Up) and
-  # `6~` (Page Down) forms, and `<` for SGR mouse events. We
-  # give CSI follow-bytes the same 50ms window: under normal
-  # conditions they arrive in the same write as `ESC [`, but a
-  # slow tty shouldn't drop arrow keys.
-  defp parse_csi do
-    case Bridge.read_key(@esc_timeout_ms) do
-      {:ok, ?A} -> {:key, :up}
-      {:ok, ?B} -> {:key, :down}
-      {:ok, ?C} -> {:key, :right}
-      {:ok, ?D} -> {:key, :left}
-      {:ok, ?Z} -> {:key, :shift_tab}
-      {:ok, ?5} -> consume_tilde(:page_up)
-      {:ok, ?6} -> consume_tilde(:page_down)
-      {:ok, ?<} -> parse_sgr_mouse()
+  # Generic CSI parser. The SGR mouse form starts with `<` (a
+  # private-use prefix), so it branches off before parameter
+  # collection. Everything else collects digit/`;` parameters
+  # until a final byte in 0x40..0x7E.
+  defp parse_csi(reader) do
+    case reader.(@esc_timeout_ms) do
+      {:ok, ?<} -> parse_sgr_mouse(reader)
+      {:ok, b} -> read_csi_params(reader, [b], 1)
       _ -> {:key, :unknown}
     end
   end
 
-  defp consume_tilde(key) do
-    case Bridge.read_key(@esc_timeout_ms) do
-      {:ok, ?~} -> {:key, key}
-      _ -> {:key, :unknown}
+  # Cap params at 32 bytes — real CSI sequences fit in well
+  # under that. Anything longer is garbled; bail to :unknown.
+  defp read_csi_params(_reader, _acc, count) when count >= 32, do: {:key, :unknown}
+
+  defp read_csi_params(reader, [last | _] = acc, count) do
+    cond do
+      last >= 0x40 and last <= 0x7E ->
+        # The most recently appended byte is the final byte.
+        params = acc |> tl() |> Enum.reverse() |> List.to_string()
+        dispatch_csi(params, last, reader)
+
+      true ->
+        case reader.(@esc_timeout_ms) do
+          {:ok, b} -> read_csi_params(reader, [b | acc], count + 1)
+          _ -> {:key, :unknown}
+        end
     end
+  end
+
+  defp dispatch_csi("", ?A, _), do: {:key, :up}
+  defp dispatch_csi("", ?B, _), do: {:key, :down}
+  defp dispatch_csi("", ?C, _), do: {:key, :right}
+  defp dispatch_csi("", ?D, _), do: {:key, :left}
+  defp dispatch_csi("", ?Z, _), do: {:key, :shift_tab}
+  defp dispatch_csi("5", ?~, _), do: {:key, :page_up}
+  defp dispatch_csi("6", ?~, _), do: {:key, :page_down}
+  defp dispatch_csi("200", ?~, reader), do: read_paste(reader, [], 0)
+  defp dispatch_csi(params, ?u, _), do: decode_kitty_u(params)
+  defp dispatch_csi(_, _, _), do: {:key, :unknown}
+
+  # Kitty `CSI <code>;<mods> u` (or `CSI <code> u`).
+  #
+  # `<code>` is the unicode codepoint of the unmodified key.
+  # `<mods>` is `1 + bitmask`, where the bitmask is
+  # `1=shift  2=alt  4=ctrl  8=super  …`. Bare ESC mods means no
+  # modifier (encoded as `1`, omitted, or simply absent).
+  #
+  # We currently only special-case Enter (13), Tab (9), and ESC
+  # (27); other codes fall back to plain `:enter`/`:tab`/`:escape`
+  # for their bare forms or `:unknown`. The set of recognised
+  # chords can grow as call sites need them.
+  defp decode_kitty_u(params) do
+    case String.split(params, ";", parts: 2) do
+      [code_str] ->
+        case Integer.parse(code_str) do
+          {code, ""} -> kitty_key(code, 0)
+          _ -> {:key, :unknown}
+        end
+
+      [code_str, rest] ->
+        # Mods may itself contain a sub-event subfield (`mods:event`);
+        # we only care about the leading mods integer.
+        mods_str = rest |> String.split(":", parts: 2) |> hd()
+
+        with {code, ""} <- Integer.parse(code_str),
+             {mods_plus_one, ""} <- Integer.parse(mods_str) do
+          kitty_key(code, max(mods_plus_one - 1, 0))
+        else
+          _ -> {:key, :unknown}
+        end
+    end
+  end
+
+  # mods bitmask: 1=shift, 2=alt, 4=ctrl
+  defp kitty_key(13, 0), do: {:key, :enter}
+
+  defp kitty_key(13, mods) do
+    cond do
+      Bitwise.band(mods, 2) != 0 -> {:key, :alt_enter}
+      Bitwise.band(mods, 1) != 0 -> {:key, :shift_enter}
+      Bitwise.band(mods, 4) != 0 -> {:key, :ctrl_enter}
+      true -> {:key, :enter}
+    end
+  end
+
+  defp kitty_key(9, 0), do: {:key, :tab}
+  defp kitty_key(9, 1), do: {:key, :shift_tab}
+  defp kitty_key(27, _), do: {:key, :escape}
+  defp kitty_key(_code, _mods), do: {:key, :unknown}
+
+  # Bracketed paste body. Read bytes until we see the literal
+  # sequence `\e[201~`. ESC inside the payload is rare in
+  # practice; if we see one, peek the next 5 bytes and treat
+  # them as either the terminator or as paste content.
+  defp read_paste(_reader, acc, count) when count >= @paste_max_bytes do
+    {:paste, finalize_paste(acc)}
+  end
+
+  defp read_paste(reader, acc, count) do
+    case reader.(0) do
+      {:ok, 0x1B} ->
+        case read_n(reader, 5) do
+          [?[, ?2, ?0, ?1, ?~] ->
+            {:paste, finalize_paste(acc)}
+
+          bytes ->
+            new_acc = Enum.reduce(bytes, [0x1B | acc], fn b, a -> [b | a] end)
+            read_paste(reader, new_acc, count + 1 + length(bytes))
+        end
+
+      {:ok, b} ->
+        read_paste(reader, [b | acc], count + 1)
+
+      _ ->
+        {:paste, finalize_paste(acc)}
+    end
+  end
+
+  defp read_n(_reader, 0), do: []
+
+  defp read_n(reader, n) do
+    case reader.(@esc_timeout_ms) do
+      {:ok, b} -> [b | read_n(reader, n - 1)]
+      _ -> []
+    end
+  end
+
+  # Strip control characters except `\n` and `\t`. The terminal
+  # may inject odd bytes if it's mid-state when paste begins;
+  # we want a clean text payload to hand the screen.
+  defp finalize_paste(reversed) do
+    reversed
+    |> Enum.reverse()
+    |> Enum.filter(fn b -> b == ?\n or b == ?\t or (b >= 0x20 and b != 0x7F) end)
+    |> List.to_string()
   end
 
   # SGR mouse encoding (xterm mode ?1006):
@@ -152,18 +302,18 @@ defmodule Egghead.OpenTUI.Input do
   # special-case wheel-up / wheel-down (the most common case for
   # a TUI); everything else surfaces as `:other` so the screen
   # can ignore or extend later.
-  defp parse_sgr_mouse, do: read_mouse_params([], 0)
+  defp parse_sgr_mouse(reader), do: read_mouse_params(reader, [], 0)
 
   # Cap the parameter buffer at 64 bytes — a real SGR mouse
   # sequence is at most ~16 bytes. Anything past the cap is a
   # garbled sequence; bail to :unknown so we don't loop forever.
-  defp read_mouse_params(_acc, count) when count >= 64, do: {:key, :unknown}
+  defp read_mouse_params(_reader, _acc, count) when count >= 64, do: {:key, :unknown}
 
-  defp read_mouse_params(acc, count) do
-    case Bridge.read_key(@esc_timeout_ms) do
+  defp read_mouse_params(reader, acc, count) do
+    case reader.(@esc_timeout_ms) do
       {:ok, ?M} -> finalize_mouse(acc, true)
       {:ok, ?m} -> finalize_mouse(acc, false)
-      {:ok, byte} -> read_mouse_params([byte | acc], count + 1)
+      {:ok, byte} -> read_mouse_params(reader, [byte | acc], count + 1)
       _ -> {:key, :unknown}
     end
   end

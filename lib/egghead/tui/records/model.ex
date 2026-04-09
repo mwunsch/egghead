@@ -91,7 +91,7 @@ defmodule Egghead.TUI.Records.Model do
     %{name: "quit", description: "Exit the TUI"},
     %{name: "help", description: "Show keybindings & commands"},
     %{name: "debug", description: "Dump current view tree to /tmp/egghead-render.log"},
-    %{name: "chat", description: "Enter chat mode (not yet implemented)"},
+    %{name: "chat", description: "Enter chat mode"},
     %{name: "system", description: "Agent diagnostics (not yet implemented)"}
   ]
 

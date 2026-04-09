@@ -293,8 +293,11 @@ defmodule Egghead.TUI.Records.Update do
   end
 
   defp execute_command(%{name: "chat"}, model) do
-    # Stub: chat mode lands in Phase 6.
-    {Model.exit_command_mode(model), :none}
+    # Phase 6a: leave the records screen and let the App shell
+    # take over. The shell intercepts `:switch_screen` and
+    # initialises the chat screen lazily on first entry; later
+    # entries resume the existing chat model.
+    {Model.exit_command_mode(model), {:switch_screen, :chat, []}}
   end
 
   defp execute_command(%{name: "system"}, model) do

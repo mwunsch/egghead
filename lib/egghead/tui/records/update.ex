@@ -15,7 +15,8 @@ defmodule Egghead.TUI.Records.Update do
       ↑ / ↓              move selection in the list
       Enter              edit selected record (or create + edit
                           when the phantom create row is selected,
-                          or follow active link in link-nav mode)
+                          or follow active link in link-nav mode,
+                          or run command in command mode)
       PgUp / PgDn        scroll preview pane ±5 lines
       Ctrl+N / Ctrl+P    scroll preview pane ±5 lines (emacs)
       Mouse wheel        scroll preview pane ±3 lines
@@ -25,8 +26,13 @@ defmodule Egghead.TUI.Records.Update do
       Shift+Tab          enter link mode and select previous link
       Enter (link mode)  follow active link, push current onto
                           nav history
-      ESC                exit link mode
+      ESC                exit link mode / command mode
       Backspace          if filter is empty, pop nav history
+
+    Command palette
+      /                  enter command mode (when filter empty)
+      ↑ / ↓ (cmd mode)   move dropdown selection
+      Enter (cmd mode)   execute selected command
 
     Toggles
       Ctrl+F             toggle class filter (durable / all)
@@ -81,6 +87,18 @@ defmodule Egghead.TUI.Records.Update do
 
   def update({:editor_failed, _reason}, model), do: {model, :none}
 
+  # ---- command mode -------------------------------------------------------
+  #
+  # When the user is in command mode, key handling is intercepted
+  # at the top of the dispatcher and routed to a separate handler
+  # because the same keys (Up, Down, Enter, Backspace, printable
+  # chars) mean different things — they navigate the dropdown and
+  # edit `command_input`, not the records list and filter.
+
+  def update(msg, %Model{command_mode: true} = model) do
+    handle_command_mode(msg, model)
+  end
+
   # ---- key bindings -------------------------------------------------------
 
   def update({:key, :up}, model), do: {move_selection(model, -1), :none}
@@ -90,7 +108,14 @@ defmodule Egghead.TUI.Records.Update do
 
   def update({:key, :tab}, model), do: {Model.link_next(model), :none}
   def update({:key, :shift_tab}, model), do: {Model.link_prev(model), :none}
-  def update({:key, :escape}, model), do: {Model.link_deselect(model), :none}
+
+  def update({:key, :escape}, model) do
+    cond do
+      Model.link_mode?(model) -> {Model.link_deselect(model), :none}
+      Model.help_visible?(model) -> {Model.dismiss_help(model), :none}
+      true -> {model, :none}
+    end
+  end
 
   def update({:key, :ctrl_f}, model), do: {Model.toggle_class_filter(model), :none}
   def update({:key, :ctrl_t}, model), do: {Model.toggle_date_format(model), :none}
@@ -113,6 +138,10 @@ defmodule Egghead.TUI.Records.Update do
     else
       {Model.delete_before_cursor(model), :none}
     end
+  end
+
+  def update({:char, "/"}, %Model{filter: ""} = model) do
+    {Model.enter_command_mode(model), :none}
   end
 
   def update({:char, c}, model) when is_binary(c) do
@@ -176,6 +205,125 @@ defmodule Egghead.TUI.Records.Update do
       true ->
         {model, :none}
     end
+  end
+
+  # ---- command-mode dispatcher --------------------------------------------
+
+  defp handle_command_mode({:key, :escape}, model),
+    do: {Model.exit_command_mode(model), :none}
+
+  defp handle_command_mode({:key, :enter}, model) do
+    case Model.selected_command(model) do
+      nil -> {Model.exit_command_mode(model), :none}
+      cmd -> execute_command(cmd, model)
+    end
+  end
+
+  defp handle_command_mode({:key, :up}, model),
+    do: {Model.command_select(model, -1), :none}
+
+  defp handle_command_mode({:key, :down}, model),
+    do: {Model.command_select(model, +1), :none}
+
+  defp handle_command_mode({:key, :backspace}, model),
+    do: {Model.command_backspace(model), :none}
+
+  defp handle_command_mode({:char, c}, model) when is_binary(c),
+    do: {Model.command_input_char(model, c), :none}
+
+  # Readline-style cursor + kill commands within the command
+  # input. Same key bindings as the search bar — both delegate
+  # to `Egghead.OpenTUI.Readline` under the hood.
+  defp handle_command_mode({:key, :ctrl_a}, model),
+    do: {Model.command_move_to_start(model), :none}
+
+  defp handle_command_mode({:key, :ctrl_e}, model),
+    do: {Model.command_move_to_end(model), :none}
+
+  defp handle_command_mode({:key, :ctrl_k}, model),
+    do: {Model.command_kill_to_eol(model), :none}
+
+  defp handle_command_mode({:key, :ctrl_u}, model),
+    do: {Model.command_kill_to_bol(model), :none}
+
+  defp handle_command_mode({:key, :ctrl_w}, model),
+    do: {Model.command_kill_word(model), :none}
+
+  defp handle_command_mode({:key, :left}, model),
+    do: {Model.command_move_left(model), :none}
+
+  defp handle_command_mode({:key, :right}, model),
+    do: {Model.command_move_right(model), :none}
+
+  defp handle_command_mode({:key, :alt_b}, model),
+    do: {Model.command_move_word_left(model), :none}
+
+  defp handle_command_mode({:key, :alt_f}, model),
+    do: {Model.command_move_word_right(model), :none}
+
+  defp handle_command_mode({:key, :alt_d}, model),
+    do: {Model.command_kill_word_forward(model), :none}
+
+  defp handle_command_mode({:key, :alt_backspace}, model),
+    do: {Model.command_kill_word(model), :none}
+
+  # Mouse wheel still scrolls the preview while command mode is
+  # active — convenient if /help opens a long help record.
+  defp handle_command_mode({:mouse, %{kind: :wheel_up, press?: true}}, model),
+    do: {Model.scroll_preview(model, -3), :none}
+
+  defp handle_command_mode({:mouse, %{kind: :wheel_down, press?: true}}, model),
+    do: {Model.scroll_preview(model, +3), :none}
+
+  defp handle_command_mode(_other, model), do: {model, :none}
+
+  # ---- command execution --------------------------------------------------
+
+  defp execute_command(%{name: "quit"}, model) do
+    {model, :halt}
+  end
+
+  defp execute_command(%{name: "help"}, model) do
+    {Model.show_help(model) |> Model.exit_command_mode(), :none}
+  end
+
+  defp execute_command(%{name: "debug"}, model) do
+    model = Model.exit_command_mode(model)
+    {model, debug_dump_cmd(model)}
+  end
+
+  defp execute_command(%{name: "chat"}, model) do
+    # Stub: chat mode lands in Phase 6.
+    {Model.exit_command_mode(model), :none}
+  end
+
+  defp execute_command(%{name: "system"}, model) do
+    # Stub: system mode lands later.
+    {Model.exit_command_mode(model), :none}
+  end
+
+  defp execute_command(_unknown, model) do
+    {Model.exit_command_mode(model), :none}
+  end
+
+  # `/debug` writes the current view tree to /tmp via an :exec
+  # cmd. The closure captures `model` from execute_command's
+  # scope, so the dump reflects the model state at the moment
+  # the command was executed.
+  defp debug_dump_cmd(model) do
+    {:exec,
+     fn ->
+       path = "/tmp/egghead-render.log"
+       tree = Egghead.TUI.Records.View.render(model)
+
+       _ =
+         File.write(
+           path,
+           inspect(tree, pretty: true, limit: :infinity, printable_limit: :infinity)
+         )
+
+       :no_msg
+     end}
   end
 
   # ---- editor cmds --------------------------------------------------------

@@ -79,6 +79,48 @@ defmodule Egghead.TUI.Records.View do
     )
   end
 
+  defp search(%Model{command_mode: true} = model, _width) do
+    # Command-mode prompt: " /input" with the terminal cursor
+    # placed at `command_cursor` via the `:cursor` view leaf,
+    # same trick as the filter bar. Supports full readline
+    # editing (Ctrl+A/E/K/U/W, Alt+B/F/D, ←/→).
+    prompt = " /"
+    cursor_idx = model.command_cursor
+    prefix = String.slice(model.command_input, 0, cursor_idx)
+
+    suffix =
+      String.slice(
+        model.command_input,
+        cursor_idx,
+        String.length(model.command_input)
+      )
+
+    fg = Colors.accent()
+    bg = Colors.bg()
+
+    prompt_w = String.length(prompt)
+    prefix_w = String.length(prefix)
+    suffix_w = String.length(suffix)
+
+    hbox(
+      [height: 1],
+      [
+        text(prompt <> prefix,
+          width: prompt_w + prefix_w,
+          fg: fg,
+          bg: bg
+        ),
+        cursor(),
+        text(suffix,
+          width: suffix_w,
+          fg: fg,
+          bg: bg
+        ),
+        fill(flex: 1, bg: bg)
+      ]
+    )
+  end
+
   defp search(model, _width) do
     # Split the filter at the cursor and emit a `cursor` leaf
     # between the two halves. The cursor leaf has zero layout
@@ -132,6 +174,10 @@ defmodule Egghead.TUI.Records.View do
     )
   end
 
+  defp list_pane(%Model{command_mode: true} = model, width, list_h) do
+    command_dropdown(model, width, list_h)
+  end
+
   defp list_pane(model, width, list_h) do
     # Scroll the visible window so the selected row stays visible.
     offset = list_scroll_offset(model.selection, list_h)
@@ -161,6 +207,76 @@ defmodule Egghead.TUI.Records.View do
       end
 
     vbox([height: list_h], record_rows ++ phantom_rows)
+  end
+
+  # Replace the records list with a filtered list of commands.
+  # The dropdown row format is `  /name — description` with the
+  # selected row reverse-video. Empty list shows a muted hint.
+  defp command_dropdown(model, width, list_h) do
+    commands = Model.filtered_commands(model)
+
+    rows =
+      case commands do
+        [] ->
+          [command_empty_row(width)]
+
+        cmds ->
+          cmds
+          |> Enum.with_index()
+          |> Enum.take(list_h)
+          |> Enum.map(fn {cmd, idx} ->
+            command_row(cmd, idx == model.command_selected, width)
+          end)
+      end
+
+    vbox([height: list_h], rows)
+  end
+
+  defp command_row(cmd, selected, width) do
+    label = "  /#{cmd.name}"
+    desc = " — #{cmd.description}"
+    line = label <> desc
+    pad = max(width - String.length(line), 0)
+    padded = line <> String.duplicate(" ", pad)
+
+    if selected do
+      text(truncate(padded, width),
+        height: 1,
+        fg: Colors.white(),
+        bg: Colors.selected_bg()
+      )
+    else
+      hbox(
+        [height: 1],
+        [
+          text(label,
+            width: String.length(label),
+            fg: Colors.accent(),
+            bg: Colors.bg()
+          ),
+          text(desc,
+            width: String.length(desc),
+            fg: Colors.muted(),
+            bg: Colors.bg()
+          ),
+          text(String.duplicate(" ", pad),
+            width: pad,
+            fg: Colors.white(),
+            bg: Colors.bg()
+          )
+        ]
+      )
+    end
+  end
+
+  defp command_empty_row(width) do
+    line = "  (no matching commands)"
+    pad = max(width - String.length(line), 0)
+    text(line <> String.duplicate(" ", pad),
+      height: 1,
+      fg: Colors.muted(),
+      bg: Colors.bg()
+    )
   end
 
   defp phantom_row(title, slug, selected, width) do
@@ -401,12 +517,14 @@ defmodule Egghead.TUI.Records.View do
 
   defp preview_class(%Model{selected_id: nil}), do: ""
 
-  defp preview_class(%Model{filtered: filtered, selection: sel}) do
-    case Enum.at(filtered, sel) do
-      nil -> ""
-      record -> record.class |> to_string()
-    end
-  end
+  # Read the class from `selected_record` (the cached full
+  # record), not `filtered[selection]`. That way synthetic
+  # records like the in-memory `/help` (class `:synthetic`)
+  # show the right label even though they're not in `filtered`.
+  defp preview_class(%Model{selected_record: %{class: class}}),
+    do: to_string(class)
+
+  defp preview_class(_), do: ""
 
   # Render a preview label as " ── seg1 ── seg2 ── seg3 ─────... "
   # `segments` is `[{text, :normal | :muted}]`.
@@ -454,6 +572,9 @@ defmodule Egghead.TUI.Records.View do
 
     line =
       cond do
+        model.command_mode ->
+          " CMD │ ↑↓ select │ ⏎ execute │ esc cancel │ ^q quit"
+
         Model.link_mode?(model) ->
           " LINK │ tab/⇧tab cycle │ ⏎ follow │ esc deselect" <> nav_hint <> " │ ^q quit"
 

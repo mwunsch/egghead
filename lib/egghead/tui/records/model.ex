@@ -15,7 +15,7 @@ defmodule Egghead.TUI.Records.Model do
   instead of threading dimensions through call sites.
   """
 
-  alias Egghead.OpenTUI.{Colors, Markdown}
+  alias Egghead.OpenTUI.{Colors, Markdown, Readline}
   alias Egghead.RecordStore
   alias Egghead.TUI.Records.Slug
 
@@ -25,6 +25,11 @@ defmodule Egghead.TUI.Records.Model do
   @type link_entry :: %{
           required(:target) => String.t(),
           required(:kind) => link_kind()
+        }
+
+  @type command :: %{
+          required(:name) => String.t(),
+          required(:description) => String.t()
         }
 
   @type t :: %__MODULE__{
@@ -47,7 +52,11 @@ defmodule Egghead.TUI.Records.Model do
           preview_footer: Markdown.rendered(),
           preview_links: [link_entry()],
           link_index: non_neg_integer() | nil,
-          nav_history: [String.t()]
+          nav_history: [String.t()],
+          command_mode: boolean(),
+          command_input: String.t(),
+          command_cursor: non_neg_integer(),
+          command_selected: non_neg_integer()
         }
 
   defstruct width: 80,
@@ -69,7 +78,26 @@ defmodule Egghead.TUI.Records.Model do
             preview_footer: [],
             preview_links: [],
             link_index: nil,
-            nav_history: []
+            nav_history: [],
+            command_mode: false,
+            command_input: "",
+            command_cursor: 0,
+            command_selected: 0
+
+  # The records-mode command palette. Each entry has a `name`
+  # (the part the user types after `/`) and a one-line
+  # description that shows in the dropdown.
+  @records_commands [
+    %{name: "quit", description: "Exit the TUI"},
+    %{name: "help", description: "Show keybindings & commands"},
+    %{name: "debug", description: "Dump current view tree to /tmp/egghead-render.log"},
+    %{name: "chat", description: "Enter chat mode (not yet implemented)"},
+    %{name: "system", description: "Agent diagnostics (not yet implemented)"}
+  ]
+
+  @doc "All registered commands for records mode."
+  @spec all_commands() :: [command()]
+  def all_commands, do: @records_commands
 
   @doc "Build the initial model by listing records from the store."
   @spec init() :: t()
@@ -439,6 +467,267 @@ defmodule Egghead.TUI.Records.Model do
     end
   end
 
+  # ---- command palette ---------------------------------------------------
+
+  @doc """
+  Enter command mode. Resets the input to "", the cursor to 0,
+  and the dropdown cursor to 0. Idempotent.
+  """
+  @spec enter_command_mode(t()) :: t()
+  def enter_command_mode(%__MODULE__{} = model) do
+    %{
+      model
+      | command_mode: true,
+        command_input: "",
+        command_cursor: 0,
+        command_selected: 0
+    }
+  end
+
+  @doc "Exit command mode. Idempotent."
+  @spec exit_command_mode(t()) :: t()
+  def exit_command_mode(%__MODULE__{} = model) do
+    %{
+      model
+      | command_mode: false,
+        command_input: "",
+        command_cursor: 0,
+        command_selected: 0
+    }
+  end
+
+  @doc """
+  Insert a character at the command-input cursor. Resets the
+  dropdown cursor to 0 because the filtered list shifts.
+  """
+  @spec command_input_char(t(), String.t()) :: t()
+  def command_input_char(%__MODULE__{} = model, char) when is_binary(char) do
+    apply_command_edit(model, &Readline.insert(&1, &2, char))
+    |> Map.put(:command_selected, 0)
+  end
+
+  @doc """
+  Delete the character before the cursor. If the input is
+  empty, exits command mode (so Backspace at the start of an
+  empty input feels like an escape hatch).
+  """
+  @spec command_backspace(t()) :: t()
+  def command_backspace(%__MODULE__{command_input: ""} = model),
+    do: exit_command_mode(model)
+
+  def command_backspace(%__MODULE__{} = model) do
+    apply_command_edit(model, &Readline.delete_before/2)
+    |> Map.put(:command_selected, 0)
+  end
+
+  @doc "Kill from cursor to end of input."
+  @spec command_kill_to_eol(t()) :: t()
+  def command_kill_to_eol(model),
+    do: apply_command_edit(model, &Readline.kill_to_eol/2)
+
+  @doc "Kill from beginning of input to cursor."
+  @spec command_kill_to_bol(t()) :: t()
+  def command_kill_to_bol(model),
+    do: apply_command_edit(model, &Readline.kill_to_bol/2)
+    |> Map.put(:command_selected, 0)
+
+  @doc "Kill the previous word."
+  @spec command_kill_word(t()) :: t()
+  def command_kill_word(model),
+    do: apply_command_edit(model, &Readline.kill_word/2)
+    |> Map.put(:command_selected, 0)
+
+  @doc "Kill the next word."
+  @spec command_kill_word_forward(t()) :: t()
+  def command_kill_word_forward(model),
+    do: apply_command_edit(model, &Readline.kill_word_forward/2)
+    |> Map.put(:command_selected, 0)
+
+  @doc "Move the cursor to the beginning of the input."
+  @spec command_move_to_start(t()) :: t()
+  def command_move_to_start(model),
+    do: apply_command_edit(model, &Readline.move_to_start/2)
+
+  @doc "Move the cursor to the end of the input."
+  @spec command_move_to_end(t()) :: t()
+  def command_move_to_end(model),
+    do: apply_command_edit(model, &Readline.move_to_end/2)
+
+  @doc "Move the cursor one character left."
+  @spec command_move_left(t()) :: t()
+  def command_move_left(model),
+    do: apply_command_edit(model, &Readline.move_left/2)
+
+  @doc "Move the cursor one character right."
+  @spec command_move_right(t()) :: t()
+  def command_move_right(model),
+    do: apply_command_edit(model, &Readline.move_right/2)
+
+  @doc "Move the cursor backward one word."
+  @spec command_move_word_left(t()) :: t()
+  def command_move_word_left(model),
+    do: apply_command_edit(model, &Readline.move_word_left/2)
+
+  @doc "Move the cursor forward one word."
+  @spec command_move_word_right(t()) :: t()
+  def command_move_word_right(model),
+    do: apply_command_edit(model, &Readline.move_word_right/2)
+
+  defp apply_command_edit(%__MODULE__{} = model, fun) do
+    {new_input, new_cursor} = fun.(model.command_input, model.command_cursor)
+    %{model | command_input: new_input, command_cursor: new_cursor}
+  end
+
+  @doc "Move the dropdown cursor by `delta`, clamped."
+  @spec command_select(t(), integer()) :: t()
+  def command_select(%__MODULE__{} = model, delta) do
+    n = length(filtered_commands(model))
+
+    new_sel =
+      cond do
+        n == 0 -> 0
+        true -> model.command_selected |> Kernel.+(delta) |> max(0) |> min(n - 1)
+      end
+
+    %{model | command_selected: new_sel}
+  end
+
+  @doc """
+  The list of commands matching the current `command_input` by
+  case-insensitive prefix on the command name. Returns all
+  commands when the input is empty.
+  """
+  @spec filtered_commands(t()) :: [command()]
+  def filtered_commands(%__MODULE__{command_input: ""}), do: @records_commands
+
+  def filtered_commands(%__MODULE__{command_input: input}) do
+    needle = String.downcase(input)
+    Enum.filter(@records_commands, fn cmd ->
+      String.starts_with?(String.downcase(cmd.name), needle)
+    end)
+  end
+
+  @doc """
+  The currently-highlighted command in the dropdown, or nil if
+  the filtered list is empty.
+  """
+  @spec selected_command(t()) :: command() | nil
+  def selected_command(%__MODULE__{} = model) do
+    Enum.at(filtered_commands(model), model.command_selected)
+  end
+
+  @doc """
+  Replace the model's preview with a synthetic in-memory help
+  record. The body is rendered through the regular markdown
+  pipeline so it picks up theming, span output, and scrolling
+  for free. Selecting any other record dismisses it.
+
+  The synthetic record uses class `:synthetic` — it lives only
+  in memory, never goes through the parser, never gets indexed,
+  and exists for the duration of the user's session. The class
+  is outside `Egghead.Record.@valid_classes` on purpose: nothing
+  validates it because nothing persists it. `:synthetic` matches
+  exactly what the record IS (built in code, not loaded from
+  disk), so the preview label reads `── help ── synthetic ──`.
+  """
+  @spec show_help(t()) :: t()
+  def show_help(%__MODULE__{} = model) do
+    fake = %Egghead.Record{
+      id: "help",
+      title: "egghead — help",
+      body: help_body(),
+      class: :synthetic,
+      links: [],
+      wikilinks: []
+    }
+
+    %{
+      model
+      | selected_id: "help",
+        selected_record: fake,
+        selected_body: fake.body,
+        preview_scroll: 0,
+        preview_rendered: nil,
+        preview_rendered_width: nil,
+        preview_footer: [],
+        preview_links: [],
+        link_index: nil
+    }
+    |> recompute_preview()
+  end
+
+  @doc """
+  True when the preview is currently showing the synthetic help
+  record. We tag the help record with class `:synthetic` (the
+  only thing in the model carrying that class), so this check
+  is just a class lookup.
+  """
+  @spec help_visible?(t()) :: boolean()
+  def help_visible?(%__MODULE__{selected_record: %{class: :synthetic}}), do: true
+  def help_visible?(_), do: false
+
+  @doc """
+  Dismiss the synthetic help record by re-hydrating the preview
+  from the actual list selection. The help record's `selected_id`
+  ("help") is cleared first so `hydrate_selection/1` doesn't
+  short-circuit on the id-equality fast path.
+  """
+  @spec dismiss_help(t()) :: t()
+  def dismiss_help(%__MODULE__{} = model) do
+    %{model | selected_id: nil, selected_record: nil}
+    |> hydrate_selection()
+  end
+
+  defp help_body do
+    """
+    # egghead — help
+
+    ## Records mode
+
+    | Key             | Action                                          |
+    | :-------------- | :---------------------------------------------- |
+    | `↑` / `↓`       | Move selection in the list                      |
+    | `Enter`         | Open selected record in `$EDITOR`               |
+    | `PgUp` / `PgDn` | Scroll preview ±5 lines                         |
+    | `Ctrl+N` / `^P` | Scroll preview ±5 lines (emacs)                 |
+    | `Mouse wheel`   | Scroll preview ±3 lines                         |
+    | `Tab`           | Cycle forward through links / backlinks         |
+    | `Shift+Tab`     | Cycle backward                                  |
+    | `Enter` (link)  | Follow active link, push to nav history         |
+    | `Backspace`     | Pop nav history (when filter is empty)          |
+    | `Esc`           | Exit link mode / command mode                   |
+    | `Ctrl+F`        | Toggle class filter (durable / all)             |
+    | `Ctrl+T`        | Toggle date format (relative / iso)             |
+    | `Ctrl+Z`        | Suspend to background                           |
+    | `Ctrl+Q` / `^C` | Quit                                            |
+
+    ## Search bar (readline-style)
+
+    | Key                  | Action                              |
+    | :------------------- | :---------------------------------- |
+    | `←` / `→`            | Move cursor                         |
+    | `Ctrl+A` / `Ctrl+E`  | Beginning / end of input            |
+    | `Ctrl+K` / `Ctrl+U`  | Kill to end / beginning of line     |
+    | `Ctrl+W`             | Kill previous word                  |
+    | `Alt+B` / `Alt+F`    | Move backward / forward by word     |
+    | `Alt+D`              | Kill next word                      |
+
+    ## Command palette
+
+    Type `/` (when the search bar is empty) to enter command mode.
+    The dropdown filters as you type. `↑↓` selects, `Enter` runs,
+    `Esc` cancels.
+
+    ## Creating records
+
+    Type a title in the search bar that doesn't match an existing
+    record. A `+ Create "title"` row appears at the bottom of the
+    list — `Enter` creates the record and opens it in `$EDITOR`.
+
+    Press `Esc` to dismiss this help.
+    """
+  end
+
   # ---- preview link / footer helpers -------------------------------------
 
   # Forward link targets for a record. The worktree's parser
@@ -681,162 +970,90 @@ defmodule Egghead.TUI.Records.Model do
   #
   # The search bar maintains a separate `filter_cursor` so the
   # user can move around within the input string instead of being
-  # locked to the end. Editing transforms always run through one
-  # of the helpers below so the cursor stays consistent and the
-  # results are re-filtered (which also re-clamps the selection
-  # and re-hydrates the preview).
+  # locked to the end. All actions go through `apply_filter_edit`,
+  # which delegates the text manipulation to
+  # `Egghead.OpenTUI.Readline` (the same module command mode uses)
+  # and then re-filters / re-clamps / re-hydrates.
 
-  @doc """
-  Insert `text` at the current cursor position and advance the
-  cursor by its length.
-  """
+  @doc "Insert `text` at the current cursor position."
   @spec insert_at_cursor(t(), String.t()) :: t()
-  def insert_at_cursor(%__MODULE__{} = model, text) when is_binary(text) do
-    {prefix, suffix} = split_at(model.filter, model.filter_cursor)
-    new_filter = prefix <> text <> suffix
-    new_cursor = model.filter_cursor + String.length(text)
-
-    model
-    |> apply_filter(new_filter, new_cursor)
-  end
+  def insert_at_cursor(%__MODULE__{} = model, text) when is_binary(text),
+    do: apply_filter_edit(model, &Readline.insert(&1, &2, text))
 
   @doc "Delete the character immediately before the cursor (backspace)."
   @spec delete_before_cursor(t()) :: t()
-  def delete_before_cursor(%__MODULE__{filter_cursor: 0} = model), do: model
+  def delete_before_cursor(%__MODULE__{} = model),
+    do: apply_filter_edit(model, &Readline.delete_before/2)
 
-  def delete_before_cursor(%__MODULE__{} = model) do
-    {prefix, suffix} = split_at(model.filter, model.filter_cursor)
-    new_prefix = String.slice(prefix, 0, model.filter_cursor - 1)
-    new_filter = new_prefix <> suffix
-
-    model
-    |> apply_filter(new_filter, model.filter_cursor - 1)
-  end
-
-  @doc "Kill from cursor to end of line. Cursor stays put."
+  @doc "Kill from cursor to end of line."
   @spec kill_to_eol(t()) :: t()
-  def kill_to_eol(%__MODULE__{} = model) do
-    {prefix, _suffix} = split_at(model.filter, model.filter_cursor)
-    apply_filter(model, prefix, model.filter_cursor)
-  end
+  def kill_to_eol(%__MODULE__{} = model),
+    do: apply_filter_edit(model, &Readline.kill_to_eol/2)
 
-  @doc "Kill from beginning of line to cursor. Cursor moves to 0."
+  @doc "Kill from beginning of line to cursor."
   @spec kill_to_bol(t()) :: t()
-  def kill_to_bol(%__MODULE__{} = model) do
-    {_prefix, suffix} = split_at(model.filter, model.filter_cursor)
-    apply_filter(model, suffix, 0)
-  end
+  def kill_to_bol(%__MODULE__{} = model),
+    do: apply_filter_edit(model, &Readline.kill_to_bol/2)
 
   @doc "Kill the word immediately before the cursor (Ctrl+W)."
   @spec kill_word(t()) :: t()
-  def kill_word(%__MODULE__{filter_cursor: 0} = model), do: model
-
-  def kill_word(%__MODULE__{} = model) do
-    {prefix, suffix} = split_at(model.filter, model.filter_cursor)
-    new_cursor = previous_word_boundary(prefix)
-    new_prefix = String.slice(prefix, 0, new_cursor)
-
-    apply_filter(model, new_prefix <> suffix, new_cursor)
-  end
+  def kill_word(%__MODULE__{} = model),
+    do: apply_filter_edit(model, &Readline.kill_word/2)
 
   @doc "Move the cursor to the beginning of the input."
   @spec move_cursor_to_start(t()) :: t()
   def move_cursor_to_start(%__MODULE__{} = model),
-    do: %{model | filter_cursor: 0}
+    do: apply_filter_cursor_edit(model, &Readline.move_to_start/2)
 
   @doc "Move the cursor to the end of the input."
   @spec move_cursor_to_end(t()) :: t()
   def move_cursor_to_end(%__MODULE__{} = model),
-    do: %{model | filter_cursor: String.length(model.filter)}
+    do: apply_filter_cursor_edit(model, &Readline.move_to_end/2)
 
   @doc "Move the cursor one character to the left."
   @spec move_cursor_left(t()) :: t()
   def move_cursor_left(%__MODULE__{} = model),
-    do: %{model | filter_cursor: max(model.filter_cursor - 1, 0)}
+    do: apply_filter_cursor_edit(model, &Readline.move_left/2)
 
   @doc "Move the cursor one character to the right."
   @spec move_cursor_right(t()) :: t()
   def move_cursor_right(%__MODULE__{} = model),
-    do: %{model | filter_cursor: min(model.filter_cursor + 1, String.length(model.filter))}
+    do: apply_filter_cursor_edit(model, &Readline.move_right/2)
 
   @doc "Move the cursor backward one word (Alt+B / Option+B)."
   @spec move_cursor_word_left(t()) :: t()
-  def move_cursor_word_left(%__MODULE__{filter_cursor: 0} = model), do: model
-
-  def move_cursor_word_left(%__MODULE__{} = model) do
-    {prefix, _suffix} = split_at(model.filter, model.filter_cursor)
-    %{model | filter_cursor: previous_word_boundary(prefix)}
-  end
+  def move_cursor_word_left(%__MODULE__{} = model),
+    do: apply_filter_cursor_edit(model, &Readline.move_word_left/2)
 
   @doc "Move the cursor forward one word (Alt+F / Option+F)."
   @spec move_cursor_word_right(t()) :: t()
-  def move_cursor_word_right(%__MODULE__{} = model) do
-    new_cursor = next_word_boundary(model.filter, model.filter_cursor)
-    %{model | filter_cursor: new_cursor}
-  end
+  def move_cursor_word_right(%__MODULE__{} = model),
+    do: apply_filter_cursor_edit(model, &Readline.move_word_right/2)
 
   @doc "Kill the word immediately after the cursor (Alt+D / Option+D)."
   @spec kill_word_forward(t()) :: t()
-  def kill_word_forward(%__MODULE__{} = model) do
-    {prefix, suffix} = split_at(model.filter, model.filter_cursor)
-    word_end = next_word_boundary(model.filter, model.filter_cursor)
-    chars_to_drop = word_end - model.filter_cursor
+  def kill_word_forward(%__MODULE__{} = model),
+    do: apply_filter_edit(model, &Readline.kill_word_forward/2)
 
-    new_suffix = String.slice(suffix, chars_to_drop, String.length(suffix))
-    apply_filter(model, prefix <> new_suffix, model.filter_cursor)
-  end
+  # Apply a Readline edit that may change the buffer (and the
+  # cursor). Re-runs filtering / selection clamp / preview
+  # hydration so the rest of the model stays consistent with the
+  # new query.
+  defp apply_filter_edit(model, fun) do
+    {new_filter, new_cursor} = fun.(model.filter, model.filter_cursor)
 
-  defp apply_filter(model, new_filter, new_cursor) do
     %{model | filter: new_filter, filter_cursor: new_cursor}
     |> refilter()
     |> clamp_selection()
     |> hydrate_selection()
   end
 
-  defp split_at(str, idx) do
-    {String.slice(str, 0, idx), String.slice(str, idx, String.length(str))}
+  # Apply a Readline edit that only moves the cursor — no
+  # re-filter needed because the buffer didn't change.
+  defp apply_filter_cursor_edit(model, fun) do
+    {new_filter, new_cursor} = fun.(model.filter, model.filter_cursor)
+    %{model | filter: new_filter, filter_cursor: new_cursor}
   end
-
-  # Find the position of the previous word boundary, scanning
-  # left from the end of `prefix`. Skips trailing whitespace,
-  # then skips word characters, returning the index just after
-  # the previous boundary (i.e. where Ctrl+W should land).
-  defp previous_word_boundary(prefix) do
-    chars = String.graphemes(prefix)
-    len = length(chars)
-    skip_ws = drop_while_reverse(chars, len, &whitespace?/1)
-    drop_while_reverse(chars, skip_ws, &(not whitespace?(&1)))
-  end
-
-  # Find the position of the next word boundary, scanning right
-  # from `start`. Skips leading whitespace, then skips word
-  # characters, returning the index just past the end of the
-  # next word (i.e. where Alt+F should land).
-  defp next_word_boundary(filter, start) do
-    chars = String.graphemes(filter)
-    len = length(chars)
-    skip_ws = advance_while(chars, start, len, &whitespace?/1)
-    advance_while(chars, skip_ws, len, &(not whitespace?(&1)))
-  end
-
-  defp advance_while(_chars, idx, len, _pred) when idx >= len, do: len
-
-  defp advance_while(chars, idx, len, pred) do
-    if pred.(Enum.at(chars, idx)),
-      do: advance_while(chars, idx + 1, len, pred),
-      else: idx
-  end
-
-  defp drop_while_reverse(_chars, 0, _pred), do: 0
-
-  defp drop_while_reverse(chars, idx, pred) do
-    if pred.(Enum.at(chars, idx - 1)),
-      do: drop_while_reverse(chars, idx - 1, pred),
-      else: idx
-  end
-
-  defp whitespace?(<<c::utf8>>), do: c in [?\s, ?\t, ?\n]
-  defp whitespace?(_), do: false
 
   # ---- helpers ------------------------------------------------------------
 

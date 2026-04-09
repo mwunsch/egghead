@@ -52,6 +52,7 @@ defmodule Egghead.TUI.Chat.Model do
           agents: [AgentPresence.t()],
           scroll: non_neg_integer(),
           input: EditBuffer.t(),
+          next_paste_id: pos_integer(),
           status_message: String.t() | nil,
           anim_frame: non_neg_integer()
         }
@@ -65,6 +66,7 @@ defmodule Egghead.TUI.Chat.Model do
             agents: [],
             scroll: 0,
             input: %EditBuffer{},
+            next_paste_id: 1,
             status_message: nil,
             anim_frame: 0
 

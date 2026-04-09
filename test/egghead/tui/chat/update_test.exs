@@ -2,7 +2,7 @@ defmodule Egghead.TUI.Chat.UpdateTest do
   use ExUnit.Case, async: true
 
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Model, Update}
+  alias Egghead.TUI.Chat.{Entry, Model, Paste, Update}
   alias Egghead.Chat.Room.{Message, Sender}
 
   defp put_input(model, text) do
@@ -190,6 +190,30 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       {m, :none} = Update.update({:paste, "line one\nline two"}, model())
       assert Model.input_text(m) == "line one\nline two"
       assert EditBuffer.line_count(m.input) == 2
+    end
+
+    test "long paste is wrapped in a chip cell instead of inlined" do
+      big = String.duplicate("x", 200)
+      {m, :none} = Update.update({:paste, big}, model())
+
+      # Single chip cell, not 200 graphemes
+      assert EditBuffer.line_width(m.input, 0) == 1
+      assert [%Paste{full_text: ^big}] = EditBuffer.line_cells(m.input, 0)
+
+      # to_text/1 still expands back to the original payload
+      assert Model.input_text(m) == big
+
+      # next_paste_id advances
+      assert m.next_paste_id == 2
+    end
+
+    test "multi-line paste over the line threshold becomes a chip" do
+      blob = "a\nb\nc\nd\ne"
+      {m, :none} = Update.update({:paste, blob}, model())
+
+      assert EditBuffer.line_width(m.input, 0) == 1
+      assert [%Paste{}] = EditBuffer.line_cells(m.input, 0)
+      assert Model.input_text(m) == blob
     end
 
     test "up / down navigates between buffer rows" do

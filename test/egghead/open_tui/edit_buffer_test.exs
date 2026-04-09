@@ -6,14 +6,14 @@ defmodule Egghead.OpenTUI.EditBufferTest do
   describe "construction" do
     test "new/0 is empty with cursor at origin" do
       b = EditBuffer.new()
-      assert b.lines == [""]
+      assert EditBuffer.to_text(b) == ""
       assert EditBuffer.cursor(b) == {0, 0}
       assert EditBuffer.empty?(b)
     end
 
     test "from_text/1 splits on \\n and parks the cursor at the end" do
       b = EditBuffer.from_text("hi\nthere")
-      assert b.lines == ["hi", "there"]
+      assert EditBuffer.to_text(b) == "hi\nthere"
       assert EditBuffer.cursor(b) == {1, 5}
       refute EditBuffer.empty?(b)
     end
@@ -38,7 +38,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
 
     test "insert/2 of text containing \\n splits lines" do
       b = EditBuffer.new() |> EditBuffer.insert("ab\ncd")
-      assert b.lines == ["ab", "cd"]
+      assert EditBuffer.to_text(b) == "ab\ncd"
       assert EditBuffer.cursor(b) == {1, 2}
     end
 
@@ -58,13 +58,13 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.put(:col, 2)
         |> EditBuffer.insert_newline()
 
-      assert b.lines == ["ab", "cd"]
+      assert EditBuffer.to_text(b) == "ab\ncd"
       assert EditBuffer.cursor(b) == {1, 0}
     end
 
     test "paste/2 preserves embedded newlines (alias for insert/2)" do
       b = EditBuffer.new() |> EditBuffer.paste("first\nsecond")
-      assert b.lines == ["first", "second"]
+      assert EditBuffer.to_text(b) == "first\nsecond"
       assert EditBuffer.cursor(b) == {1, 6}
     end
   end
@@ -90,7 +90,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.merge(%{row: 1, col: 0})
         |> EditBuffer.delete_before()
 
-      assert b.lines == ["abcd"]
+      assert EditBuffer.to_text(b) == "abcd"
       assert EditBuffer.cursor(b) == {0, 2}
     end
   end
@@ -112,7 +112,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.merge(%{row: 0, col: 2})
         |> EditBuffer.delete_after()
 
-      assert b.lines == ["abcd"]
+      assert EditBuffer.to_text(b) == "abcd"
       assert EditBuffer.cursor(b) == {0, 2}
     end
 
@@ -244,7 +244,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.put(:col, 5)
         |> EditBuffer.kill_to_eol()
 
-      assert b.lines == ["hello"]
+      assert EditBuffer.to_text(b) == "hello"
       assert EditBuffer.cursor(b) == {0, 5}
     end
 
@@ -254,7 +254,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.put(:col, 6)
         |> EditBuffer.kill_to_bol()
 
-      assert b.lines == ["world"]
+      assert EditBuffer.to_text(b) == "world"
       assert EditBuffer.cursor(b) == {0, 0}
     end
 
@@ -264,7 +264,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.merge(%{row: 1, col: 0})
         |> EditBuffer.kill_line()
 
-      assert b.lines == ["a", "c"]
+      assert EditBuffer.to_text(b) == "a\nc"
       assert EditBuffer.cursor(b) == {1, 0}
     end
 
@@ -279,7 +279,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.put(:col, 7)
         |> EditBuffer.kill_word()
 
-      assert b.lines == ["foo "]
+      assert EditBuffer.to_text(b) == "foo "
       assert EditBuffer.cursor(b) == {0, 4}
     end
 
@@ -289,7 +289,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.merge(%{row: 1, col: 0})
         |> EditBuffer.kill_word()
 
-      assert b.lines == ["abcd"]
+      assert EditBuffer.to_text(b) == "abcd"
       assert EditBuffer.cursor(b) == {0, 2}
     end
 
@@ -299,7 +299,7 @@ defmodule Egghead.OpenTUI.EditBufferTest do
         |> Map.put(:col, 4)
         |> EditBuffer.kill_word_forward()
 
-      assert b.lines == ["foo  baz"]
+      assert EditBuffer.to_text(b) == "foo  baz"
       assert EditBuffer.cursor(b) == {0, 4}
     end
   end

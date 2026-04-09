@@ -25,8 +25,8 @@ defmodule Egghead.TUI.Chat.View do
 
   import Egghead.OpenTUI.View
 
-  alias Egghead.OpenTUI.{Colors, EditBuffer}
-  alias Egghead.TUI.Chat.{Entry, Model, Stream}
+  alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer}
+  alias Egghead.TUI.Chat.{Entry, Model, Paste, Stream}
 
   @prompt "❯ "
   @continuation "  "
@@ -127,12 +127,7 @@ defmodule Egghead.TUI.Chat.View do
 
     text
     |> String.split("\n")
-    |> Enum.flat_map(fn paragraph ->
-      case soft_wrap(paragraph, body_width) do
-        [] -> [""]
-        lines -> lines
-      end
-    end)
+    |> Enum.flat_map(fn paragraph -> soft_wrap(paragraph, body_width) end)
     |> Enum.with_index()
     |> Enum.map(fn {chunk, idx} ->
       lead = if idx == 0, do: prefix, else: indent
@@ -141,9 +136,30 @@ defmodule Egghead.TUI.Chat.View do
   end
 
   # Whitespace-friendly soft wrap. Long single tokens hard-break.
+  # Leading whitespace on the input line is preserved verbatim and
+  # carried into the first wrapped line so indented content (e.g.
+  # pasted code) keeps its shape in the transcript.
   defp soft_wrap("", _width), do: [""]
 
   defp soft_wrap(text, width) do
+    {leading, rest} = pop_leading_spaces(text)
+    body_width = max(width - String.length(leading), 1)
+
+    case soft_wrap_body(rest, body_width) do
+      [] -> [leading]
+      [first | more] -> [leading <> first | more]
+    end
+  end
+
+  defp pop_leading_spaces(text) do
+    leading = text |> String.graphemes() |> Enum.take_while(&(&1 == " ")) |> Enum.join()
+    rest = String.replace_prefix(text, leading, "")
+    {leading, rest}
+  end
+
+  defp soft_wrap_body("", _width), do: [""]
+
+  defp soft_wrap_body(text, width) do
     text
     |> String.split(" ")
     |> Enum.reduce([""], fn word, [current | rest] ->
@@ -237,41 +253,100 @@ defmodule Egghead.TUI.Chat.View do
     rows =
       visible_lines
       |> Enum.with_index(visible_top)
-      |> Enum.map(fn {line, idx} ->
+      |> Enum.map(fn {cells, idx} ->
         prompt = if idx == 0, do: @prompt, else: @continuation
-        render_input_row(line, prompt, idx == cursor_row, cursor_col)
+        render_input_row(cells, prompt, idx == cursor_row, cursor_col)
       end)
 
     vbox([height: input_height], rows)
   end
 
-  defp render_input_row(line, prompt, false, _cursor_col) do
+  defp render_input_row(cells, prompt, on_cursor_row?, cursor_col) do
     fg = Colors.white()
     prompt_w = String.length(prompt)
+    prompt_node = text(prompt, width: prompt_w, fg: fg)
 
-    hbox([height: 1], [
-      text(prompt, width: prompt_w, fg: fg),
-      text(line, width: String.length(line), fg: fg),
-      fill(flex: 1)
-    ])
+    body =
+      if on_cursor_row? do
+        col = min(cursor_col, length(cells))
+        {before, after_} = Enum.split(cells, col)
+        cells_to_nodes(before) ++ [cursor()] ++ cells_to_nodes(after_)
+      else
+        cells_to_nodes(cells)
+      end
+
+    hbox([height: 1], [prompt_node | body] ++ [fill(flex: 1)])
   end
 
-  defp render_input_row(line, prompt, true, cursor_col) do
-    fg = Colors.white()
-    prompt_w = String.length(prompt)
-    line_len = String.length(line)
-    col = min(cursor_col, line_len)
-
-    prefix = String.slice(line, 0, col)
-    suffix = String.slice(line, col, line_len)
-
-    hbox([height: 1], [
-      text(prompt <> prefix, width: prompt_w + String.length(prefix), fg: fg),
-      cursor(),
-      text(suffix, width: String.length(suffix), fg: fg),
-      fill(flex: 1)
-    ])
+  # Render a cell list as a flat list of OpenTUI text leaves.
+  # Adjacent grapheme cells are coalesced into a single leaf so
+  # the renderer has fewer spans to paint; non-rune cells (like a
+  # `%Paste{}` chip) produce one or more styled leaves.
+  defp cells_to_nodes(cells) do
+    cells
+    |> chunk_cells()
+    |> Enum.flat_map(&chunk_to_nodes/1)
   end
+
+  defp chunk_cells([]), do: []
+
+  defp chunk_cells([cell | _] = cells) when is_binary(cell) do
+    {graphemes, rest} = Enum.split_while(cells, &is_binary/1)
+    [{:text, Enum.join(graphemes)} | chunk_cells(rest)]
+  end
+
+  defp chunk_cells([%Paste{} = p | rest]), do: [{:paste, p} | chunk_cells(rest)]
+
+  defp chunk_to_nodes({:text, str}) do
+    [text(str, width: String.length(str), fg: Colors.white())]
+  end
+
+  # A paste chip renders as one or two adjacent text leaves on a
+  # tinted bg: the head segment in accent fg, plus an optional
+  # italic + dim tail segment for `+N lines`. Leaf widths use
+  # `display_width/1` so the 📋 emoji (which is one grapheme but
+  # two terminal columns wide) doesn't under-fill the bg.
+  defp chunk_to_nodes({:paste, %Paste{} = p}) do
+    head = Paste.head_segment(p)
+
+    head_node =
+      text(head,
+        width: display_width(head),
+        fg: Colors.accent(),
+        bg: Colors.selected_bg()
+      )
+
+    case Paste.tail_segment(p) do
+      nil ->
+        [head_node]
+
+      tail ->
+        tail_node =
+          text(tail,
+            width: display_width(tail),
+            fg: Colors.dim(),
+            bg: Colors.selected_bg(),
+            attrs: Attrs.italic()
+          )
+
+        [head_node, tail_node]
+    end
+  end
+
+  # Display columns occupied by a string in a monospace terminal.
+  # Most graphemes are 1 cell, but emoji and CJK are 2. We treat
+  # any grapheme outside the basic Latin range as wide; that's a
+  # rough approximation but it's correct for the chip's 📋 marker
+  # and good enough for chat input where the only wide characters
+  # we expect are the chip glyph itself.
+  defp display_width(str) when is_binary(str) do
+    str
+    |> String.graphemes()
+    |> Enum.reduce(0, fn g, acc -> acc + grapheme_width(g) end)
+  end
+
+  defp grapheme_width(<<b, _::binary>>) when b < 128, do: 1
+  defp grapheme_width(_), do: 2
 
   # ---- status --------------------------------------------------------------
 

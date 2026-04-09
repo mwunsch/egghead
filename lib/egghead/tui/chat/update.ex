@@ -19,7 +19,7 @@ defmodule Egghead.TUI.Chat.Update do
   """
 
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Model}
+  alias Egghead.TUI.Chat.{Entry, Model, Paste}
 
   @spec update(term(), Model.t()) :: {Model.t(), term()}
 
@@ -136,9 +136,22 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   # Bracketed paste arrives as a single message with newlines
-  # preserved. EditBuffer.paste honours embedded `\n` as line breaks.
+  # preserved. Long pastes (>3 lines OR >150 chars) are wrapped
+  # in a `%Paste{}` chip cell so the input box stays uncluttered;
+  # short pastes flow inline as plain graphemes.
   def update({:paste, text}, %Model{} = model) when is_binary(text) do
-    {edit(model, &EditBuffer.paste(&1, text)), :none}
+    if Paste.chip_worthy?(text) do
+      chip = Paste.build(model.next_paste_id, text)
+
+      model =
+        model
+        |> Map.put(:next_paste_id, model.next_paste_id + 1)
+        |> edit(&EditBuffer.insert_cell(&1, chip))
+
+      {model, :none}
+    else
+      {edit(model, &EditBuffer.paste(&1, text)), :none}
+    end
   end
 
   # Mouse and unrecognized input are silently swallowed in 6c.

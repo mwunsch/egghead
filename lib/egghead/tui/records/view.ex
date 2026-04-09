@@ -46,7 +46,8 @@ defmodule Egghead.TUI.Records.View do
     body_h = max(height - 6, 1)
     list_h = max(div(body_h, 3), 1)
     preview_h = max(body_h - list_h, 1)
-    content_h = max(preview_h - 1, 1)
+    footer_h = length(model.preview_footer)
+    content_h = max(preview_h - 1 - footer_h, 1)
 
     vbox([
       header(model, width),
@@ -281,6 +282,12 @@ defmodule Egghead.TUI.Records.View do
         # in `Model.recompute_preview/1`, so spans never exceed it.
         text_w = max(width - 2, 1)
 
+        active_target =
+          case Model.active_link(model) do
+            %{target: t} -> t
+            _ -> nil
+          end
+
         body_rows =
           rendered
           |> Enum.drop(scroll)
@@ -289,22 +296,78 @@ defmodule Egghead.TUI.Records.View do
           |> Enum.map(fn {row, idx} ->
             is_thumb = bar_size > 0 and idx >= bar_start and idx < bar_start + bar_size
             scrollbar_char = if is_thumb, do: "▐", else: " "
-            render_preview_row(row, text_w, scrollbar_char)
+            render_preview_row(row, text_w, scrollbar_char, active_target)
           end)
 
-        vbox([height: preview_h], [label | body_rows])
+        # Metadata footer (Links / Backlinks). Pinned at the
+        # bottom of the preview pane, doesn't scroll with body.
+        # Rendered at full preview width (not text_w) so it can
+        # use the scrollbar column for content.
+        footer_rows =
+          model.preview_footer
+          |> Enum.map(fn row ->
+            render_footer_row(row, max(width - 1, 1), active_target)
+          end)
+
+        vbox([height: preview_h], [label | body_rows] ++ footer_rows)
     end
+  end
+
+  # Footer rows have no scrollbar column. Layout: " " + spans
+  # (padded to text_w). Active link spans get the same reverse-
+  # video highlight treatment as body rows.
+  defp render_footer_row(row, text_w, active_target) do
+    span_leaves =
+      Enum.map(row, fn span ->
+        active? = active_target != nil and span.link == {:wikilink, active_target}
+
+        bg = if active?, do: Colors.selected_bg(), else: Colors.bg()
+        fg = if active?, do: Colors.white(), else: span.fg || Colors.white()
+
+        text(span.text,
+          width: String.length(span.text),
+          fg: fg,
+          bg: bg,
+          attrs: span.attrs
+        )
+      end)
+
+    used = Enum.reduce(row, 0, fn span, acc -> acc + String.length(span.text) end)
+    pad_w = max(text_w - used, 0)
+
+    pad_leaf =
+      text(String.duplicate(" ", pad_w),
+        width: pad_w,
+        fg: Colors.white(),
+        bg: Colors.bg()
+      )
+
+    leading =
+      text(" ",
+        width: 1,
+        fg: Colors.white(),
+        bg: Colors.bg()
+      )
+
+    hbox([height: 1], [leading | span_leaves] ++ [pad_leaf])
   end
 
   # Build a single preview row from a list of markdown spans.
   # Layout: " " + spans (padded to text_w) + scrollbar char.
-  defp render_preview_row(row, text_w, scrollbar_char) do
+  # Spans whose link target matches `active_target` get a
+  # reverse-video background as the link-mode highlight.
+  defp render_preview_row(row, text_w, scrollbar_char, active_target) do
     span_leaves =
       Enum.map(row, fn span ->
+        active? = active_target != nil and span.link == {:wikilink, active_target}
+
+        bg = if active?, do: Colors.selected_bg(), else: Colors.bg()
+        fg = if active?, do: Colors.white(), else: span.fg || Colors.white()
+
         text(span.text,
           width: String.length(span.text),
-          fg: span.fg || Colors.white(),
-          bg: Colors.bg(),
+          fg: fg,
+          bg: bg,
           attrs: span.attrs
         )
       end)
@@ -387,13 +450,19 @@ defmodule Egghead.TUI.Records.View do
   end
 
   defp status_bar(model, width) do
+    nav_hint = if model.nav_history != [], do: " │ ⌫ back", else: ""
+
     line =
       cond do
+        Model.link_mode?(model) ->
+          " LINK │ tab/⇧tab cycle │ ⏎ follow │ esc deselect" <> nav_hint <> " │ ^q quit"
+
         Model.phantom_selected?(model) ->
           " NEW │ ⏎ create │ ↑ back to results │ ^q quit"
 
         true ->
-          " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^f filter │ ^t date │ ^q quit"
+          " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^f filter │ ^t date" <>
+            nav_hint <> " │ ^q quit"
       end
 
     pad_size = max(width - String.length(line), 0)

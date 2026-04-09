@@ -14,9 +14,18 @@ defmodule Egghead.TUI.Records.Update do
     Selection / scroll
       ↑ / ↓              move selection in the list
       Enter              edit selected record (or create + edit
-                          when the phantom create row is selected)
+                          when the phantom create row is selected,
+                          or follow active link in link-nav mode)
       PgUp / PgDn        scroll preview pane ±5 lines
       Ctrl+N / Ctrl+P    scroll preview pane ±5 lines (emacs)
+
+    Link navigation (preview pane wikilinks + backlinks)
+      Tab                enter link mode and select next link
+      Shift+Tab          enter link mode and select previous link
+      Enter (link mode)  follow active link, push current onto
+                          nav history
+      ESC                exit link mode
+      Backspace          if filter is empty, pop nav history
 
     Toggles
       Ctrl+F             toggle class filter (durable / all)
@@ -78,6 +87,10 @@ defmodule Egghead.TUI.Records.Update do
 
   def update({:key, :enter}, model), do: handle_enter(model)
 
+  def update({:key, :tab}, model), do: {Model.link_next(model), :none}
+  def update({:key, :shift_tab}, model), do: {Model.link_prev(model), :none}
+  def update({:key, :escape}, model), do: {Model.link_deselect(model), :none}
+
   def update({:key, :ctrl_f}, model), do: {Model.toggle_class_filter(model), :none}
   def update({:key, :ctrl_t}, model), do: {Model.toggle_date_format(model), :none}
 
@@ -94,7 +107,11 @@ defmodule Egghead.TUI.Records.Update do
     do: {Model.scroll_preview(model, +@preview_scroll_step), :none}
 
   def update({:key, :backspace}, model) do
-    {Model.delete_before_cursor(model), :none}
+    if model.filter == "" and model.nav_history != [] do
+      {Model.nav_back(model), :none}
+    else
+      {Model.delete_before_cursor(model), :none}
+    end
   end
 
   def update({:char, c}, model) when is_binary(c) do
@@ -127,6 +144,9 @@ defmodule Egghead.TUI.Records.Update do
 
   defp handle_enter(model) do
     cond do
+      Model.link_mode?(model) ->
+        {Model.follow_active_link(model), :none}
+
       Model.phantom_selected?(model) ->
         case Model.creation_target(model) do
           {title, slug} -> {model, create_and_edit_cmd(slug, title)}

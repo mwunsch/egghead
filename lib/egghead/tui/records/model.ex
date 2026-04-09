@@ -15,11 +15,17 @@ defmodule Egghead.TUI.Records.Model do
   instead of threading dimensions through call sites.
   """
 
-  alias Egghead.OpenTUI.Markdown
+  alias Egghead.OpenTUI.{Colors, Markdown}
   alias Egghead.RecordStore
   alias Egghead.TUI.Records.Slug
 
   @type date_format :: :relative | :iso
+
+  @type link_kind :: :forward | :backlink
+  @type link_entry :: %{
+          required(:target) => String.t(),
+          required(:kind) => link_kind()
+        }
 
   @type t :: %__MODULE__{
           width: pos_integer(),
@@ -30,13 +36,18 @@ defmodule Egghead.TUI.Records.Model do
           all: [Egghead.Record.t()],
           filtered: [Egghead.Record.t()],
           selected_id: String.t() | nil,
+          selected_record: Egghead.Record.t() | nil,
           selected_body: String.t() | nil,
           show_all_classes: boolean(),
           date_format: date_format(),
           preview_scroll: non_neg_integer(),
           preview_total_lines: non_neg_integer(),
           preview_rendered: Markdown.rendered() | nil,
-          preview_rendered_width: pos_integer() | nil
+          preview_rendered_width: pos_integer() | nil,
+          preview_footer: Markdown.rendered(),
+          preview_links: [link_entry()],
+          link_index: non_neg_integer() | nil,
+          nav_history: [String.t()]
         }
 
   defstruct width: 80,
@@ -47,13 +58,18 @@ defmodule Egghead.TUI.Records.Model do
             all: [],
             filtered: [],
             selected_id: nil,
+            selected_record: nil,
             selected_body: nil,
             show_all_classes: false,
             date_format: :relative,
             preview_scroll: 0,
             preview_total_lines: 0,
             preview_rendered: nil,
-            preview_rendered_width: nil
+            preview_rendered_width: nil,
+            preview_footer: [],
+            preview_links: [],
+            link_index: nil,
+            nav_history: []
 
   @doc "Build the initial model by listing records from the store."
   @spec init() :: t()
@@ -151,8 +167,9 @@ defmodule Egghead.TUI.Records.Model do
   Hydrate the body of the currently selected record. Cheap if
   the selection hasn't changed since last hydration (id check).
   Resets `:preview_scroll` to 0 whenever the selected record
-  changes, and (re)computes the markdown render cache so
-  `preview_total_lines` reflects the wrapped row count.
+  changes, exits link-nav mode, and (re)computes the markdown
+  render cache so `preview_total_lines` reflects the wrapped
+  row count.
   """
   @spec hydrate_selection(t()) :: t()
   def hydrate_selection(%__MODULE__{} = model) do
@@ -162,19 +179,29 @@ defmodule Egghead.TUI.Records.Model do
           model
           | selected_body: nil,
             selected_id: nil,
+            selected_record: nil,
             preview_scroll: 0,
             preview_total_lines: 0,
             preview_rendered: nil,
-            preview_rendered_width: nil
+            preview_rendered_width: nil,
+            preview_footer: [],
+            preview_links: [],
+            link_index: nil
         }
 
       record ->
         if record.id == model.selected_id do
           model
         else
-          body =
+          full_record =
             case RecordStore.get_record(record.id) do
-              {:ok, full} -> full.body || ""
+              {:ok, full} -> full
+              _ -> nil
+            end
+
+          body =
+            case full_record do
+              %{body: b} when is_binary(b) -> b
               _ -> "(failed to load)"
             end
 
@@ -182,9 +209,13 @@ defmodule Egghead.TUI.Records.Model do
             model
             | selected_body: body,
               selected_id: record.id,
+              selected_record: full_record,
               preview_scroll: 0,
               preview_rendered: nil,
-              preview_rendered_width: nil
+              preview_rendered_width: nil,
+              preview_footer: [],
+              preview_links: [],
+              link_index: nil
           }
           |> recompute_preview()
         end
@@ -192,10 +223,13 @@ defmodule Egghead.TUI.Records.Model do
   end
 
   @doc """
-  Re-render the cached markdown preview at the model's current
-  text width. Idempotent — safe to call repeatedly even when
-  nothing has changed (it short-circuits if the cache is already
-  fresh for the current `(body, width)` pair).
+  Re-render the cached markdown body at the model's current text
+  width and rebuild the metadata footer (Links + Backlinks) with
+  custom span-aware wrapping. The footer is kept separate from
+  `preview_rendered` so the body scrolls independently of it.
+
+  Cheap if the cache is already fresh for the current
+  `(body, width)` pair.
   """
   @spec recompute_preview(t()) :: t()
   def recompute_preview(%__MODULE__{selected_body: nil} = model) do
@@ -203,7 +237,9 @@ defmodule Egghead.TUI.Records.Model do
       model
       | preview_rendered: nil,
         preview_rendered_width: nil,
-        preview_total_lines: 0
+        preview_total_lines: 0,
+        preview_footer: [],
+        preview_links: []
     }
   end
 
@@ -213,16 +249,326 @@ defmodule Egghead.TUI.Records.Model do
     if model.preview_rendered != nil and model.preview_rendered_width == width do
       model
     else
-      rendered = Markdown.render(model.selected_body, width)
+      body_rows = Markdown.render(model.selected_body, width)
+
+      forward_targets = forward_targets_for(model.selected_record)
+      backlink_records = backlinks_for(model.selected_id)
+
+      backlink_targets =
+        backlink_records
+        |> Enum.map(& &1.id)
+        |> Enum.reject(fn id ->
+          id == model.selected_id or id in forward_targets
+        end)
+
+      footer_rows = build_footer(forward_targets, backlink_targets, width)
+
+      preview_links =
+        Enum.map(forward_targets, &%{target: &1, kind: :forward}) ++
+          Enum.map(backlink_targets, &%{target: &1, kind: :backlink})
 
       %{
         model
-        | preview_rendered: rendered,
+        | preview_rendered: body_rows,
           preview_rendered_width: width,
-          preview_total_lines: length(rendered)
+          preview_total_lines: length(body_rows),
+          preview_footer: footer_rows,
+          preview_links: preview_links
       }
       |> clamp_preview_scroll()
     end
+  end
+
+  # ---- link nav -----------------------------------------------------------
+
+  @doc """
+  Enter link-nav mode by selecting the first link, or — if
+  already in link mode — cycle forward by one. No-op when there
+  are no links to cycle.
+  """
+  @spec link_next(t()) :: t()
+  def link_next(%__MODULE__{preview_links: []} = model), do: model
+
+  def link_next(%__MODULE__{preview_links: links, link_index: idx} = model) do
+    n = length(links)
+    new_idx = if idx == nil, do: 0, else: rem(idx + 1, n)
+    %{model | link_index: new_idx} |> scroll_to_active_link()
+  end
+
+  @doc """
+  Cycle backward through `preview_links`. If not currently in
+  link mode, jumps to the LAST link (mirrors how Shift+Tab works
+  in browsers and form fields).
+  """
+  @spec link_prev(t()) :: t()
+  def link_prev(%__MODULE__{preview_links: []} = model), do: model
+
+  def link_prev(%__MODULE__{preview_links: links, link_index: idx} = model) do
+    n = length(links)
+    new_idx = if idx == nil, do: n - 1, else: rem(idx - 1 + n, n)
+    %{model | link_index: new_idx} |> scroll_to_active_link()
+  end
+
+  @doc "Exit link-nav mode. Idempotent."
+  @spec link_deselect(t()) :: t()
+  def link_deselect(%__MODULE__{} = model), do: %{model | link_index: nil}
+
+  @doc "True when the user is currently cycling links."
+  @spec link_mode?(t()) :: boolean()
+  def link_mode?(%__MODULE__{link_index: nil}), do: false
+  def link_mode?(%__MODULE__{}), do: true
+
+  @doc """
+  The currently-active link entry, or nil. The view consults
+  this to know which span gets the reverse-video highlight, and
+  the reducer consults it to know what to follow on Enter.
+  """
+  @spec active_link(t()) :: link_entry() | nil
+  def active_link(%__MODULE__{link_index: nil}), do: nil
+
+  def active_link(%__MODULE__{preview_links: links, link_index: idx}) do
+    Enum.at(links, idx)
+  end
+
+  @doc """
+  Follow the active link: push the currently-selected record
+  onto the nav history, locate the target in `:all`, jump
+  selection to it, and rehydrate the preview. Returns the model
+  unchanged if there is no active link or the target doesn't
+  exist in the store.
+  """
+  @spec follow_active_link(t()) :: t()
+  def follow_active_link(%__MODULE__{} = model) do
+    case active_link(model) do
+      nil ->
+        model
+
+      %{target: target} ->
+        case Enum.find_index(model.all, &(&1.id == target)) do
+          nil ->
+            model
+
+          idx_in_all ->
+            history =
+              case model.selected_id do
+                nil -> model.nav_history
+                id -> [id | model.nav_history]
+              end
+
+            %{
+              model
+              | filter: "",
+                filter_cursor: 0,
+                show_all_classes: true,
+                nav_history: history,
+                link_index: nil
+            }
+            |> refilter()
+            |> jump_selection_to(target, idx_in_all)
+            |> hydrate_selection()
+        end
+    end
+  end
+
+  @doc """
+  Pop the most recent entry from `nav_history` and return to
+  it. No-op if the history is empty or the prior record is no
+  longer in the store.
+  """
+  @spec nav_back(t()) :: t()
+  def nav_back(%__MODULE__{nav_history: []} = model), do: model
+
+  def nav_back(%__MODULE__{nav_history: [prev | rest]} = model) do
+    case Enum.find_index(model.all, &(&1.id == prev)) do
+      nil ->
+        %{model | nav_history: rest}
+
+      _idx ->
+        %{
+          model
+          | filter: "",
+            filter_cursor: 0,
+            show_all_classes: true,
+            nav_history: rest,
+            link_index: nil
+        }
+        |> refilter()
+        |> jump_selection_to(prev, 0)
+        |> hydrate_selection()
+    end
+  end
+
+  defp jump_selection_to(model, target, _fallback_idx) do
+    case Enum.find_index(model.filtered, &(&1.id == target)) do
+      nil -> %{model | selection: 0}
+      idx -> %{model | selection: idx}
+    end
+  end
+
+  # When the active link is on a row outside the visible window,
+  # adjust `preview_scroll` so the row sits in the middle third.
+  defp scroll_to_active_link(%__MODULE__{} = model) do
+    case active_link(model) do
+      nil ->
+        model
+
+      %{target: target} ->
+        case Markdown.find_wikilink_row(model.preview_rendered || [], target) do
+          nil ->
+            model
+
+          row_idx ->
+            visible = content_h(model)
+            scroll = model.preview_scroll
+
+            cond do
+              row_idx < scroll ->
+                %{model | preview_scroll: max(row_idx - div(visible, 3), 0)}
+
+              row_idx >= scroll + visible ->
+                %{
+                  model
+                  | preview_scroll: max(row_idx - div(visible * 2, 3), 0)
+                }
+                |> clamp_preview_scroll()
+
+              true ->
+                model
+            end
+        end
+    end
+  end
+
+  # ---- preview link / footer helpers -------------------------------------
+
+  # Forward link targets for a record. The worktree's parser
+  # already merges frontmatter `links:` with body wikilinks into
+  # `record.links`, deduped, in order, so we just read it.
+  defp forward_targets_for(nil), do: []
+
+  defp forward_targets_for(%{links: links}) when is_list(links), do: links
+
+  defp forward_targets_for(_), do: []
+
+  defp backlinks_for(nil), do: []
+
+  defp backlinks_for(id) do
+    try do
+      RecordStore.find_backlinks(id) || []
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  # Build the metadata footer rows from forward + backlink
+  # targets. The footer is a list of styled rows in the same
+  # `[[span]]` shape the markdown renderer produces, but built
+  # by hand so we can:
+  #   * label each section ("Links: " / "Backlinks: ")
+  #   * wrap link tokens onto multiple rows when a single row
+  #     overflows the available width
+  #   * keep the rows separate from `preview_rendered` so the
+  #     body scrolls independently of the footer
+  defp build_footer([], [], _width), do: []
+
+  defp build_footer(forward_targets, backlink_targets, width) do
+    forward_rows = link_section_rows("Links: ", forward_targets, width)
+    backlink_rows = link_section_rows("Backlinks: ", backlink_targets, width)
+
+    case {forward_rows, backlink_rows} do
+      {[], []} -> []
+      {rows, []} -> rows
+      {[], rows} -> rows
+      {f, b} -> f ++ b
+    end
+  end
+
+  defp link_section_rows(_label, [], _width), do: []
+
+  defp link_section_rows(label, targets, width) do
+    label_w = String.length(label)
+    indent = String.duplicate(" ", label_w)
+    inner_width = max(width - label_w, 1)
+
+    label_ctx = %{fg: Colors.muted(), attrs: 0, link: nil}
+
+    label_span = %{
+      text: label,
+      fg: label_ctx.fg,
+      attrs: 0,
+      link: nil
+    }
+
+    indent_span = %{
+      text: indent,
+      fg: label_ctx.fg,
+      attrs: 0,
+      link: nil
+    }
+
+    link_rows = wrap_link_tokens(targets, inner_width)
+
+    case link_rows do
+      [] ->
+        []
+
+      [first | rest] ->
+        first_row = [label_span | first]
+        rest_rows = Enum.map(rest, fn row -> [indent_span | row] end)
+        [first_row | rest_rows]
+    end
+  end
+
+  # Greedy fill: each `[[target]]` is one atomic token. If a
+  # single token is wider than the available width, we still emit
+  # it on its own row (it'll be visually clipped, but at least
+  # it's a row by itself instead of corrupting the whole layout).
+  # Tokens are space-separated within a row.
+  defp wrap_link_tokens(targets, width) do
+    tokens = Enum.map(targets, fn t -> "[[#{t}]]" end)
+
+    {rows, current, _used} =
+      Enum.reduce(tokens, {[], [], 0}, fn token, {rows, current, used} ->
+        token_w = String.length(token)
+        sep_w = if current == [], do: 0, else: 1
+        needed = sep_w + token_w
+
+        cond do
+          current == [] ->
+            {rows, [link_span(token)], token_w}
+
+          used + needed > width ->
+            {[Enum.reverse(current) | rows], [link_span(token)], token_w}
+
+          true ->
+            spans = [link_span(token), space_span() | current]
+            {rows, spans, used + needed}
+        end
+      end)
+
+    final = if current == [], do: rows, else: [Enum.reverse(current) | rows]
+    Enum.reverse(final)
+  end
+
+  defp link_span(text) do
+    target =
+      case Regex.run(~r/\A\[\[(.+)\]\]\z/, text) do
+        [_, t] -> t
+        _ -> text
+      end
+
+    %{
+      text: text,
+      fg: Colors.link(),
+      attrs: 0,
+      link: {:wikilink, target}
+    }
+  end
+
+  defp space_span do
+    %{text: " ", fg: Colors.white(), attrs: 0, link: nil}
   end
 
   @doc """
@@ -317,17 +663,18 @@ defmodule Egghead.TUI.Records.Model do
   end
 
   @doc """
-  Visible content height of the preview pane (excluding label).
-  Mirrors the chrome math in `Egghead.TUI.Records.View.render/1`:
-  `body = h - 6`, `list_h = body / 3`, `preview_h = body - list_h`,
-  `content_h = preview_h - 1`.
+  Visible content height of the preview body (excluding label
+  and metadata footer). Mirrors the chrome math in
+  `Egghead.TUI.Records.View.render/1`: `body = h - 6`,
+  `list_h = body / 3`, `preview_h = body - list_h`,
+  `content_h = preview_h - 1 - footer_h`.
   """
   @spec content_h(t()) :: pos_integer()
-  def content_h(%__MODULE__{height: h}) do
+  def content_h(%__MODULE__{height: h} = model) do
     body_h = max(h - 6, 1)
     list_h = max(div(body_h, 3), 1)
     preview_h = max(body_h - list_h, 1)
-    max(preview_h - 1, 1)
+    max(preview_h - 1 - length(model.preview_footer), 1)
   end
 
   # ---- readline-style filter editing -------------------------------------

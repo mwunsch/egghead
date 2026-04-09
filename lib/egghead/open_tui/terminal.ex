@@ -80,6 +80,7 @@ defmodule Egghead.OpenTUI.Terminal do
 
     {:ok, handle} = Bridge.create_renderer(width, height)
     :ok = Bridge.setup_terminal(handle)
+    :ok = Bridge.enable_mouse(handle, false)
 
     state = %{handle: handle, width: width, height: height, suspended?: false}
     {:ok, state}
@@ -123,6 +124,7 @@ defmodule Egghead.OpenTUI.Terminal do
     :ok = Bridge.enter_raw_mode()
     {:ok, handle} = Bridge.create_renderer(width, height)
     :ok = Bridge.setup_terminal(handle)
+    :ok = Bridge.enable_mouse(handle, false)
 
     {:reply, :ok,
      %{state | handle: handle, width: width, height: height, suspended?: false}}

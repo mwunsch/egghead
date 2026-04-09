@@ -213,4 +213,23 @@ defmodule Egghead.OpenTUI.Bridge do
   @spec set_cursor_position(non_neg_integer(), non_neg_integer(), non_neg_integer(), boolean()) :: :ok
   def set_cursor_position(_handle, _x, _y, _visible),
     do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Enable SGR mouse tracking via OpenTUI. Once enabled, the
+  terminal sends mouse events as `ESC [ < button ; col ; row M`
+  (press) and `ESC [ < button ; col ; row m` (release) sequences,
+  distinct from arrow-key escape sequences. The input parser
+  decodes them via `Egghead.OpenTUI.Input`.
+
+  `enable_movement` controls whether bare-motion events (mouse
+  moving without buttons held) are reported. Wheel events
+  arrive regardless.
+  """
+  @spec enable_mouse(non_neg_integer(), boolean()) :: :ok
+  def enable_mouse(_handle, _enable_movement),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc "Disable mouse tracking. Idempotent."
+  @spec disable_mouse(non_neg_integer()) :: :ok
+  def disable_mouse(_handle), do: :erlang.nif_error(:nif_not_loaded)
 end

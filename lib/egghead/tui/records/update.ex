@@ -18,6 +18,7 @@ defmodule Egghead.TUI.Records.Update do
                           or follow active link in link-nav mode)
       PgUp / PgDn        scroll preview pane ±5 lines
       Ctrl+N / Ctrl+P    scroll preview pane ±5 lines (emacs)
+      Mouse wheel        scroll preview pane ±3 lines
 
     Link navigation (preview pane wikilinks + backlinks)
       Tab                enter link mode and select next link
@@ -137,6 +138,19 @@ defmodule Egghead.TUI.Records.Update do
   # already redraws every frame, so we just accept the keystroke
   # so it isn't surfaced as an unknown byte.
   def update({:key, :ctrl_l}, model), do: {model, :none}
+
+  # Mouse wheel scrolls the preview pane. We don't bind clicks
+  # yet — `:other` mouse events are silently swallowed so they
+  # don't bubble up to the unknown-key fallback. Wheel uses a
+  # smaller step (3 lines) than PgUp/PgDn (5 lines) since wheel
+  # events arrive in a continuous stream.
+  def update({:mouse, %{kind: :wheel_up, press?: true}}, model),
+    do: {Model.scroll_preview(model, -3), :none}
+
+  def update({:mouse, %{kind: :wheel_down, press?: true}}, model),
+    do: {Model.scroll_preview(model, +3), :none}
+
+  def update({:mouse, _}, model), do: {model, :none}
 
   def update(_other, model), do: {model, :none}
 

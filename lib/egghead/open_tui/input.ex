@@ -29,6 +29,11 @@ defmodule Egghead.OpenTUI.Input do
     * `{:key, :enter}` — CR (0x0D) / LF (0x0A)
     * `{:key, :up | :down | :left | :right}` — CSI arrows
     * `{:key, :page_up | :page_down}` — CSI 5~ / 6~
+    * `{:mouse, %{kind: :wheel_up | :wheel_down | :other,
+                  press?: boolean(), col: integer(), row: integer()}}`
+      — SGR mouse event (mode ?1006). Wheel events arrive as
+      kind `:wheel_up` (button 64) / `:wheel_down` (button 65);
+      everything else (clicks, drags, motion) is `:other`.
     * `{:key, {:byte, n}}` — an unrecognized control byte
     * `{:key, :unknown}` — an unrecognized escape sequence
     * `{:key, :eof}` — the tty closed
@@ -101,10 +106,11 @@ defmodule Egghead.OpenTUI.Input do
   end
 
   # CSI sequences after `ESC [`. Single-letter arrow forms
-  # (`A`/`B`/`C`/`D`) and the digit-prefixed `5~` (Page Up) and
-  # `6~` (Page Down) forms. We give CSI follow-bytes the same
-  # 50ms window: under normal conditions they arrive in the same
-  # write as `ESC [`, but a slow tty shouldn't drop arrow keys.
+  # (`A`/`B`/`C`/`D`), the digit-prefixed `5~` (Page Up) and
+  # `6~` (Page Down) forms, and `<` for SGR mouse events. We
+  # give CSI follow-bytes the same 50ms window: under normal
+  # conditions they arrive in the same write as `ESC [`, but a
+  # slow tty shouldn't drop arrow keys.
   defp parse_csi do
     case Bridge.read_key(@esc_timeout_ms) do
       {:ok, ?A} -> {:key, :up}
@@ -114,6 +120,7 @@ defmodule Egghead.OpenTUI.Input do
       {:ok, ?Z} -> {:key, :shift_tab}
       {:ok, ?5} -> consume_tilde(:page_up)
       {:ok, ?6} -> consume_tilde(:page_down)
+      {:ok, ?<} -> parse_sgr_mouse()
       _ -> {:key, :unknown}
     end
   end
@@ -122,6 +129,80 @@ defmodule Egghead.OpenTUI.Input do
     case Bridge.read_key(@esc_timeout_ms) do
       {:ok, ?~} -> {:key, key}
       _ -> {:key, :unknown}
+    end
+  end
+
+  # SGR mouse encoding (xterm mode ?1006):
+  #
+  #     ESC [ < button ; col ; row M    (press / wheel)
+  #     ESC [ < button ; col ; row m    (release)
+  #
+  # Buttons:
+  #   0 / 1 / 2  — left / middle / right
+  #   + 4         shift held
+  #   + 8         meta held
+  #   + 16        ctrl held
+  #   + 32        motion (button held while moving)
+  #   64          wheel up
+  #   65          wheel down
+  #   66          wheel left
+  #   67          wheel right
+  #
+  # We collect bytes until M or m, then decode. We only
+  # special-case wheel-up / wheel-down (the most common case for
+  # a TUI); everything else surfaces as `:other` so the screen
+  # can ignore or extend later.
+  defp parse_sgr_mouse, do: read_mouse_params([], 0)
+
+  # Cap the parameter buffer at 64 bytes — a real SGR mouse
+  # sequence is at most ~16 bytes. Anything past the cap is a
+  # garbled sequence; bail to :unknown so we don't loop forever.
+  defp read_mouse_params(_acc, count) when count >= 64, do: {:key, :unknown}
+
+  defp read_mouse_params(acc, count) do
+    case Bridge.read_key(@esc_timeout_ms) do
+      {:ok, ?M} -> finalize_mouse(acc, true)
+      {:ok, ?m} -> finalize_mouse(acc, false)
+      {:ok, byte} -> read_mouse_params([byte | acc], count + 1)
+      _ -> {:key, :unknown}
+    end
+  end
+
+  defp finalize_mouse(reversed_bytes, press?) do
+    params =
+      reversed_bytes
+      |> Enum.reverse()
+      |> List.to_string()
+      |> String.split(";")
+      |> Enum.map(&parse_int/1)
+
+    case params do
+      [button, col, row] when is_integer(button) and is_integer(col) and is_integer(row) ->
+        kind = decode_mouse_button(button)
+        {:mouse, %{kind: kind, press?: press?, col: col, row: row}}
+
+      _ ->
+        {:key, :unknown}
+    end
+  end
+
+  defp parse_int(s) do
+    case Integer.parse(s) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
+
+  # Mask off the modifier bits (shift/meta/ctrl/motion) so
+  # 64+motion still decodes to wheel_up. Modifier and motion
+  # state isn't surfaced yet — easy to add later.
+  defp decode_mouse_button(button) do
+    base = Bitwise.band(button, Bitwise.bnot(32))
+
+    case base do
+      64 -> :wheel_up
+      65 -> :wheel_down
+      _ -> :other
     end
   end
 end

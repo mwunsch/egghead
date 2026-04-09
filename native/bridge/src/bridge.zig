@@ -65,6 +65,8 @@ extern fn bufferFillRect(
 ) void;
 extern fn resizeRenderer(renderer: *anyopaque, width: u32, height: u32) void;
 extern fn setCursorPosition(renderer: *anyopaque, x: i32, y: i32, visible: bool) void;
+extern fn enableMouse(renderer: *anyopaque, enableMovement: bool) void;
+extern fn disableMouse(renderer: *anyopaque) void;
 
 // ---- Handle registry -------------------------------------------------------
 
@@ -590,6 +592,45 @@ fn nif_set_cursor_position(
     return atom(env, "ok");
 }
 
+fn nif_enable_mouse(
+    env: ?*erl.ErlNifEnv,
+    argc: c_int,
+    argv: [*c]const erl.ERL_NIF_TERM,
+) callconv(.c) erl.ERL_NIF_TERM {
+    // enable_mouse(handle, enable_movement?) — turns on SGR mouse
+    // tracking via OpenTUI (ANSI sequences ?1000h + ?1006h). Wheel
+    // events become "ESC [ < button ; col ; row M" / "m" sequences
+    // distinct from arrow-key presses, which lets the input parser
+    // route them differently.
+    if (argc != 2) return badarg(env);
+
+    var id: u64 = 0;
+    if (erl.enif_get_uint64(env, argv[0], &id) == 0) return badarg(env);
+
+    const movement_atom = argv[1];
+    const true_atom = atom(env, "true");
+    const movement = erl.enif_compare(movement_atom, true_atom) == 0;
+
+    const ptr = registry().getRenderer(id) orelse return badarg(env);
+    enableMouse(ptr, movement);
+    return atom(env, "ok");
+}
+
+fn nif_disable_mouse(
+    env: ?*erl.ErlNifEnv,
+    argc: c_int,
+    argv: [*c]const erl.ERL_NIF_TERM,
+) callconv(.c) erl.ERL_NIF_TERM {
+    if (argc != 1) return badarg(env);
+
+    var id: u64 = 0;
+    if (erl.enif_get_uint64(env, argv[0], &id) == 0) return badarg(env);
+
+    const ptr = registry().getRenderer(id) orelse return badarg(env);
+    disableMouse(ptr);
+    return atom(env, "ok");
+}
+
 fn nif_destroy_renderer(
     env: ?*erl.ErlNifEnv,
     argc: c_int,
@@ -626,6 +667,8 @@ const nif_funcs = [_]erl.ErlNifFunc{
     .{ .name = "fill_rect", .arity = 6, .fptr = nif_fill_rect, .flags = 0 },
     .{ .name = "resize", .arity = 3, .fptr = nif_resize, .flags = 0 },
     .{ .name = "set_cursor_position", .arity = 4, .fptr = nif_set_cursor_position, .flags = 0 },
+    .{ .name = "enable_mouse", .arity = 2, .fptr = nif_enable_mouse, .flags = 0 },
+    .{ .name = "disable_mouse", .arity = 1, .fptr = nif_disable_mouse, .flags = 0 },
 };
 
 fn on_load(

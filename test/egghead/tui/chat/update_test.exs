@@ -2,7 +2,7 @@ defmodule Egghead.TUI.Chat.UpdateTest do
   use ExUnit.Case, async: true
 
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Model, Paste, Update}
+  alias Egghead.TUI.Chat.{Entry, Mentions, Model, Paste, Update}
   alias Egghead.Chat.Room.{Message, Sender}
 
   defp put_input(model, text) do
@@ -223,6 +223,37 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert EditBuffer.cursor(m_down.input) == {1, 3}
       {m_up, :none} = Update.update({:key, :up}, m_down)
       assert EditBuffer.cursor(m_up.input) == {0, 3}
+    end
+  end
+
+  describe "mention autocomplete" do
+    test "typing @ sets an :agent mention context" do
+      {m, :none} = Update.update({:char, "@"}, model())
+      assert %Mentions.Context{kind: :agent, prefix: ""} = m.mention
+    end
+
+    test "typing [[ sets a :record mention context" do
+      {m, :none} = Update.update({:char, "["}, model())
+      {m, :none} = Update.update({:char, "["}, m)
+      assert %Mentions.Context{kind: :record, prefix: ""} = m.mention
+    end
+
+    test "typing a non-sigil leaves mention nil" do
+      {m, :none} = Update.update({:char, "h"}, model())
+      assert m.mention == nil
+    end
+
+    test "tab with no candidates is a no-op" do
+      m = put_input(model(), "@zzz-no-such-agent")
+      {m2, :none} = Update.update({:key, :tab}, m)
+      assert Model.input_text(m2) == Model.input_text(m)
+    end
+
+    test "clear_input wipes the mention context" do
+      {m, :none} = Update.update({:char, "@"}, model())
+      assert m.mention != nil
+      m = Model.clear_input(m)
+      assert m.mention == nil
     end
   end
 

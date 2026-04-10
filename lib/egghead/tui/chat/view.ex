@@ -26,7 +26,7 @@ defmodule Egghead.TUI.Chat.View do
   import Egghead.OpenTUI.View
 
   alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer}
-  alias Egghead.TUI.Chat.{Entry, Model, Paste, Stream}
+  alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste, Stream}
 
   @prompt "❯ "
   @continuation "  "
@@ -38,15 +38,30 @@ defmodule Egghead.TUI.Chat.View do
     height = model.height
 
     input_height = clamp(EditBuffer.line_count(model.input), 1, @max_input_rows)
-    transcript_height = max(height - 2 - input_height, 1)
+    dropdown_height = mention_dropdown_height(model)
+    transcript_height = max(height - 2 - input_height - dropdown_height, 1)
 
-    vbox([
-      header(model, width),
-      transcript_region(model, width, transcript_height),
-      input_box(model, width, input_height),
-      status_bar(model, width)
-    ])
+    children =
+      [header(model, width), transcript_region(model, width, transcript_height),
+       input_box(model, width, input_height)] ++
+        mention_dropdown_node(model, width, dropdown_height) ++
+        [status_bar(model, width)]
+
+    vbox(children)
   end
+
+  @max_dropdown_rows 6
+
+  defp mention_dropdown_height(%Model{mention: %Mentions.Context{candidates: [_ | _] = cs}}),
+    do: min(length(cs), @max_dropdown_rows)
+
+  defp mention_dropdown_height(_), do: 0
+
+  defp mention_dropdown_node(%Model{} = model, width, h) when h > 0 do
+    [mention_dropdown(model, width, h)]
+  end
+
+  defp mention_dropdown_node(_, _, _), do: []
 
   defp clamp(n, lo, hi), do: n |> max(lo) |> min(hi)
 
@@ -220,6 +235,61 @@ defmodule Egghead.TUI.Chat.View do
     end
   end
 
+  # ---- mention dropdown ----------------------------------------------------
+
+  # Vertical autocomplete list anchored above the input row, much
+  # like Claude Code's @-mention picker. Renders up to
+  # `@max_dropdown_rows` candidates with the selected one in
+  # reverse-video. Up/Down navigate; Enter or Tab accepts; Escape
+  # dismisses (handled in Update).
+  defp mention_dropdown(%Model{mention: %Mentions.Context{} = ctx}, width, h) do
+    sigil =
+      case ctx.kind do
+        :agent -> "@"
+        :record -> "[["
+      end
+
+    rows =
+      ctx.candidates
+      |> Enum.take(h)
+      |> Enum.with_index()
+      |> Enum.map(fn {cand, idx} ->
+        mention_dropdown_row(sigil, cand, ctx.kind, idx == ctx.selected, width)
+      end)
+
+    vbox([height: h], rows)
+  end
+
+  defp mention_dropdown_row(sigil, candidate, kind, selected?, width) do
+    label = mention_label(kind, candidate)
+    line = "  #{sigil}#{label}"
+    pad = max(width - String.length(line), 0)
+    padded = line <> String.duplicate(" ", pad)
+
+    if selected? do
+      text(truncate_line(padded, width),
+        height: 1,
+        fg: Colors.white(),
+        bg: Colors.selected_bg()
+      )
+    else
+      text(truncate_line(padded, width),
+        height: 1,
+        fg: Colors.accent(),
+        bg: Colors.bg()
+      )
+    end
+  end
+
+  defp mention_label(:agent, %{id: id}), do: id
+  defp mention_label(:agent, %{"id" => id}), do: id
+  defp mention_label(:record, %{id: id}), do: id
+  defp mention_label(:record, %{"id" => id}), do: id
+
+  defp truncate_line(line, width) do
+    if String.length(line) > width, do: String.slice(line, 0, width), else: line
+  end
+
   # ---- input ---------------------------------------------------------------
 
   # Render the EditBuffer as a stack of `input_height` rows. The
@@ -229,7 +299,7 @@ defmodule Egghead.TUI.Chat.View do
   # is emitted on the cursor row, splitting that row's text at
   # `col` so the renderer can paint a real terminal cursor (same
   # pattern as `Egghead.TUI.Records.View.search/2`).
-  defp input_box(%Model{input: buffer}, _width, input_height) do
+  defp input_box(%Model{input: buffer} = model, _width, input_height) do
     {cursor_row, cursor_col} = EditBuffer.cursor(buffer)
     lines = buffer.lines
     total = length(lines)
@@ -250,18 +320,24 @@ defmodule Egghead.TUI.Chat.View do
       |> Enum.drop(visible_top)
       |> Enum.take(input_height)
 
+    ghost = ghost_text(model)
+
     rows =
       visible_lines
       |> Enum.with_index(visible_top)
       |> Enum.map(fn {cells, idx} ->
         prompt = if idx == 0, do: @prompt, else: @continuation
-        render_input_row(cells, prompt, idx == cursor_row, cursor_col)
+        on_cursor? = idx == cursor_row
+        render_input_row(cells, prompt, on_cursor?, cursor_col, if(on_cursor?, do: ghost, else: ""))
       end)
 
     vbox([height: input_height], rows)
   end
 
-  defp render_input_row(cells, prompt, on_cursor_row?, cursor_col) do
+  defp ghost_text(%Model{mention: nil}), do: ""
+  defp ghost_text(%Model{mention: %Mentions.Context{} = ctx}), do: Mentions.ghost_suffix(ctx)
+
+  defp render_input_row(cells, prompt, on_cursor_row?, cursor_col, ghost) do
     fg = Colors.white()
     prompt_w = String.length(prompt)
     prompt_node = text(prompt, width: prompt_w, fg: fg)
@@ -270,7 +346,15 @@ defmodule Egghead.TUI.Chat.View do
       if on_cursor_row? do
         col = min(cursor_col, length(cells))
         {before, after_} = Enum.split(cells, col)
-        cells_to_nodes(before) ++ [cursor()] ++ cells_to_nodes(after_)
+
+        ghost_nodes =
+          if ghost == "" do
+            []
+          else
+            [text(ghost, width: String.length(ghost), fg: Colors.dim(), attrs: Attrs.italic())]
+          end
+
+        cells_to_nodes(before) ++ [cursor()] ++ ghost_nodes ++ cells_to_nodes(after_)
       else
         cells_to_nodes(cells)
       end
@@ -296,6 +380,7 @@ defmodule Egghead.TUI.Chat.View do
   end
 
   defp chunk_cells([%Paste{} = p | rest]), do: [{:paste, p} | chunk_cells(rest)]
+  defp chunk_cells([%Token{} = t | rest]), do: [{:mention, t} | chunk_cells(rest)]
 
   defp chunk_to_nodes({:text, str}) do
     [text(str, width: String.length(str), fg: Colors.white())]
@@ -331,6 +416,20 @@ defmodule Egghead.TUI.Chat.View do
 
         [head_node, tail_node]
     end
+  end
+
+  # A mention token renders as a single bold leaf. Agent mentions
+  # use the accent colour; record mentions use cyan to echo the
+  # wikilink convention. The tinted background matches paste chips
+  # so all atomic cells share a visual language.
+  defp chunk_to_nodes({:mention, %Token{display: display}}) do
+    [
+      text(display,
+        width: display_width(display),
+        fg: Colors.white(),
+        attrs: Attrs.bold()
+      )
+    ]
   end
 
   # Display columns occupied by a string in a monospace terminal.

@@ -19,7 +19,7 @@ defmodule Egghead.TUI.Chat.Update do
   """
 
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Model, Paste}
+  alias Egghead.TUI.Chat.{Entry, Mentions, Model, Paste}
 
   @spec update(term(), Model.t()) :: {Model.t(), term()}
 
@@ -40,6 +40,13 @@ defmodule Egghead.TUI.Chat.Update do
   def update({:unknown_msg, _}, %Model{} = model), do: {model, :none}
 
   # ---- key bindings: leave / send -----------------------------------------
+
+  # Escape dismisses an open mention dropdown before doing anything
+  # else, so the user can back out of an autocomplete without losing
+  # what they typed.
+  def update({:key, :escape}, %Model{mention: %Mentions.Context{candidates: [_ | _]}} = model) do
+    {%{model | mention: nil}, :none}
+  end
 
   def update({:key, :escape}, %Model{} = model) do
     if Model.input_empty?(model) do
@@ -64,6 +71,16 @@ defmodule Egghead.TUI.Chat.Update do
         {Model.clear_input(model), cmd}
     end
   end
+
+  # Tab accepts the first mention candidate (if any). Otherwise
+  # it's a no-op — we don't insert literal tabs in the input box
+  # because Tab is the universal completion chord.
+  def update({:key, :tab}, %Model{mention: %Mentions.Context{candidates: [_ | _]} = ctx} = model) do
+    new_buffer = Mentions.accept(model.input, ctx)
+    {refresh_mention(Model.set_buffer(model, new_buffer)), :none}
+  end
+
+  def update({:key, :tab}, %Model{} = model), do: {model, :none}
 
   # Shift+Enter and Alt+Enter insert a literal newline. Shift+Enter
   # only arrives from Kitty-protocol terminals (iTerm, kitty, ghostty,
@@ -91,8 +108,16 @@ defmodule Egghead.TUI.Chat.Update do
     {edit(model, &EditBuffer.move_right/1), :none}
   end
 
+  def update({:key, :up}, %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model) do
+    {%{model | mention: Mentions.move_up(ctx)}, :none}
+  end
+
   def update({:key, :up}, %Model{} = model) do
     {edit(model, &EditBuffer.move_up/1), :none}
+  end
+
+  def update({:key, :down}, %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model) do
+    {%{model | mention: Mentions.move_down(ctx)}, :none}
   end
 
   def update({:key, :down}, %Model{} = model) do
@@ -227,9 +252,67 @@ defmodule Egghead.TUI.Chat.Update do
 
   # ---- helpers ------------------------------------------------------------
 
-  # Apply a pure EditBuffer transformation to the model's input.
+  # Apply a pure EditBuffer transformation to the model's input,
+  # then re-detect the mention sigil under the cursor and populate
+  # candidates from the live agent roster / record store.
   defp edit(%Model{input: buffer} = model, fun) when is_function(fun, 1) do
-    Model.set_buffer(model, fun.(buffer))
+    model
+    |> Model.set_buffer(fun.(buffer))
+    |> refresh_mention()
+  end
+
+  defp refresh_mention(%Model{input: buffer} = model) do
+    case Mentions.detect(buffer) do
+      nil ->
+        %{model | mention: nil}
+
+      %Mentions.Context{kind: :agent, prefix: prefix} = ctx ->
+        candidates = Mentions.rank_agents(agents_by_recency(model), prefix)
+        %{model | mention: %{ctx | candidates: candidates}}
+
+      %Mentions.Context{kind: :record, prefix: prefix} = ctx ->
+        candidates = Mentions.rank_records(safe_recent_records(), prefix)
+        %{model | mention: %{ctx | candidates: candidates}}
+    end
+  end
+
+  # Return agents sorted by last activity in the transcript
+  # (most recent first). Agents that haven't spoken fall to the
+  # end in roster order.
+  defp agents_by_recency(%Model{agents: agents, transcript: transcript}) do
+    # Build a map of agent_id → index of last transcript entry.
+    last_seen =
+      transcript
+      |> Enum.with_index()
+      |> Enum.reduce(%{}, fn {entry, idx}, acc ->
+        case entry do
+          %Entry{kind: k, sender_id: sid} when k in [:agent, :action] and sid != nil ->
+            Map.put(acc, sid, idx)
+
+          _ ->
+            acc
+        end
+      end)
+
+    agents
+    |> Enum.sort_by(fn a ->
+      case Map.get(last_seen, a.id) do
+        nil -> {1, a.id}
+        idx -> {0, -idx}
+      end
+    end)
+  end
+
+  # Records sorted by last modified — `Egghead.recent/1` returns
+  # them in `:updated` desc order already.
+  defp safe_recent_records do
+    try do
+      Egghead.recent(limit: 100)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
   end
 
   defp clear_status(%Model{} = model), do: %{model | status_message: nil}

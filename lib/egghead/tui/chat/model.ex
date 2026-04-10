@@ -22,7 +22,7 @@ defmodule Egghead.TUI.Chat.Model do
   """
 
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Stream}
+  alias Egghead.TUI.Chat.{Entry, Mentions, Stream}
 
   defmodule AgentPresence do
     @moduledoc false
@@ -53,6 +53,7 @@ defmodule Egghead.TUI.Chat.Model do
           scroll: non_neg_integer(),
           input: EditBuffer.t(),
           next_paste_id: pos_integer(),
+          mention: Mentions.Context.t() | nil,
           status_message: String.t() | nil,
           anim_frame: non_neg_integer()
         }
@@ -67,6 +68,7 @@ defmodule Egghead.TUI.Chat.Model do
             scroll: 0,
             input: %EditBuffer{},
             next_paste_id: 1,
+            mention: nil,
             status_message: nil,
             anim_frame: 0
 
@@ -171,7 +173,7 @@ defmodule Egghead.TUI.Chat.Model do
   end
 
   @spec clear_input(t()) :: t()
-  def clear_input(%__MODULE__{} = m), do: %{m | input: EditBuffer.new()}
+  def clear_input(%__MODULE__{} = m), do: %{m | input: EditBuffer.new(), mention: nil}
 
   @spec input_text(t()) :: String.t()
   def input_text(%__MODULE__{input: buffer}), do: EditBuffer.to_text(buffer)

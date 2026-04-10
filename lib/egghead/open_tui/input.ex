@@ -30,6 +30,7 @@ defmodule Egghead.OpenTUI.Input do
       keyboard protocol disambiguated Enter chords
     * `{:key, :up | :down | :left | :right}` — CSI arrows
     * `{:key, :page_up | :page_down}` — CSI 5~ / 6~
+    * `{:key, :f1 | :f2 | :f3 | :f4}` — SS3 P/Q/R/S or CSI 11~..14~
     * `{:mouse, %{kind: :wheel_up | :wheel_down | :other,
                   press?: boolean(), col: integer(), row: integer()}}`
       — SGR mouse event (mode ?1006). Wheel events arrive as
@@ -151,6 +152,7 @@ defmodule Egghead.OpenTUI.Input do
       :timeout -> {:key, :escape}
       :eof -> {:key, :escape}
       {:ok, ?[} -> parse_csi(reader)
+      {:ok, ?O} -> parse_ss3(reader)
       {:ok, ?b} -> {:key, :alt_b}
       {:ok, ?d} -> {:key, :alt_d}
       {:ok, ?f} -> {:key, :alt_f}
@@ -169,6 +171,18 @@ defmodule Egghead.OpenTUI.Input do
     case reader.(@esc_timeout_ms) do
       {:ok, ?<} -> parse_sgr_mouse(reader)
       {:ok, b} -> read_csi_params(reader, [b], 1)
+      _ -> {:key, :unknown}
+    end
+  end
+
+  # SS3 sequences (ESC O <letter>). Many terminals send F1–F4
+  # as SS3 P/Q/R/S rather than CSI 11~..14~.
+  defp parse_ss3(reader) do
+    case reader.(@esc_timeout_ms) do
+      {:ok, ?P} -> {:key, :f1}
+      {:ok, ?Q} -> {:key, :f2}
+      {:ok, ?R} -> {:key, :f3}
+      {:ok, ?S} -> {:key, :f4}
       _ -> {:key, :unknown}
     end
   end
@@ -199,6 +213,8 @@ defmodule Egghead.OpenTUI.Input do
   defp dispatch_csi("", ?Z, _), do: {:key, :shift_tab}
   defp dispatch_csi("5", ?~, _), do: {:key, :page_up}
   defp dispatch_csi("6", ?~, _), do: {:key, :page_down}
+  defp dispatch_csi("11", ?~, _), do: {:key, :f1}
+  defp dispatch_csi("12", ?~, _), do: {:key, :f2}
   defp dispatch_csi("200", ?~, reader), do: read_paste(reader, [], 0)
   defp dispatch_csi(params, ?u, _), do: decode_kitty_u(params)
   defp dispatch_csi(_, _, _), do: {:key, :unknown}

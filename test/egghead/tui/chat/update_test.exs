@@ -124,15 +124,15 @@ defmodule Egghead.TUI.Chat.UpdateTest do
   end
 
   describe "key bindings" do
-    test "escape on empty input returns to records mode" do
+    test "escape is a no-op (no navigation or clearing)" do
       {_m, cmd} = Update.update({:key, :escape}, model())
-      assert cmd == {:switch_screen, :records, []}
+      assert cmd == :none
     end
 
-    test "escape with input clears the input instead of leaving" do
+    test "escape with input does not clear it" do
       m = put_input(model(), "draft")
       {m, cmd} = Update.update({:key, :escape}, m)
-      assert Model.input_text(m) == ""
+      assert Model.input_text(m) == "draft"
       assert cmd == :none
     end
 
@@ -254,6 +254,117 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert m.mention != nil
       m = Model.clear_input(m)
       assert m.mention == nil
+    end
+  end
+
+  describe "slash commands" do
+    test "/quit returns :halt" do
+      m = put_input(model(), "/quit")
+      {_m, cmd} = Update.update({:key, :enter}, m)
+      assert cmd == :halt
+    end
+
+    test "/exit is an alias for /quit" do
+      m = put_input(model(), "/exit")
+      {_m, cmd} = Update.update({:key, :enter}, m)
+      assert cmd == :halt
+    end
+
+    test "/leave switches to records" do
+      m = put_input(model(), "/leave")
+      {_m, cmd} = Update.update({:key, :enter}, m)
+      assert cmd == {:switch_screen, :records, []}
+    end
+
+    test "/part is an alias for /leave" do
+      m = put_input(model(), "/part")
+      {_m, cmd} = Update.update({:key, :enter}, m)
+      assert cmd == {:switch_screen, :records, []}
+    end
+
+    test "/help appends a system entry" do
+      m = put_input(model(), "/help")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert Model.input_empty?(m)
+      assert [%Entry{kind: :system}] = m.transcript
+    end
+
+    test "/continue appends a system entry and fires :exec" do
+      m = put_input(model(), "/continue")
+      {m, cmd} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "renewed"
+      assert match?({:exec, _}, cmd)
+    end
+
+    test "/handoff without arg shows usage" do
+      m = put_input(model(), "/handoff")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "Usage"
+    end
+
+    test "/handoff with arg fires :exec" do
+      m = put_input(model(), "/handoff agents/scout")
+      {m, cmd} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "agents/scout"
+      assert match?({:exec, _}, cmd)
+    end
+
+    test "unknown command appends error" do
+      m = put_input(model(), "/nope")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "Unknown"
+    end
+  end
+
+  describe "command autocomplete" do
+    test "typing / activates the command dropdown" do
+      {m, :none} = Update.update({:char, "/"}, model())
+      assert m.command != nil
+      assert length(m.command.candidates) > 0
+    end
+
+    test "typing /q narrows to quit" do
+      m = put_input(model(), "/q")
+      # Simulate the edit flow by going through a char insert
+      {m, :none} = Update.update({:char, "u"}, m)
+      assert m.command != nil
+      assert Enum.any?(m.command.candidates, &(&1.name == "quit"))
+    end
+
+    test "tab completes the selected command" do
+      {m, :none} = Update.update({:char, "/"}, model())
+      {m, :none} = Update.update({:char, "q"}, m)
+      assert m.command != nil
+      {m, :none} = Update.update({:key, :tab}, m)
+      assert Model.input_text(m) =~ "/quit "
+    end
+
+    test "enter with dropdown open fills the input (same as tab)" do
+      {m, :none} = Update.update({:char, "/"}, model())
+      {m, :none} = Update.update({:key, :down}, m)
+      selected_name = Enum.at(m.command.candidates, m.command.selected).name
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert Model.input_text(m) == "/#{selected_name} "
+    end
+
+    test "escape dismisses command dropdown" do
+      {m, :none} = Update.update({:char, "/"}, model())
+      assert m.command != nil
+      {m, :none} = Update.update({:key, :escape}, m)
+      assert m.command == nil
+    end
+
+    test "up/down navigate the command dropdown" do
+      {m, :none} = Update.update({:char, "/"}, model())
+      assert m.command.selected == 0
+      {m, :none} = Update.update({:key, :down}, m)
+      assert m.command.selected == 1
+      {m, :none} = Update.update({:key, :up}, m)
+      assert m.command.selected == 0
     end
   end
 

@@ -37,15 +37,24 @@ defmodule Egghead.TUI.App do
   @type t :: %__MODULE__{
           screen: screen(),
           records: term() | nil,
-          chat: term() | nil
+          chat: term() | nil,
+          providers?: boolean()
         }
 
-  defstruct screen: :records, records: nil, chat: nil
+  defstruct screen: :records, records: nil, chat: nil, providers?: false
 
   @impl true
   def init(opts) do
     {records_model, records_cmd} = Records.init(opts)
-    state = %__MODULE__{screen: :records, records: records_model}
+    has_providers = detect_providers()
+    records_model = %{records_model | providers?: has_providers}
+
+    state = %__MODULE__{
+      screen: :records,
+      records: records_model,
+      providers?: has_providers
+    }
+
     {state, records_cmd}
   end
 
@@ -61,6 +70,22 @@ defmodule Egghead.TUI.App do
     do: Chat.subscriptions(m)
 
   @impl true
+  # F1 → Records, F2 → Chat (only if providers are configured).
+  # Intercepted here so screens don't need to know about each other.
+  def update({:key, :f1}, %__MODULE__{screen: :records} = state), do: {state, :none}
+
+  def update({:key, :f1}, %__MODULE__{} = state) do
+    handle_cmd({:switch_screen, :records, []}, state)
+  end
+
+  def update({:key, :f2}, %__MODULE__{screen: :chat} = state), do: {state, :none}
+
+  def update({:key, :f2}, %__MODULE__{providers?: true} = state) do
+    handle_cmd({:switch_screen, :chat, [room_id: default_room_id()]}, state)
+  end
+
+  def update({:key, :f2}, %__MODULE__{} = state), do: {state, :none}
+
   def update(msg, %__MODULE__{screen: :records, records: rm} = state) do
     # Resize messages must reach every screen the model owns so
     # the inactive one is correctly sized when the user switches
@@ -110,7 +135,12 @@ defmodule Egghead.TUI.App do
     case state.chat do
       nil ->
         {chat_model, chat_cmd} = Chat.init(init_arg || [])
-        chat_model = seed_dimensions(chat_model, state.records)
+
+        chat_model =
+          chat_model
+          |> seed_dimensions(state.records)
+          |> Map.put(:providers?, state.providers?)
+
         {%{state | screen: :chat, chat: chat_model}, chat_cmd}
 
       _existing ->
@@ -131,4 +161,24 @@ defmodule Egghead.TUI.App do
   end
 
   defp seed_dimensions(chat_model, _), do: chat_model
+
+  defp detect_providers do
+    try do
+      Egghead.LLM.Registry.list_providers() != []
+    rescue
+      _ -> false
+    catch
+      _, _ -> false
+    end
+  end
+
+  defp default_room_id do
+    try do
+      Egghead.default_room()
+    rescue
+      _ -> "default"
+    catch
+      _, _ -> "default"
+    end
+  end
 end

@@ -54,8 +54,10 @@ defmodule Egghead.TUI.Chat.Model do
           input: EditBuffer.t(),
           next_paste_id: pos_integer(),
           mention: Mentions.Context.t() | nil,
+          command: map() | nil,
           status_message: String.t() | nil,
-          anim_frame: non_neg_integer()
+          anim_frame: non_neg_integer(),
+          providers?: boolean()
         }
 
   defstruct room_id: nil,
@@ -69,8 +71,10 @@ defmodule Egghead.TUI.Chat.Model do
             input: %EditBuffer{},
             next_paste_id: 1,
             mention: nil,
+            command: nil,
             status_message: nil,
-            anim_frame: 0
+            anim_frame: 0,
+            providers?: false
 
   @doc """
   Build a fresh model. The `:room_id` opt is required for the
@@ -173,7 +177,7 @@ defmodule Egghead.TUI.Chat.Model do
   end
 
   @spec clear_input(t()) :: t()
-  def clear_input(%__MODULE__{} = m), do: %{m | input: EditBuffer.new(), mention: nil}
+  def clear_input(%__MODULE__{} = m), do: %{m | input: EditBuffer.new(), mention: nil, command: nil}
 
   @spec input_text(t()) :: String.t()
   def input_text(%__MODULE__{input: buffer}), do: EditBuffer.to_text(buffer)

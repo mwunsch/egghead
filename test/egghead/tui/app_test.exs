@@ -30,11 +30,23 @@ defmodule Egghead.TUI.AppTest do
       assert is_struct(state.chat, Chat.Model)
     end
 
-    test "Esc in chat mode bubbles a switch_screen cmd back to records" do
+    test "F1 in chat mode switches back to records" do
       state = %App{screen: :chat, records: %Records.Model{}, chat: %Chat.Model{}}
 
-      {state, _cmd} = App.update({:key, :escape}, state)
+      {state, _cmd} = App.update({:key, :f1}, state)
 
+      assert state.screen == :records
+    end
+
+    test "F2 switches to chat when providers are available" do
+      state = %App{screen: :records, records: %Records.Model{}, chat: nil, providers?: true}
+      {state, _cmd} = App.update({:key, :f2}, state)
+      assert state.screen == :chat
+    end
+
+    test "F2 is a no-op when no providers" do
+      state = %App{screen: :records, records: %Records.Model{}, chat: nil, providers?: false}
+      {state, _cmd} = App.update({:key, :f2}, state)
       assert state.screen == :records
     end
 
@@ -52,8 +64,8 @@ defmodule Egghead.TUI.AppTest do
         chat: original_chat
       }
 
-      # Chat → records via Esc.
-      {state, _} = App.update({:key, :escape}, state)
+      # Chat → records via F1.
+      {state, _} = App.update({:key, :f1}, state)
       assert state.screen == :records
 
       # Records → chat via the command palette.

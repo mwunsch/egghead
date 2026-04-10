@@ -38,13 +38,13 @@ defmodule Egghead.TUI.Chat.View do
     height = model.height
 
     input_height = clamp(EditBuffer.line_count(model.input), 1, @max_input_rows)
-    dropdown_height = mention_dropdown_height(model)
-    transcript_height = max(height - 2 - input_height - dropdown_height, 1)
+    dd_height = dropdown_height(model)
+    transcript_height = max(height - 2 - input_height - dd_height, 1)
 
     children =
       [header(model, width), transcript_region(model, width, transcript_height),
        input_box(model, width, input_height)] ++
-        mention_dropdown_node(model, width, dropdown_height) ++
+        dropdown_node(model, width, dd_height) ++
         [status_bar(model, width)]
 
     vbox(children)
@@ -52,28 +52,32 @@ defmodule Egghead.TUI.Chat.View do
 
   @max_dropdown_rows 6
 
-  defp mention_dropdown_height(%Model{mention: %Mentions.Context{candidates: [_ | _] = cs}}),
+  defp dropdown_height(%Model{command: %{candidates: [_ | _] = cs}}),
     do: min(length(cs), @max_dropdown_rows)
 
-  defp mention_dropdown_height(_), do: 0
+  defp dropdown_height(%Model{mention: %Mentions.Context{candidates: [_ | _] = cs}}),
+    do: min(length(cs), @max_dropdown_rows)
 
-  defp mention_dropdown_node(%Model{} = model, width, h) when h > 0 do
+  defp dropdown_height(_), do: 0
+
+  defp dropdown_node(%Model{command: %{candidates: [_ | _]}} = model, width, h) when h > 0 do
+    [command_dropdown(model, width, h)]
+  end
+
+  defp dropdown_node(%Model{mention: %Mentions.Context{candidates: [_ | _]}} = model, width, h) when h > 0 do
     [mention_dropdown(model, width, h)]
   end
 
-  defp mention_dropdown_node(_, _, _), do: []
+  defp dropdown_node(_, _, _), do: []
 
   defp clamp(n, lo, hi), do: n |> max(lo) |> min(hi)
 
   # ---- header --------------------------------------------------------------
 
   defp header(model, width) do
-    label =
-      " egghead · ##{model.room_id || "—"} · #{length(model.agents)} agents · #{length(model.transcript)} msgs "
+    context = "##{model.room_id || "—"} · #{length(model.agents)} agents · #{length(model.transcript)} msgs"
 
-    line = pad_to(label, width)
-
-    text(line, height: 1, fg: Colors.white(), bg: Colors.selected_bg())
+    Egghead.TUI.Header.render(:chat, context, width, model.providers?)
   end
 
   # ---- transcript ----------------------------------------------------------
@@ -286,6 +290,40 @@ defmodule Egghead.TUI.Chat.View do
   defp mention_label(:record, %{id: id}), do: id
   defp mention_label(:record, %{"id" => id}), do: id
 
+  # ---- command dropdown ----------------------------------------------------
+
+  defp command_dropdown(%Model{command: %{candidates: candidates, selected: selected}}, width, h) do
+    rows =
+      candidates
+      |> Enum.take(h)
+      |> Enum.with_index()
+      |> Enum.map(fn {cmd, idx} ->
+        command_dropdown_row(cmd, idx == selected, width)
+      end)
+
+    vbox([height: h], rows)
+  end
+
+  defp command_dropdown_row(%{name: name, description: desc}, selected?, width) do
+    line = "  /#{name} — #{desc}"
+    pad = max(width - String.length(line), 0)
+    padded = line <> String.duplicate(" ", pad)
+
+    if selected? do
+      text(truncate_line(padded, width),
+        height: 1,
+        fg: Colors.white(),
+        bg: Colors.selected_bg()
+      )
+    else
+      text(truncate_line(padded, width),
+        height: 1,
+        fg: Colors.accent(),
+        bg: Colors.bg()
+      )
+    end
+  end
+
   defp truncate_line(line, width) do
     if String.length(line) > width, do: String.slice(line, 0, width), else: line
   end
@@ -450,7 +488,7 @@ defmodule Egghead.TUI.Chat.View do
   # ---- status --------------------------------------------------------------
 
   defp status_bar(%Model{status_message: nil}, width) do
-    label = " CHAT │ ⏎ send │ esc records │ ^q quit "
+    label = " CHAT │ ⏎ send │ /cmd │ F1 records │ ^q quit "
     text(pad_to(label, width), height: 1, fg: Colors.white(), bg: Colors.selected_bg())
   end
 

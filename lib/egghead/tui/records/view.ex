@@ -64,19 +64,11 @@ defmodule Egghead.TUI.Records.View do
   # ---- panes --------------------------------------------------------------
 
   defp header(model, width) do
-    left = " egghead"
     count = length(model.filtered)
     filter_label = if model.show_all_classes, do: "all", else: "durable"
-    right = "#{filter_label} · #{count} records "
+    context = "#{filter_label} · #{count} records"
 
-    pad_size = max(width - String.length(left) - String.length(right), 0)
-    line = left <> String.duplicate(" ", pad_size) <> right
-
-    text(truncate(line, width),
-      height: 1,
-      fg: Colors.white(),
-      bg: Colors.selected_bg()
-    )
+    Egghead.TUI.Header.render(:records, context, width, model.providers?)
   end
 
   defp search(%Model{command_mode: true} = model, _width) do

@@ -56,7 +56,8 @@ defmodule Egghead.TUI.Records.Model do
           command_mode: boolean(),
           command_input: String.t(),
           command_cursor: non_neg_integer(),
-          command_selected: non_neg_integer()
+          command_selected: non_neg_integer(),
+          providers?: boolean()
         }
 
   defstruct width: 80,
@@ -82,7 +83,8 @@ defmodule Egghead.TUI.Records.Model do
             command_mode: false,
             command_input: "",
             command_cursor: 0,
-            command_selected: 0
+            command_selected: 0,
+            providers?: false
 
   # The records-mode command palette. Each entry has a `name`
   # (the part the user types after `/`) and a one-line

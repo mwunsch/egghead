@@ -85,6 +85,24 @@ defmodule Egghead.OpenTUI.InputTest do
     end
   end
 
+  describe "F-keys" do
+    test "ESC O P → :f1 (SS3 form)" do
+      assert {:key, :f1} == Input.parse(reader([0x1B, ?O, ?P]))
+    end
+
+    test "ESC O Q → :f2 (SS3 form)" do
+      assert {:key, :f2} == Input.parse(reader([0x1B, ?O, ?Q]))
+    end
+
+    test "ESC [ 11 ~ → :f1 (CSI tilde form)" do
+      assert {:key, :f1} == Input.parse(reader([0x1B, ?[, ?1, ?1, ?~]))
+    end
+
+    test "ESC [ 12 ~ → :f2 (CSI tilde form)" do
+      assert {:key, :f2} == Input.parse(reader([0x1B, ?[, ?1, ?2, ?~]))
+    end
+  end
+
   describe "Kitty CSI u" do
     test "ESC [ 13 u → :enter (bare Enter via Kitty protocol)" do
       assert {:key, :enter} == Input.parse(reader([0x1B, ?[, ?1, ?3, ?u]))

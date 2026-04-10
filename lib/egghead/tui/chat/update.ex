@@ -21,6 +21,28 @@ defmodule Egghead.TUI.Chat.Update do
   alias Egghead.OpenTUI.EditBuffer
   alias Egghead.TUI.Chat.{Entry, Mentions, Model, Paste}
 
+  # Canonical command list for the dropdown. Aliases (/exit, /part)
+  # are not shown in the dropdown but are accepted on dispatch.
+  @chat_command_list [
+    %{name: "save", description: "Save transcript as a record"},
+    %{name: "continue", description: "Grant agents more turns"},
+    %{name: "handoff", description: "Handoff an agent's context"},
+    %{name: "leave", description: "Return to records (F1)"},
+    %{name: "help", description: "Show keybindings & commands"},
+    %{name: "quit", description: "Exit the TUI"}
+  ]
+
+  @chat_commands %{
+    "quit" => :cmd_quit,
+    "exit" => :cmd_quit,
+    "leave" => :cmd_leave,
+    "part" => :cmd_leave,
+    "save" => :cmd_save,
+    "continue" => :cmd_continue,
+    "handoff" => :cmd_handoff,
+    "help" => :cmd_help
+  }
+
   @spec update(term(), Model.t()) :: {Model.t(), term()}
 
   # ---- runtime synthetic --------------------------------------------------
@@ -41,43 +63,56 @@ defmodule Egghead.TUI.Chat.Update do
 
   # ---- key bindings: leave / send -----------------------------------------
 
-  # Escape dismisses an open mention dropdown before doing anything
-  # else, so the user can back out of an autocomplete without losing
-  # what they typed.
+  # Escape dismisses an open mention dropdown. Otherwise it's a
+  # no-op — screen switching uses F1/F2, and clearing input isn't
+  # expected Esc behavior. Future: interrupt active agents.
+  def update({:key, :escape}, %Model{command: %{candidates: [_ | _]}} = model) do
+    {%{model | command: nil}, :none}
+  end
+
   def update({:key, :escape}, %Model{mention: %Mentions.Context{candidates: [_ | _]}} = model) do
     {%{model | mention: nil}, :none}
   end
 
-  def update({:key, :escape}, %Model{} = model) do
-    if Model.input_empty?(model) do
-      {model, {:switch_screen, :records, []}}
-    else
-      {Model.clear_input(model), :none}
-    end
+  def update({:key, :escape}, %Model{} = model), do: {model, :none}
+
+  # When the command dropdown is open, Enter fills the input (same as Tab).
+  def update({:key, :enter}, %Model{command: %{candidates: [_ | _]} = ctx} = model) do
+    chosen = Enum.at(ctx.candidates, ctx.selected)
+    new_buffer = EditBuffer.from_text("/#{chosen.name} ")
+    {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
   end
 
   def update({:key, :enter}, %Model{} = model) do
+    text = Model.input_text(model)
+
     cond do
       Model.input_empty?(model) ->
         {model, :none}
+
+      String.starts_with?(text, "/") ->
+        dispatch_command(text, model)
 
       model.room_id == nil ->
         {model, :none}
 
       true ->
-        text = Model.input_text(model)
         room_id = model.room_id
         cmd = {:exec, fn -> send_message(room_id, text) end}
         {Model.clear_input(model), cmd}
     end
   end
 
-  # Tab accepts the first mention candidate (if any). Otherwise
-  # it's a no-op — we don't insert literal tabs in the input box
-  # because Tab is the universal completion chord.
+  # Tab completes the selected command or mention candidate.
+  def update({:key, :tab}, %Model{command: %{candidates: [_ | _]} = ctx} = model) do
+    chosen = Enum.at(ctx.candidates, ctx.selected)
+    new_buffer = EditBuffer.from_text("/#{chosen.name} ")
+    {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
+  end
+
   def update({:key, :tab}, %Model{mention: %Mentions.Context{candidates: [_ | _]} = ctx} = model) do
     new_buffer = Mentions.accept(model.input, ctx)
-    {refresh_mention(Model.set_buffer(model, new_buffer)), :none}
+    {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
   end
 
   def update({:key, :tab}, %Model{} = model), do: {model, :none}
@@ -108,12 +143,23 @@ defmodule Egghead.TUI.Chat.Update do
     {edit(model, &EditBuffer.move_right/1), :none}
   end
 
+  # Up/Down navigate the command or mention dropdown when open.
+  def update({:key, :up}, %Model{command: %{candidates: [_, _ | _]} = ctx} = model) do
+    n = length(ctx.candidates)
+    {%{model | command: %{ctx | selected: rem(ctx.selected - 1 + n, n)}}, :none}
+  end
+
   def update({:key, :up}, %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model) do
     {%{model | mention: Mentions.move_up(ctx)}, :none}
   end
 
   def update({:key, :up}, %Model{} = model) do
     {edit(model, &EditBuffer.move_up/1), :none}
+  end
+
+  def update({:key, :down}, %Model{command: %{candidates: [_, _ | _]} = ctx} = model) do
+    n = length(ctx.candidates)
+    {%{model | command: %{ctx | selected: rem(ctx.selected + 1, n)}}, :none}
   end
 
   def update({:key, :down}, %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model) do
@@ -234,6 +280,10 @@ defmodule Egghead.TUI.Chat.Update do
 
   defp handle_room_event(:continued, model), do: clear_status(model)
 
+  defp handle_room_event({:system_notice, text}, model) do
+    Model.append_entry(model, Entry.system(text))
+  end
+
   defp handle_room_event({:agent_joined, agent_id}, model) do
     if Enum.any?(model.agents, &(&1.id == agent_id)) do
       model
@@ -258,7 +308,34 @@ defmodule Egghead.TUI.Chat.Update do
   defp edit(%Model{input: buffer} = model, fun) when is_function(fun, 1) do
     model
     |> Model.set_buffer(fun.(buffer))
-    |> refresh_mention()
+    |> refresh_completion()
+  end
+
+  # After every input edit, decide whether to show the mention
+  # dropdown or the command dropdown (mutually exclusive).
+  defp refresh_completion(model) do
+    text = Model.input_text(model)
+
+    cond do
+      String.starts_with?(text, "/") and not String.contains?(text, "\n") ->
+        refresh_command(model, text)
+
+      true ->
+        model
+        |> Map.put(:command, nil)
+        |> refresh_mention()
+    end
+  end
+
+  defp refresh_command(model, text) do
+    needle = text |> String.trim_leading("/") |> String.downcase()
+
+    candidates =
+      @chat_command_list
+      |> Enum.filter(fn cmd -> String.starts_with?(cmd.name, needle) end)
+
+    ctx = %{candidates: candidates, selected: 0}
+    %{model | command: ctx, mention: nil}
   end
 
   defp refresh_mention(%Model{input: buffer} = model) do
@@ -353,5 +430,120 @@ defmodule Egghead.TUI.Chat.Update do
       :exit, _ -> :no_msg
       _, _ -> :no_msg
     end
+  end
+
+  # ---- slash commands ------------------------------------------------------
+
+  defp dispatch_command(text, model) do
+    [raw_cmd | args] =
+      text
+      |> String.trim_leading("/")
+      |> String.split(" ", parts: 2)
+
+    cmd_name = String.downcase(raw_cmd)
+    arg = List.first(args, "")
+
+    case Map.get(@chat_commands, cmd_name) do
+      nil ->
+        model = Model.append_entry(Model.clear_input(model), Entry.system("Unknown command: /#{cmd_name}"))
+        {model, :none}
+
+      handler ->
+        apply_command(handler, arg, model)
+    end
+  end
+
+  defp apply_command(:cmd_quit, _arg, model) do
+    {Model.clear_input(model), :halt}
+  end
+
+  defp apply_command(:cmd_leave, _arg, model) do
+    {Model.clear_input(model), {:switch_screen, :records, []}}
+  end
+
+  defp apply_command(:cmd_save, _arg, model) do
+    room_id = model.room_id
+
+    cmd =
+      {:exec,
+       fn ->
+         try do
+           case Egghead.chat_save(room_id) do
+             {:ok, record} ->
+               {:inject, {:room_event, {:system_notice, "Transcript saved as #{record.id}"}}}
+
+             _ ->
+               {:inject, {:room_event, {:system_notice, "Save failed"}}}
+           end
+         catch
+           _, _ -> {:inject, {:room_event, {:system_notice, "Save failed"}}}
+         end
+       end}
+
+    {Model.clear_input(model), cmd}
+  end
+
+  defp apply_command(:cmd_continue, _arg, model) do
+    room_id = model.room_id
+
+    cmd =
+      {:exec,
+       fn ->
+         try do
+           Egghead.chat_continue(room_id)
+           :no_msg
+         catch
+           _, _ -> :no_msg
+         end
+       end}
+
+    model =
+      model
+      |> Model.clear_input()
+      |> Model.append_entry(Entry.system("Budget renewed — agents may continue"))
+
+    {model, cmd}
+  end
+
+  defp apply_command(:cmd_handoff, arg, model) do
+    target = String.trim(arg)
+
+    if target == "" do
+      model = Model.append_entry(Model.clear_input(model), Entry.system("Usage: /handoff <agent>"))
+      {model, :none}
+    else
+      cmd =
+        {:exec,
+         fn ->
+           try do
+             Egghead.handoff(target)
+             :no_msg
+           catch
+             _, _ -> :no_msg
+           end
+         end}
+
+      model =
+        model
+        |> Model.clear_input()
+        |> Model.append_entry(Entry.system("Handoff initiated for #{target}"))
+
+      {model, cmd}
+    end
+  end
+
+  defp apply_command(:cmd_help, _arg, model) do
+    help_text = """
+    Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
+    Commands: /save /continue /handoff <agent> /leave /help /quit
+    Navigation: F1 records │ F2 chat │ Esc dismiss\
+    """
+
+    model =
+      model
+      |> Model.clear_input()
+      |> Model.append_entry(Entry.system(help_text))
+
+    {model, :none}
   end
 end

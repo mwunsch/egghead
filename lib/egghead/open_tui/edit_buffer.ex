@@ -99,6 +99,33 @@ defmodule Egghead.OpenTUI.EditBuffer do
   @spec line_cells(t(), non_neg_integer()) :: [cell()]
   def line_cells(%__MODULE__{lines: lines}, row), do: Enum.at(lines, row, [])
 
+  @doc """
+  Total visual rows the buffer would occupy when soft-wrapped to
+  `width` columns. Each logical line contributes `ceil(len/width)`
+  visual rows (minimum 1 for empty lines).
+  """
+  @spec visual_line_count(t(), pos_integer()) :: pos_integer()
+  def visual_line_count(%__MODULE__{lines: lines}, width) when width > 0 do
+    Enum.reduce(lines, 0, fn cells, acc ->
+      n = length(cells)
+      acc + if(n == 0, do: 1, else: ceil_div(n, width))
+    end)
+  end
+
+  @doc """
+  Chunk a cell list into visual rows of at most `width` cells.
+  Returns `[[cell()]]` — at least one chunk even for empty input.
+  """
+  @spec wrap_cells([cell()], pos_integer()) :: [[cell()]]
+  def wrap_cells(cells, width) when width > 0 do
+    case Enum.chunk_every(cells, width) do
+      [] -> [[]]
+      chunks -> chunks
+    end
+  end
+
+  defp ceil_div(n, d), do: div(n + d - 1, d)
+
   # ---- insertion -----------------------------------------------------------
 
   @doc """

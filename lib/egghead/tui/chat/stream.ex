@@ -4,11 +4,15 @@ defmodule Egghead.TUI.Chat.Stream do
 
   When the Coordinator broadcasts `{:agent_streaming, _, agent_id,
   delta}`, the chat screen accumulates the delta in this struct's
-  `current` field. Whenever a `\\n\\n` paragraph break appears,
-  every paragraph before the final one is committed as a `:agent`
-  Entry in the transcript and removed from `current`. The trailing
-  partial paragraph stays as the live ghost bubble until either
-  another delta arrives or the agent finishes.
+  `current` field. Whenever a `\\n` line break appears, every
+  complete line before the final fragment is committed as an
+  `:agent` Entry in the transcript. The trailing partial line
+  stays as the live ghost bubble until either another delta
+  arrives or the agent finishes.
+
+  This gives an IRC-style feel: lines appear in the transcript
+  as complete messages, not token by token. The view layer
+  reassembles consecutive agent entries for markdown rendering.
 
   `finalize/1` is called when the Room broadcasts the final
   `:agent_message` for an agent — anything left in `current` is
@@ -38,15 +42,15 @@ defmodule Egghead.TUI.Chat.Stream do
 
   @doc """
   Append a streamed delta. Returns `{updated_stream,
-  committed_entries}` — any complete `\\n\\n`-delimited paragraphs
-  in the running buffer become committed entries; the trailing
-  partial paragraph stays in `current` as the live ghost bubble.
+  committed_entries}` — any complete `\\n`-delimited lines in
+  the running buffer become committed entries; the trailing
+  partial line stays in `current` as the live ghost bubble.
   """
   @spec append(t(), String.t()) :: {t(), [Entry.t()]}
   def append(%__MODULE__{} = s, delta) when is_binary(delta) do
     new_text = s.current <> delta
 
-    case String.split(new_text, "\n\n") do
+    case String.split(new_text, "\n") do
       [single] ->
         {%{s | current: single}, []}
 

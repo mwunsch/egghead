@@ -99,7 +99,7 @@ defmodule Egghead.TUI.Chat.Update do
       true ->
         room_id = model.room_id
         cmd = {:exec, fn -> send_message(room_id, text) end}
-        {Model.clear_input(model), cmd}
+        {%{Model.clear_input(model) | scroll: 0}, cmd}
     end
   end
 
@@ -178,6 +178,24 @@ defmodule Egghead.TUI.Chat.Update do
     {edit(model, &EditBuffer.move_to_line_end/1), :none}
   end
 
+  # ---- transcript scrolling ------------------------------------------------
+
+  @scroll_step 5
+
+  def update({:key, :page_up}, %Model{} = model),
+    do: {scroll_transcript(model, @scroll_step), :none}
+
+  def update({:key, :page_down}, %Model{} = model),
+    do: {scroll_transcript(model, -@scroll_step), :none}
+
+  def update({:key, :ctrl_p}, %Model{} = model),
+    do: {scroll_transcript(model, @scroll_step), :none}
+
+  def update({:key, :ctrl_n}, %Model{} = model),
+    do: {scroll_transcript(model, -@scroll_step), :none}
+
+  # ---- editing continued ---------------------------------------------------
+
   def update({:key, :ctrl_k}, %Model{} = model) do
     {edit(model, &EditBuffer.kill_to_eol/1), :none}
   end
@@ -225,7 +243,13 @@ defmodule Egghead.TUI.Chat.Update do
     end
   end
 
-  # Mouse and unrecognized input are silently swallowed in 6c.
+  # Mouse wheel scrolls the transcript.
+  def update({:mouse, %{kind: :wheel_up, press?: true}}, %Model{} = model),
+    do: {scroll_transcript(model, 3), :none}
+
+  def update({:mouse, %{kind: :wheel_down, press?: true}}, %Model{} = model),
+    do: {scroll_transcript(model, -3), :none}
+
   def update({:mouse, _}, %Model{} = model), do: {model, :none}
   def update(_other, %Model{} = model), do: {model, :none}
 
@@ -233,24 +257,25 @@ defmodule Egghead.TUI.Chat.Update do
 
   defp handle_room_event({:user_message, msg}, model) do
     Model.append_entry(model, Entry.user(msg.sender.name, msg.content))
+    |> auto_scroll()
     |> clear_status()
   end
 
   defp handle_room_event({:agent_message, msg}, model) do
     model
-    # The streaming path may already have committed paragraphs;
-    # finalize_stream flushes whatever is left in the per-agent
-    # buffer, then we drop the stream entirely. The :agent_message
-    # broadcast carries the *complete* text, but our streaming
-    # accumulator already holds the same bytes — finalizing avoids
-    # double-rendering.
     |> Model.finalize_stream(msg.sender.id)
     |> Model.drop_stream(msg.sender.id)
+    |> set_agent_status(msg.sender.id, :idle)
+    |> update_agent_ctx(msg.sender.id, msg)
     |> clear_status()
   end
 
   defp handle_room_event({:agent_streaming, _room_id, agent_id, delta}, model) do
-    Model.apply_stream_delta(model, agent_id, delta)
+    model
+    |> Model.apply_stream_delta(agent_id, delta)
+    |> set_agent_status(agent_id, :active)
+    |> bump_anim()
+    |> auto_scroll()
   end
 
   defp handle_room_event({:agent_tool_call, _room_id, agent_id, name, input}, model) do
@@ -269,7 +294,9 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   defp handle_room_event({:agent_passed, agent_id}, model) do
-    Model.drop_stream(model, agent_id)
+    model
+    |> Model.drop_stream(agent_id)
+    |> set_agent_status(agent_id, :idle)
   end
 
   defp handle_room_event({:agent_mentions, _room_id, _from, _to}, model), do: model
@@ -392,7 +419,56 @@ defmodule Egghead.TUI.Chat.Update do
     end
   end
 
+  # Scroll is lines-from-bottom: 0 = pinned to newest.
+  # Positive delta scrolls up (older), negative scrolls down (newer).
+  defp scroll_transcript(%Model{} = model, delta) do
+    # Clamp against transcript length as a safe upper bound.
+    # The view will further clamp against exact rendered row count.
+    max_scroll = max(length(model.transcript), 0)
+    new_scroll = model.scroll |> Kernel.+(delta) |> max(0) |> min(max_scroll)
+    %{model | scroll: new_scroll}
+  end
+
+  # Keep the view pinned to bottom when new content arrives,
+  # but only if the user hasn't scrolled up to read history.
+  defp auto_scroll(%Model{scroll: 0} = model), do: model
+  defp auto_scroll(model), do: model
+
+  defp bump_anim(%Model{} = model), do: %{model | anim_frame: model.anim_frame + 1}
+
   defp clear_status(%Model{} = model), do: %{model | status_message: nil}
+
+  defp set_agent_status(%Model{agents: agents} = model, agent_id, status) do
+    agents =
+      Enum.map(agents, fn
+        %Model.AgentPresence{id: ^agent_id} = a -> %{a | status: status}
+        a -> a
+      end)
+
+    %{model | agents: agents}
+  end
+
+  # Extract context info from the Message's inline usage field.
+  # The usage map carries :input_tokens, :output_tokens,
+  # :session_tokens, :context_window, and :context_pct directly.
+  defp update_agent_ctx(%Model{agents: agents} = model, agent_id, msg) do
+    case Map.get(msg, :usage) do
+      %{context_window: cw, session_tokens: st} when is_integer(cw) and cw > 0 ->
+        pct = Float.round(st / cw * 100, 1)
+
+        agents =
+          Enum.map(agents, fn
+            %Model.AgentPresence{id: ^agent_id} = a ->
+              %{a | ctx_pct: pct, ctx_window: cw, session_tokens: st}
+            a -> a
+          end)
+
+        %{model | agents: agents}
+
+      _ ->
+        model
+    end
+  end
 
   defp display_name(agent_id, %Model{agents: agents}) do
     case Enum.find(agents, &(&1.id == agent_id)) do

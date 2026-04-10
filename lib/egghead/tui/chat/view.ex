@@ -2,31 +2,31 @@ defmodule Egghead.TUI.Chat.View do
   @moduledoc """
   Pure view function for the chat screen.
 
-  Layout (Phase 6c — sidebar lands in 6g):
+  Layout:
 
-      ┌───────────────────────────────────┐
-      │ egghead · #room · N agents        │  header (1 row)
-      ├───────────────────────────────────┤
-      │ user: hi                          │
-      │ scout: hello                      │  transcript region
-      │ scout:▌                           │  (live ghost bubble at bottom)
-      │                                   │
-      ├───────────────────────────────────┤
+      ┌──────────────────────────┬────────┐
+      │ egghead · #room          │Rec Chat│  header (1 row)
+      ├──────────────────────────┼────────┤
+      │ user: hi                 │● scout │
+      │ scout: hello             │  1.2k↓ │  transcript + sidebar
+      │ scout:▌                  │  ░░ 1% │
+      │                          │○ index │
+      ├──────────────────────────┴────────┤
       │ ❯ what about activation?▌         │  input row (1 row)
       ├───────────────────────────────────┤
-      │ CHAT │ ⏎ send │ esc records │ ^q  │  status bar (1 row)
+      │ CHAT │ ⏎ send │ /cmd │ F1 │ ^q   │  status bar (1 row)
       └───────────────────────────────────┘
 
-  The transcript region soft-wraps long entry lines on
-  whitespace. We always show the *tail* of the rendered lines
-  (newest at the bottom), padding with blank space if there
-  isn't enough content to fill the region.
+  Sidebar width is stepped: 22 cols at width >= 100, 18 cols
+  at 80–99, hidden below 80 (narrow mode shows a one-line
+  agent summary strip instead).
   """
 
   import Egghead.OpenTUI.View
 
-  alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer}
+  alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer, Markdown}
   alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste, Stream}
+  alias Model.AgentPresence
 
   @prompt "❯ "
   @continuation "  "
@@ -36,19 +36,49 @@ defmodule Egghead.TUI.Chat.View do
   def render(%Model{} = model) do
     width = model.width
     height = model.height
+    sb_width = sidebar_width(width)
 
-    input_height = clamp(EditBuffer.line_count(model.input), 1, @max_input_rows)
+    prompt_w = String.length(@prompt)
+    text_w = max(width - prompt_w, 1)
+    input_height = clamp(EditBuffer.visual_line_count(model.input, text_w), 1, @max_input_rows)
     dd_height = dropdown_height(model)
-    transcript_height = max(height - 2 - input_height - dd_height, 1)
+    # header(1) + input_border(1) + input + spacer(1) + status(1) = 4 + input
+    chrome = 4 + input_height + dd_height
+    # In narrow mode, the agent summary strip takes 1 row.
+    narrow_strip = if sb_width == 0 and model.agents != [], do: 1, else: 0
+    transcript_height = max(height - chrome - narrow_strip, 1)
+    transcript_width = if sb_width > 0, do: width - sb_width, else: width
+
+    main_region =
+      if sb_width > 0 do
+        # 1-col separator between transcript and sidebar.
+        sep = vbox([width: 1, height: transcript_height],
+          List.duplicate(text("│", height: 1, fg: Colors.muted()), transcript_height))
+        hbox([height: transcript_height], [
+          transcript_region(model, transcript_width - 1, transcript_height),
+          sep,
+          sidebar(model.agents, sb_width, transcript_height)
+        ])
+      else
+        transcript_region(model, transcript_width, transcript_height)
+      end
+
+    hr = text(String.duplicate("─", width), height: 1, fg: Colors.muted())
 
     children =
-      [header(model, width), transcript_region(model, width, transcript_height),
-       input_box(model, width, input_height)] ++
+      [header(model, width), main_region] ++
+        narrow_strip_node(model, width, narrow_strip) ++
+        [hr, input_box(model, width, input_height)] ++
         dropdown_node(model, width, dd_height) ++
-        [status_bar(model, width)]
+        [text("", height: 1), status_bar(model, width)]
 
     vbox(children)
   end
+
+  # Stepped sidebar width: 22 at >= 100, 18 at 80–99, 0 below.
+  defp sidebar_width(w) when w >= 100, do: 22
+  defp sidebar_width(w) when w >= 80, do: 18
+  defp sidebar_width(_), do: 0
 
   @max_dropdown_rows 6
 
@@ -75,83 +105,317 @@ defmodule Egghead.TUI.Chat.View do
   # ---- header --------------------------------------------------------------
 
   defp header(model, width) do
-    context = "##{model.room_id || "—"} · #{length(model.agents)} agents · #{length(model.transcript)} msgs"
+    context = "##{model.room_id || "—"} · #{length(model.transcript)} msgs"
 
     Egghead.TUI.Header.render(:chat, context, width, model.providers?)
   end
 
   # ---- transcript ----------------------------------------------------------
 
-  defp transcript_region(%Model{} = model, width, height) do
-    lines = render_transcript_lines(model, width)
-    visible = take_tail(lines, height)
-    padded = pad_top(visible, height)
+  # IRC-style nick gutter: fixed-width left column with
+  # right-aligned nicks, a colored dot identifier, and the
+  # message body to the right. Consecutive messages from the
+  # same sender collapse the nick.
+  @nick_gutter 14
 
-    vbox([height: height], Enum.map(padded, &line_to_node/1))
+  defp transcript_region(%Model{} = model, width, height) do
+    # Reserve 1 col on the right for the scrollbar track.
+    content_w = max(width - 1, 1)
+    rows = render_transcript_rows(model, content_w)
+    total = length(rows)
+
+    # scroll == 0 means "pinned to bottom" (newest visible).
+    # Positive scroll means "N lines from the bottom".
+    max_scroll = max(total - height, 0)
+    scroll = min(model.scroll, max_scroll)
+
+    # Compute the viewport offset from the top.
+    top =
+      if total <= height do
+        0
+      else
+        total - height - scroll
+      end
+
+    visible =
+      rows
+      |> Enum.drop(top)
+      |> Enum.take(height)
+
+    padded_rows = pad_top_tree(visible, height, content_w)
+    transcript_col = vbox([width: content_w, height: height], padded_rows)
+
+    # Scrollbar as a separate 1-col column on the right.
+    {bar_start, bar_size} =
+      if total > height do
+        size = max(1, round(height * height / total))
+        travel = max(0, height - size)
+        pos = if max_scroll > 0, do: round((max_scroll - scroll) / max_scroll * travel), else: 0
+        {pos, size}
+      else
+        {0, 0}
+      end
+
+    sb_rows =
+      Enum.map(0..(height - 1), fn idx ->
+        is_thumb = bar_size > 0 and idx >= bar_start and idx < bar_start + bar_size
+        sb_char = if is_thumb, do: "▐", else: " "
+        sb_fg = if is_thumb, do: Colors.muted(), else: Colors.bg()
+        text(sb_char, height: 1, width: 1, fg: sb_fg)
+      end)
+
+    scrollbar_col = vbox([width: 1, height: height], sb_rows)
+
+    hbox([width: width, height: height], [transcript_col, scrollbar_col])
   end
 
-  defp render_transcript_lines(%Model{} = model, width) do
-    transcript_lines =
-      model.transcript
-      |> Enum.flat_map(fn entry -> entry_to_lines(entry, width) end)
+  defp render_transcript_rows(%Model{} = model, width) do
+    body_width = max(width - @nick_gutter - 1, 1)
 
-    stream_lines =
+    transcript_rows =
+      model.transcript
+      |> collapse_nicks()
+      |> group_agent_runs()
+      |> Enum.flat_map(fn
+        {:run, entries_with_nicks} ->
+          agent_run_to_rows(entries_with_nicks, body_width, width)
+
+        {:single, entry, show_nick?} ->
+          entry_to_rows(entry, show_nick?, body_width, width)
+      end)
+
+    stream_rows =
       model.streams
       |> Map.values()
       |> Enum.sort_by(& &1.started_at)
-      |> Enum.flat_map(fn stream -> stream_to_lines(stream, width) end)
+      |> Enum.flat_map(fn stream -> stream_to_rows(stream, body_width, width, model.anim_frame) end)
 
-    transcript_lines ++ stream_lines
+    transcript_rows ++ stream_rows
   end
 
-  defp entry_to_lines(%Entry{kind: :user, sender_name: name, text: text}, width) do
-    wrap_speaker_lines("#{name}: ", text, width, Colors.cyan())
+  # Group consecutive `:agent` entries from the same sender into
+  # runs for unified markdown rendering. Non-agent entries (actions,
+  # system, handoff) are always emitted as singles — they must never
+  # land in a run or they'll get rendered as markdown chat instead
+  # of their proper `/me`-style format.
+  defp group_agent_runs(nick_tagged_entries) do
+    {groups, pending} =
+      Enum.reduce(nick_tagged_entries, {[], []}, fn {entry, show_nick?} = tagged, {groups, acc} ->
+        case {entry.kind, acc} do
+          # Agent entry, empty accumulator — start a new run.
+          {:agent, []} ->
+            {groups, [tagged]}
+
+          # Agent entry, continuing a run from the same sender.
+          {:agent, [{%Entry{kind: :agent, sender_id: sid}, _} | _]}
+          when entry.sender_id == sid ->
+            {groups, acc ++ [tagged]}
+
+          # Agent entry from a different sender — flush old run, start new.
+          {:agent, _run} ->
+            {groups ++ [flush_run(acc)], [tagged]}
+
+          # Non-agent entry — flush any pending run, emit as single.
+          {_, []} ->
+            {groups ++ [{:single, entry, show_nick?}], []}
+
+          {_, _run} ->
+            {groups ++ [flush_run(acc), {:single, entry, show_nick?}], []}
+        end
+      end)
+
+    # Flush any trailing pending run.
+    case pending do
+      [] -> groups
+      _ -> groups ++ [flush_run(pending)]
+    end
   end
 
-  defp entry_to_lines(%Entry{kind: :agent, sender_name: name, text: text}, width) do
-    wrap_speaker_lines("#{name}: ", text, width, agent_color(name))
+  defp flush_run([{entry, show_nick?}]) when entry.kind != :agent,
+    do: {:single, entry, show_nick?}
+
+  defp flush_run(run), do: {:run, run}
+
+  # Render a run of consecutive agent entries from the same sender
+  # as a single markdown block. The nick appears on the first row;
+  # continuation rows get blank gutter.
+  defp agent_run_to_rows(entries_with_nicks, body_w, full_w) do
+    [{first_entry, show_nick?} | _] = entries_with_nicks
+
+    nick =
+      if show_nick?,
+        do: nick_cell(first_entry.sender_name, :agent, first_entry.sender_id),
+        else: blank_nick()
+
+    merged_text =
+      entries_with_nicks
+      |> Enum.map(fn {e, _} -> e.text end)
+      |> Enum.join("\n")
+
+    md_rows = merged_text |> Markdown.render(body_w) |> trim_trailing_empty()
+    wrap_markdown(nick, md_rows, full_w, nil)
   end
 
-  defp entry_to_lines(%Entry{kind: :action, sender_name: name, text: text}, width) do
-    wrap_speaker_lines("* #{name} ", text, width, Colors.muted())
-  end
-
-  defp entry_to_lines(%Entry{kind: :system, text: text}, width) do
-    wrap_speaker_lines("— ", text, width, Colors.muted())
-  end
-
-  defp entry_to_lines(%Entry{kind: :handoff, text: text}, width) do
-    wrap_speaker_lines("» ", text, width, Colors.accent())
-  end
-
-  defp stream_to_lines(%Stream{name: name, current: ""}, width) do
-    # Activated but nothing yet — render an ellipsis ghost row.
-    wrap_speaker_lines("#{name}: ", "…", width, Colors.muted())
-  end
-
-  defp stream_to_lines(%Stream{name: name, current: current}, width) do
-    # Append a cursor block to the last line so the ghost bubble
-    # looks alive. Soft newlines inside `current` are preserved.
-    text = current <> "▌"
-    wrap_speaker_lines("#{name}: ", text, width, agent_color(name))
-  end
-
-  # Soft-wrap an entry's text body under a speaker prefix. The
-  # first wrapped line carries the prefix; continuation lines are
-  # indented to the prefix width.
-  defp wrap_speaker_lines(prefix, text, width, color) do
-    indent_width = String.length(prefix)
-    body_width = max(width - indent_width, 1)
-    indent = String.duplicate(" ", indent_width)
-
-    text
-    |> String.split("\n")
-    |> Enum.flat_map(fn paragraph -> soft_wrap(paragraph, body_width) end)
-    |> Enum.with_index()
-    |> Enum.map(fn {chunk, idx} ->
-      lead = if idx == 0, do: prefix, else: indent
-      {lead <> chunk, color}
+  # Tag each entry with whether its nick should be displayed.
+  # Consecutive entries from the same sender_id AND kind collapse.
+  # Different kinds (e.g. :action → :agent) always re-show the nick
+  # because the gutter symbol changes.
+  defp collapse_nicks(entries) do
+    entries
+    |> Enum.reduce({{nil, nil}, []}, fn entry, {{prev_id, prev_kind}, acc} ->
+      same_sender? = entry.sender_id == prev_id and entry.sender_id != nil
+      same_kind? = entry.kind == prev_kind
+      show? = not (same_sender? and same_kind?)
+      {{entry.sender_id || prev_id, entry.kind}, [{entry, show?} | acc]}
     end)
+    |> elem(1)
+    |> Enum.reverse()
+  end
+
+  defp entry_to_rows(%Entry{kind: :user} = e, show_nick?, body_w, full_w) do
+    nick = if show_nick?, do: nick_cell(e.sender_name, :user, e.sender_id), else: blank_nick()
+    md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
+    wrap_markdown(nick, md_rows, full_w, Colors.user_msg_bg())
+  end
+
+  defp entry_to_rows(%Entry{kind: :action} = e, _show_nick?, body_w, full_w) do
+    nick = gutter_symbol("*")
+    wrap_body(nick, "#{e.sender_name} #{e.text}", body_w, full_w, Colors.muted(), nil)
+  end
+
+  defp entry_to_rows(%Entry{kind: :system} = e, _show_nick?, body_w, full_w) do
+    nick = gutter_symbol("—")
+    wrap_body(nick, e.text, body_w, full_w, Colors.muted(), nil)
+  end
+
+  defp entry_to_rows(%Entry{kind: :handoff} = e, _show_nick?, body_w, full_w) do
+    nick = gutter_symbol("»")
+    wrap_body(nick, e.text, body_w, full_w, Colors.accent(), nil)
+  end
+
+  # While an agent is composing, show an animated typing indicator.
+  # When the buffer is empty (agent is executing tools, not typing),
+  # show nothing — the action entries speak for themselves.
+  defp stream_to_rows(%Stream{} = stream, body_w, full_w, anim_frame) do
+    if Stream.has_text?(stream) do
+      nick = nick_cell(stream.name, :agent, stream.agent_id)
+      dots = typing_indicator(anim_frame)
+      wrap_body(nick, dots, body_w, full_w, Colors.muted(), nil)
+    else
+      []
+    end
+  end
+
+  # Animated typing indicator: cycles through ·, ··, ··· like
+  # iMessage / WhatsApp composing state.
+  defp typing_indicator(frame) do
+    n = rem(frame, 3) + 1
+    String.duplicate("·", n)
+  end
+
+  # A nick cell: "  ● name " right-aligned in the gutter, with
+  # a colored dot. The dot color is deterministic per sender_id.
+  defp nick_cell(name, kind, sender_id) do
+    dot_color = if kind == :user, do: Colors.cyan(), else: agent_color(sender_id || name)
+    truncated = String.slice(name || "", 0, @nick_gutter - 4)
+    # Right-align: pad on the left so "● name " is flush right.
+    label = "● #{truncated} "
+    padded = String.pad_leading(label, @nick_gutter)
+
+    {padded, dot_color, true}
+  end
+
+  defp blank_nick do
+    {String.duplicate(" ", @nick_gutter), nil, false}
+  end
+
+  defp gutter_symbol(sym) do
+    label = "#{sym} "
+    padded = String.pad_leading(label, @nick_gutter)
+    {padded, Colors.muted(), false}
+  end
+
+  # Wrap a message body and pair each line with its nick (first
+  # line) or blank gutter (continuation lines). Returns a list
+  # of hbox tree nodes.
+  defp wrap_body({nick_str, dot_color, has_nick?}, body_text, body_w, full_w, fg, bg) do
+    lines =
+      body_text
+      |> String.split("\n")
+      |> Enum.flat_map(fn para -> soft_wrap(para, body_w) end)
+
+    bg_opts = if(bg, do: [bg: bg], else: [])
+
+    lines
+    |> Enum.with_index()
+    |> Enum.map(fn {line, idx} ->
+      gutter =
+        if idx == 0 and has_nick? do
+          nick_node(nick_str, dot_color, bg)
+        else
+          text(String.duplicate(" ", @nick_gutter), [width: @nick_gutter] ++ bg_opts)
+        end
+
+      sep = text(" ", [width: 1, fg: Colors.muted()] ++ bg_opts)
+      body_node = text(pad_to(line, full_w - @nick_gutter - 1), [height: 1, fg: fg] ++ bg_opts)
+
+      hbox([height: 1], [gutter, sep, body_node])
+    end)
+  end
+
+  # Wrap markdown-rendered span rows with the nick gutter. Each
+  # span row from `Markdown.render/2` becomes an hbox: gutter +
+  # separator + styled span leaves. The first row gets the nick;
+  # continuation rows get blank gutter.
+  defp wrap_markdown({nick_str, dot_color, has_nick?}, md_rows, full_w, bg) do
+    bg_opts = if(bg, do: [bg: bg], else: [])
+    body_w = full_w - @nick_gutter - 1
+
+    md_rows
+    |> Enum.with_index()
+    |> Enum.map(fn {span_row, idx} ->
+      gutter =
+        if idx == 0 and has_nick? do
+          nick_node(nick_str, dot_color, bg)
+        else
+          text(String.duplicate(" ", @nick_gutter), [width: @nick_gutter] ++ bg_opts)
+        end
+
+      sep = text(" ", [width: 1, fg: Colors.muted()] ++ bg_opts)
+
+      span_leaves =
+        Enum.map(span_row, fn span ->
+          fg = span.fg || Colors.white()
+          text(span.text, [width: String.length(span.text), fg: fg, attrs: span.attrs] ++ bg_opts)
+        end)
+
+      used = Enum.reduce(span_row, 0, fn span, acc -> acc + String.length(span.text) end)
+      pad_w = max(body_w - used, 0)
+      pad_leaf = text(String.duplicate(" ", pad_w), [width: pad_w] ++ bg_opts)
+
+      hbox([height: 1], [gutter, sep] ++ span_leaves ++ [pad_leaf])
+    end)
+  end
+
+  # Render the nick gutter as an hbox: padding + dot + name.
+  # The dot gets its own color; the name is bold white.
+  # `bg` is applied to all sub-leaves so user-message tint
+  # extends across the full row.
+  defp nick_node(nick_str, dot_color, bg) do
+    bg_opts = if(bg, do: [bg: bg], else: [])
+
+    # Split at the "●" to color just the dot.
+    case String.split(nick_str, "●", parts: 2) do
+      [leading, trailing] ->
+        hbox([width: @nick_gutter, height: 1], [
+          text(leading, [width: String.length(leading), fg: Colors.dim()] ++ bg_opts),
+          text("●", [width: 1, fg: dot_color] ++ bg_opts),
+          text(trailing, [width: String.length(trailing), fg: Colors.white(), attrs: Attrs.bold()] ++ bg_opts)
+        ])
+
+      _ ->
+        text(nick_str, [width: @nick_gutter, fg: Colors.dim()] ++ bg_opts)
+    end
   end
 
   # Whitespace-friendly soft wrap. Long single tokens hard-break.
@@ -215,29 +479,142 @@ defmodule Egghead.TUI.Chat.View do
     |> Enum.map(&Enum.join/1)
   end
 
-  defp line_to_node({line, color}) do
-    text(line, height: 1, fg: color)
-  end
-
-  defp take_tail(list, n) do
-    len = length(list)
-
-    if len <= n do
-      list
-    else
-      Enum.drop(list, len - n)
-    end
-  end
-
-  defp pad_top(lines, height) do
-    pad = height - length(lines)
+  defp pad_top_tree(rows, height, _width) do
+    pad = height - length(rows)
 
     if pad > 0 do
-      List.duplicate({"", Colors.dim()}, pad) ++ lines
+      blanks = List.duplicate(text("", height: 1), pad)
+      blanks ++ rows
     else
-      lines
+      rows
     end
   end
+
+  # Strip trailing empty rows from Markdown.render output.
+  # Earmark produces a trailing blank row for every paragraph;
+  # in chat bubbles this looks like an unwanted extra newline.
+  defp trim_trailing_empty(rows) do
+    rows
+    |> Enum.reverse()
+    |> Enum.drop_while(fn row -> row == [] end)
+    |> Enum.reverse()
+    |> case do
+      [] -> [[]]
+      trimmed -> trimmed
+    end
+  end
+
+  # ---- sidebar ---------------------------------------------------------------
+
+  @sidebar_bg Colors.sidebar_bg()
+
+  # Top-aligned: agent count header, then agent cards on a
+  # tinted background. Remaining space filled with bg.
+  defp sidebar(agents, sb_width, height) do
+    header_label = " #{length(agents)} Agents"
+    header_row =
+      text(pad_to(header_label, sb_width),
+        height: 1,
+        fg: Colors.dim(),
+        bg: @sidebar_bg,
+        attrs: Attrs.bold()
+      )
+
+    spacer = text(String.duplicate(" ", sb_width), height: 1, bg: @sidebar_bg)
+
+    cards =
+      agents
+      |> Enum.flat_map(fn a -> agent_card(a, sb_width) end)
+
+    rows = [header_row, spacer | cards] |> Enum.take(height)
+    remaining = height - length(rows)
+
+    fill_rows =
+      if remaining > 0 do
+        List.duplicate(
+          text(String.duplicate(" ", sb_width), height: 1, bg: @sidebar_bg),
+          remaining
+        )
+      else
+        []
+      end
+
+    vbox([width: sb_width, height: height], rows ++ fill_rows)
+  end
+
+  defp agent_card(%AgentPresence{} = a, sb_width) do
+    dot = if a.status == :active, do: "●", else: "○"
+    name = truncate_line("#{dot} #{a.name}", sb_width)
+
+    name_row =
+      text(pad_to(name, sb_width),
+        height: 1,
+        fg: if(a.status == :active, do: Colors.green(), else: Colors.dim()),
+        bg: @sidebar_bg,
+        attrs: if(a.status == :active, do: Attrs.bold(), else: 0)
+      )
+
+    token_label =
+      if a.ctx_window > 0 do
+        "  #{format_tokens(a.session_tokens)}/#{format_tokens(a.ctx_window)}"
+      else
+        "  —"
+      end
+
+    token_row =
+      text(pad_to(truncate_line(token_label, sb_width), sb_width),
+        height: 1,
+        fg: Colors.dim(),
+        bg: @sidebar_bg
+      )
+
+    # Leave 3 chars right margin so e.g. "62.3%" doesn't butt
+    # against the screen edge.
+    bar = context_bar(a.ctx_pct, sb_width - 3)
+    ctx_row =
+      text(pad_to("  #{bar}", sb_width),
+        height: 1,
+        fg: Colors.muted(),
+        bg: @sidebar_bg
+      )
+
+    separator =
+      text(String.duplicate(" ", sb_width), height: 1, bg: @sidebar_bg)
+
+    [name_row, token_row, ctx_row, separator]
+  end
+
+  defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
+  defp format_tokens(n), do: "#{n}"
+
+  # A small text-art bar: filled blocks + empty blocks + percentage.
+  defp context_bar(pct, width) do
+    suffix = " #{:erlang.float_to_binary(pct, decimals: 1)}%"
+    bar_width = max(width - String.length(suffix), 2)
+    filled = round(pct / 100.0 * bar_width)
+    empty = bar_width - filled
+    String.duplicate("█", filled) <> String.duplicate("░", empty) <> suffix
+  end
+
+  # ---- narrow agent strip ---------------------------------------------------
+
+  # When the sidebar is hidden (width < 80), show a single-line
+  # summary strip above the input: "3 agents · 4.2k tok · 1.8%"
+  defp narrow_strip_node(%Model{agents: agents}, width, 1) do
+    active = Enum.count(agents, &(&1.status == :active))
+    total_tok = Enum.reduce(agents, 0, fn a, acc -> acc + a.session_tokens end)
+
+    parts =
+      ["#{length(agents)} agents"] ++
+        if(active > 0, do: ["#{active} active"], else: []) ++
+        if(total_tok > 0, do: ["#{format_tokens(total_tok)} tok"], else: [])
+
+    label = " " <> Enum.join(parts, " · ") <> " "
+    [text(pad_to(label, width), height: 1, fg: Colors.dim(), bg: Colors.bg())]
+  end
+
+  defp narrow_strip_node(_, _, _), do: []
 
   # ---- mention dropdown ----------------------------------------------------
 
@@ -337,40 +714,124 @@ defmodule Egghead.TUI.Chat.View do
   # is emitted on the cursor row, splitting that row's text at
   # `col` so the renderer can paint a real terminal cursor (same
   # pattern as `Egghead.TUI.Records.View.search/2`).
-  defp input_box(%Model{input: buffer} = model, _width, input_height) do
+  defp input_box(%Model{input: buffer} = model, width, input_height) do
     {cursor_row, cursor_col} = EditBuffer.cursor(buffer)
-    lines = buffer.lines
-    total = length(lines)
+    prompt_w = String.length(@prompt)
+    text_w = max(width - prompt_w, 1)
+    ghost = ghost_text(model)
 
-    # If the buffer has more lines than the cap, scroll so the
-    # cursor row stays visible. Pin to the bottom by default; only
-    # shift up when the cursor leaves the window.
+    # Build visual rows by soft-wrapping each buffer line. Each
+    # visual row tracks: {cells, buf_line_idx, is_first_of_line?,
+    # visual_cursor_col_or_nil}.
+    visual_rows =
+      buffer.lines
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {cells, buf_idx} ->
+        on_cursor_line? = buf_idx == cursor_row
+        wrap_input_line(cells, buf_idx, text_w, on_cursor_line?, cursor_col)
+      end)
+
+    total_visual = length(visual_rows)
+
+    # Find the visual row containing the cursor.
+    cursor_visual_idx =
+      Enum.find_index(visual_rows, fn {_, _, _, vc} -> vc != nil end) || 0
+
+    # Scroll so the cursor stays visible.
     visible_top =
       cond do
-        total <= input_height -> 0
-        cursor_row >= total - input_height -> total - input_height
-        cursor_row < input_height -> 0
-        true -> cursor_row - input_height + 1
+        total_visual <= input_height -> 0
+        cursor_visual_idx >= total_visual - input_height -> total_visual - input_height
+        cursor_visual_idx < input_height -> 0
+        true -> cursor_visual_idx - input_height + 1
       end
 
-    visible_lines =
-      lines
+    visible =
+      visual_rows
       |> Enum.drop(visible_top)
       |> Enum.take(input_height)
 
-    ghost = ghost_text(model)
-
     rows =
-      visible_lines
-      |> Enum.with_index(visible_top)
-      |> Enum.map(fn {cells, idx} ->
-        prompt = if idx == 0, do: @prompt, else: @continuation
-        on_cursor? = idx == cursor_row
-        render_input_row(cells, prompt, on_cursor?, cursor_col, if(on_cursor?, do: ghost, else: ""))
+      visible
+      |> Enum.map(fn {cells, buf_idx, is_first?, vcol} ->
+        prompt =
+          if buf_idx == 0 and is_first?, do: @prompt, else: @continuation
+
+        on_cursor? = vcol != nil
+        col = vcol || 0
+        render_input_row(cells, prompt, on_cursor?, col, if(on_cursor?, do: ghost, else: ""))
       end)
 
     vbox([height: input_height], rows)
   end
+
+  # Soft-wrap a single buffer line's cells into visual rows of
+  # `text_w` width. Returns a list of {cells, buf_idx, first?, vcol}.
+  defp wrap_input_line(cells, buf_idx, text_w, on_cursor_line?, cursor_col) do
+    chunks = EditBuffer.wrap_cells(cells, text_w)
+
+    chunks
+    |> Enum.with_index()
+    |> Enum.map(fn {chunk, chunk_idx} ->
+      is_first? = chunk_idx == 0
+      chunk_start = chunk_idx * text_w
+
+      vcol =
+        if on_cursor_line? and
+             cursor_col >= chunk_start and
+             cursor_col < chunk_start + text_w do
+          cursor_col - chunk_start
+        else
+          # Cursor at the very end of a line that lands exactly on
+          # the wrap boundary — put it on the next (empty) chunk.
+          if on_cursor_line? and cursor_col == chunk_start + text_w and
+               chunk_idx == length(chunks) - 1 do
+            nil
+          else
+            nil
+          end
+        end
+
+      # Handle cursor at the very end of the line — it lands at
+      # position == length(cells), which may be at the start of a
+      # "virtual" next chunk that doesn't exist yet.
+      vcol =
+        if vcol == nil and on_cursor_line? and
+             cursor_col == chunk_start and chunk_idx == length(chunks) - 1 and
+             cursor_col == length(cells) and chunk_idx > 0 do
+          0
+        else
+          vcol
+        end
+
+      {chunk, buf_idx, is_first?, vcol}
+    end)
+    |> maybe_add_cursor_overflow(cells, buf_idx, text_w, on_cursor_line?, cursor_col)
+  end
+
+  # When the cursor is at the very end of a line and that position
+  # falls exactly on a wrap boundary, we need an extra empty visual
+  # row to place the cursor.
+  defp maybe_add_cursor_overflow(rows, cells, buf_idx, text_w, true, cursor_col) do
+    total_cells = length(cells)
+
+    if cursor_col == total_cells and total_cells > 0 and rem(total_cells, text_w) == 0 do
+      # Cursor is at the end and lands exactly on a boundary.
+      # Check if any row already has the cursor.
+      has_cursor? = Enum.any?(rows, fn {_, _, _, vc} -> vc != nil end)
+
+      if has_cursor? do
+        rows
+      else
+        rows ++ [{[], buf_idx, false, 0}]
+      end
+    else
+      rows
+    end
+  end
+
+  defp maybe_add_cursor_overflow(rows, _cells, _buf_idx, _text_w, false, _cursor_col), do: rows
+
 
   defp ghost_text(%Model{mention: nil}), do: ""
   defp ghost_text(%Model{mention: %Mentions.Context{} = ctx}), do: Mentions.ghost_suffix(ctx)
@@ -488,7 +949,7 @@ defmodule Egghead.TUI.Chat.View do
   # ---- status --------------------------------------------------------------
 
   defp status_bar(%Model{status_message: nil}, width) do
-    label = " CHAT │ ⏎ send │ /cmd │ F1 records │ ^q quit "
+    label = " CHAT │ ⏎ send │ /cmd │ ^p/^n scroll │ F1 records │ ^q quit "
     text(pad_to(label, width), height: 1, fg: Colors.white(), bg: Colors.selected_bg())
   end
 

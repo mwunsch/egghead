@@ -30,15 +30,15 @@ defmodule Egghead.TUI.Chat.Model do
             id: String.t(),
             name: String.t(),
             status: :idle | :active,
-            tokens_in: non_neg_integer(),
-            tokens_out: non_neg_integer(),
+            session_tokens: non_neg_integer(),
+            ctx_window: non_neg_integer(),
             ctx_pct: float()
           }
     defstruct id: nil,
               name: nil,
               status: :idle,
-              tokens_in: 0,
-              tokens_out: 0,
+              session_tokens: 0,
+              ctx_window: 0,
               ctx_pct: 0.0
   end
 

@@ -60,6 +60,10 @@ defmodule Egghead.OpenTUI.Colors do
            1.0::float-32-little>>
   @selected_bg <<0.20::float-32-little, 0.30::float-32-little, 0.45::float-32-little,
                  1.0::float-32-little>>
+  @sidebar_bg <<0.08::float-32-little, 0.08::float-32-little, 0.11::float-32-little,
+                1.0::float-32-little>>
+  @user_msg_bg <<0.10::float-32-little, 0.12::float-32-little, 0.16::float-32-little,
+                 1.0::float-32-little>>
 
   def bg, do: @bg
   def red, do: @red
@@ -76,4 +80,6 @@ defmodule Egghead.OpenTUI.Colors do
   def link, do: @link
   def muted, do: @muted
   def selected_bg, do: @selected_bg
+  def sidebar_bg, do: @sidebar_bg
+  def user_msg_bg, do: @user_msg_bg
 end

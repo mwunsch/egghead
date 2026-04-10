@@ -45,7 +45,7 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert [%Entry{kind: :user, sender_name: "Mark", text: "hi"}] = m.transcript
     end
 
-    test "agent_streaming accumulates and commits paragraphs" do
+    test "agent_streaming accumulates and commits on newline" do
       m = model()
 
       {m, :none} =
@@ -56,11 +56,11 @@ defmodule Egghead.TUI.Chat.UpdateTest do
 
       {m, :none} =
         Update.update(
-          {:room_event, {:agent_streaming, "default", "agents/scout", "para\n\nsecond"}},
+          {:room_event, {:agent_streaming, "default", "agents/scout", "line\nsecond"}},
           m
         )
 
-      assert [%Entry{kind: :agent, text: "first para"}] = m.transcript
+      assert [%Entry{kind: :agent, text: "first line"}] = m.transcript
       assert m.streams["agents/scout"].current == "second"
     end
 
@@ -120,6 +120,55 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       {m, :none} = Update.update({:room_event, {:agent_joined, "agents/probe"}}, m)
       {m, :none} = Update.update({:room_event, {:agent_joined, "agents/probe"}}, m)
       assert Enum.count(m.agents, &(&1.id == "agents/probe")) == 1
+    end
+
+    test "agent_streaming sets agent status to :active" do
+      m = model()
+      {m, :none} = Update.update({:room_event, {:agent_joined, "agents/scout"}}, m)
+      assert Enum.find(m.agents, &(&1.id == "agents/scout")).status == :idle
+
+      {m, :none} =
+        Update.update(
+          {:room_event, {:agent_streaming, "default", "agents/scout", "hi"}},
+          m
+        )
+
+      assert Enum.find(m.agents, &(&1.id == "agents/scout")).status == :active
+    end
+
+    test "agent_message sets agent status back to :idle" do
+      m = model()
+      {m, :none} = Update.update({:room_event, {:agent_joined, "agents/scout"}}, m)
+
+      {m, :none} =
+        Update.update(
+          {:room_event, {:agent_streaming, "default", "agents/scout", "hi"}},
+          m
+        )
+
+      assert Enum.find(m.agents, &(&1.id == "agents/scout")).status == :active
+
+      {m, :none} =
+        Update.update(
+          {:room_event, {:agent_message, agent_msg("agents/scout", "Scout", "hi")}},
+          m
+        )
+
+      assert Enum.find(m.agents, &(&1.id == "agents/scout")).status == :idle
+    end
+
+    test "agent_passed sets agent status to :idle" do
+      m = model()
+      {m, :none} = Update.update({:room_event, {:agent_joined, "agents/scout"}}, m)
+
+      {m, :none} =
+        Update.update(
+          {:room_event, {:agent_streaming, "default", "agents/scout", "hi"}},
+          m
+        )
+
+      {m, :none} = Update.update({:room_event, {:agent_passed, "agents/scout"}}, m)
+      assert Enum.find(m.agents, &(&1.id == "agents/scout")).status == :idle
     end
   end
 
@@ -365,6 +414,59 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert m.command.selected == 1
       {m, :none} = Update.update({:key, :up}, m)
       assert m.command.selected == 0
+    end
+  end
+
+  describe "transcript scrolling" do
+    # Build a model with enough transcript entries to scroll.
+    defp scrollable_model do
+      entries = for i <- 1..50, do: Entry.system("line #{i}")
+      %{model() | transcript: entries}
+    end
+
+    test "ctrl_p scrolls up (increases scroll offset)" do
+      {m, :none} = Update.update({:key, :ctrl_p}, scrollable_model())
+      assert m.scroll == 5
+    end
+
+    test "ctrl_n scrolls down (decreases scroll offset), clamped at 0" do
+      m = %{scrollable_model() | scroll: 3}
+      {m, :none} = Update.update({:key, :ctrl_n}, m)
+      assert m.scroll == 0
+    end
+
+    test "page_up / page_down adjust scroll" do
+      {m, :none} = Update.update({:key, :page_up}, scrollable_model())
+      assert m.scroll == 5
+      {m, :none} = Update.update({:key, :page_down}, m)
+      assert m.scroll == 0
+    end
+
+    test "mouse wheel_up / wheel_down adjust scroll" do
+      {m, :none} = Update.update({:mouse, %{kind: :wheel_up, press?: true, col: 0, row: 0}}, scrollable_model())
+      assert m.scroll == 3
+      {m, :none} = Update.update({:mouse, %{kind: :wheel_down, press?: true, col: 0, row: 0}}, m)
+      assert m.scroll == 0
+    end
+
+    test "scroll is clamped to transcript length" do
+      m = scrollable_model()
+      # Scroll up many times — should not exceed transcript length
+      {m, :none} = Update.update({:key, :ctrl_p}, m)
+      {m, :none} = Update.update({:key, :ctrl_p}, m)
+      {m, :none} = Update.update({:key, :ctrl_p}, m)
+      assert m.scroll == 15
+      # Now scroll down the same amount — should return to 0
+      {m, :none} = Update.update({:key, :ctrl_n}, m)
+      {m, :none} = Update.update({:key, :ctrl_n}, m)
+      {m, :none} = Update.update({:key, :ctrl_n}, m)
+      assert m.scroll == 0
+    end
+
+    test "sending a message resets scroll to 0" do
+      m = put_input(%{scrollable_model() | scroll: 10}, "hello")
+      {m, _cmd} = Update.update({:key, :enter}, m)
+      assert m.scroll == 0
     end
   end
 

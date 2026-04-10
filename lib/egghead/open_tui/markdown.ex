@@ -219,34 +219,36 @@ defmodule Egghead.OpenTUI.Markdown do
       end
 
     code_ctx = apply_style(default_ctx(), theme[:code_block])
-
-    header =
-      if lang,
-        do: [[plain_span("  ┌─ #{lang} ", code_ctx)]],
-        else: []
+    fence = if lang, do: "```#{lang}", else: "```"
 
     code_lines =
       code
       |> String.split("\n")
       |> Enum.map(fn line ->
-        truncated = String.slice(line, 0, max(1, width - 6))
-        [plain_span("  │ " <> truncated, code_ctx)]
+        truncated = String.slice(line, 0, max(1, width - 2))
+        [plain_span("  " <> truncated, code_ctx)]
       end)
 
-    header ++ code_lines ++ [[plain_span("  └─", code_ctx)], []]
+    [[plain_span("  " <> fence, code_ctx)]] ++
+      code_lines ++
+      [[plain_span("  ```", code_ctx)], []]
   end
 
   defp render_node({"pre", _, children, _}, width, theme) do
     code_ctx = apply_style(default_ctx(), theme[:code_block])
 
-    children
-    |> extract_plain_text()
-    |> String.split("\n")
-    |> Enum.map(fn line ->
-      truncated = String.slice(line, 0, max(1, width - 4))
-      [plain_span("  " <> truncated, code_ctx)]
-    end)
-    |> Kernel.++([[]])
+    code_lines =
+      children
+      |> extract_plain_text()
+      |> String.split("\n")
+      |> Enum.map(fn line ->
+        truncated = String.slice(line, 0, max(1, width - 2))
+        [plain_span("  " <> truncated, code_ctx)]
+      end)
+
+    [[plain_span("  ```", code_ctx)]] ++
+      code_lines ++
+      [[plain_span("  ```", code_ctx)], []]
   end
 
   defp render_node({"ul", _, items, _}, width, theme) do
@@ -492,19 +494,19 @@ defmodule Egghead.OpenTUI.Markdown do
   end
 
   defp extract_span_node({"strong", _, kids, _}, ctx, theme),
-    do: extract_spans(kids, apply_style(ctx, theme[:bold]), theme)
+    do: delimit("**", kids, ctx, theme[:bold], theme)
 
   defp extract_span_node({"em", _, kids, _}, ctx, theme),
-    do: extract_spans(kids, apply_style(ctx, theme[:italic]), theme)
+    do: delimit("*", kids, ctx, theme[:italic], theme)
 
   defp extract_span_node({"code", _, kids, _}, ctx, theme),
-    do: extract_spans(kids, apply_style(ctx, theme[:code_inline]), theme)
+    do: delimit("`", kids, ctx, theme[:code_inline], theme)
 
   defp extract_span_node({"del", _, kids, _}, ctx, theme),
-    do: extract_spans(kids, apply_style(ctx, theme[:strikethrough]), theme)
+    do: delimit("~~", kids, ctx, theme[:strikethrough], theme)
 
   defp extract_span_node({"s", _, kids, _}, ctx, theme),
-    do: extract_spans(kids, apply_style(ctx, theme[:strikethrough]), theme)
+    do: delimit("~~", kids, ctx, theme[:strikethrough], theme)
 
   # Wikilink: render as [[target]] or [[target|display]] and tag
   # the resulting span with the target.
@@ -536,13 +538,23 @@ defmodule Egghead.OpenTUI.Markdown do
     do: [%{text: "\n", fg: ctx.fg, attrs: ctx.attrs, link: ctx.link}]
 
   defp extract_span_node({"sub", _, kids, _}, ctx, theme),
-    do: [plain_span("_", ctx) | extract_spans(kids, ctx, theme)]
+    do: [plain_span("~", ctx) | extract_spans(kids, ctx, theme) ++ [plain_span("~", ctx)]]
 
   defp extract_span_node({"sup", _, kids, _}, ctx, theme),
-    do: [plain_span("^", ctx) | extract_spans(kids, ctx, theme)]
+    do: [plain_span("^", ctx) | extract_spans(kids, ctx, theme) ++ [plain_span("^", ctx)]]
 
   defp extract_span_node({_tag, _, kids, _}, ctx, theme), do: extract_spans(kids, ctx, theme)
   defp extract_span_node(_, _ctx, _theme), do: []
+
+  # Wrap inline children with visible delimiters so the rendered
+  # output is isomorphic — copy-pasting the preview and re-rendering
+  # it produces a functionally equivalent result.
+  defp delimit(marker, kids, ctx, style, theme) do
+    styled = apply_style(ctx, style)
+    [plain_span(marker, styled)] ++
+      extract_spans(kids, styled, theme) ++
+      [plain_span(marker, styled)]
+  end
 
   # Plain-text fallback: just concatenate text content, no styling.
   defp extract_plain_text(children) when is_list(children) do

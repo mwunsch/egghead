@@ -165,13 +165,12 @@ defmodule Egghead.OpenTUI.MarkdownTest do
   end
 
   describe "code blocks" do
-    test "fenced code blocks render with box borders and code color" do
+    test "fenced code blocks render with triple-backtick fences and code color" do
       rendered = Markdown.render("```elixir\nfoo()\n```", 80)
       flat = rendered |> List.flatten() |> Enum.map_join("\n", & &1.text)
       assert String.contains?(flat, "foo()")
-      assert String.contains?(flat, "elixir")
-      assert String.contains?(flat, "┌")
-      assert String.contains?(flat, "└")
+      assert String.contains?(flat, "```elixir")
+      assert String.contains?(flat, "```")
 
       assert Enum.any?(List.flatten(rendered), fn span -> span.fg == Colors.code() end)
     end

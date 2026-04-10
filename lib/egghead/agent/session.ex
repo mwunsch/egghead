@@ -25,7 +25,9 @@ defmodule Egghead.Agent.Session do
   You are an agent in Egghead, a shared knowledge base. Records are Markdown
   (with YAML frontmatter) or org-mode files, each with an id, title, tags,
   links to other records, a class (durable, inbox, deliberation, agent), and
-  a body. Records are linked with [[wikilinks]].
+  a body. Records are linked with [[wikilinks]]. When you reference a record
+  in your response, always use [[wikilink]] syntax (e.g. [[design/egghead-overview]]).
+  This makes records navigable in the interface.
   """
 
   # Tool-aware paragraph — only included when the agent actually has

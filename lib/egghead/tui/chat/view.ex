@@ -171,6 +171,7 @@ defmodule Egghead.TUI.Chat.View do
 
   defp render_transcript_rows(%Model{} = model, width) do
     body_width = max(width - @nick_gutter - 1, 1)
+    active_target = Model.active_link(model)
 
     transcript_rows =
       model.transcript
@@ -178,10 +179,10 @@ defmodule Egghead.TUI.Chat.View do
       |> group_agent_runs()
       |> Enum.flat_map(fn
         {:run, entries_with_nicks} ->
-          agent_run_to_rows(entries_with_nicks, body_width, width)
+          agent_run_to_rows(entries_with_nicks, body_width, width, active_target)
 
         {:single, entry, show_nick?} ->
-          entry_to_rows(entry, show_nick?, body_width, width)
+          entry_to_rows(entry, show_nick?, body_width, width, active_target)
       end)
 
     stream_rows =
@@ -239,7 +240,7 @@ defmodule Egghead.TUI.Chat.View do
   # Render a run of consecutive agent entries from the same sender
   # as a single markdown block. The nick appears on the first row;
   # continuation rows get blank gutter.
-  defp agent_run_to_rows(entries_with_nicks, body_w, full_w) do
+  defp agent_run_to_rows(entries_with_nicks, body_w, full_w, active_target) do
     [{first_entry, show_nick?} | _] = entries_with_nicks
 
     nick =
@@ -253,7 +254,7 @@ defmodule Egghead.TUI.Chat.View do
       |> Enum.join("\n")
 
     md_rows = merged_text |> Markdown.render(body_w) |> trim_trailing_empty()
-    wrap_markdown(nick, md_rows, full_w, nil)
+    wrap_markdown(nick, md_rows, full_w, nil, active_target)
   end
 
   # Tag each entry with whether its nick should be displayed.
@@ -272,25 +273,27 @@ defmodule Egghead.TUI.Chat.View do
     |> Enum.reverse()
   end
 
-  defp entry_to_rows(%Entry{kind: :user} = e, show_nick?, body_w, full_w) do
+  defp entry_to_rows(%Entry{kind: :user} = e, show_nick?, body_w, full_w, active_target) do
     nick = if show_nick?, do: nick_cell(e.sender_name, :user, e.sender_id), else: blank_nick()
     md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
-    wrap_markdown(nick, md_rows, full_w, Colors.user_msg_bg())
+    wrap_markdown(nick, md_rows, full_w, Colors.user_msg_bg(), active_target)
   end
 
-  defp entry_to_rows(%Entry{kind: :action} = e, _show_nick?, body_w, full_w) do
+  defp entry_to_rows(%Entry{kind: :action} = e, _show_nick?, body_w, full_w, _active_target) do
     nick = gutter_symbol("*")
     wrap_body(nick, "#{e.sender_name} #{e.text}", body_w, full_w, Colors.muted(), nil)
   end
 
-  defp entry_to_rows(%Entry{kind: :system} = e, _show_nick?, body_w, full_w) do
+  defp entry_to_rows(%Entry{kind: :system} = e, _show_nick?, body_w, full_w, active_target) do
     nick = gutter_symbol("—")
-    wrap_body(nick, e.text, body_w, full_w, Colors.muted(), nil)
+    md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
+    wrap_markdown(nick, md_rows, full_w, nil, active_target)
   end
 
-  defp entry_to_rows(%Entry{kind: :handoff} = e, _show_nick?, body_w, full_w) do
+  defp entry_to_rows(%Entry{kind: :handoff} = e, _show_nick?, body_w, full_w, active_target) do
     nick = gutter_symbol("»")
-    wrap_body(nick, e.text, body_w, full_w, Colors.accent(), nil)
+    md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
+    wrap_markdown(nick, md_rows, full_w, nil, active_target)
   end
 
   # While an agent is composing, show an animated typing indicator.
@@ -367,7 +370,7 @@ defmodule Egghead.TUI.Chat.View do
   # span row from `Markdown.render/2` becomes an hbox: gutter +
   # separator + styled span leaves. The first row gets the nick;
   # continuation rows get blank gutter.
-  defp wrap_markdown({nick_str, dot_color, has_nick?}, md_rows, full_w, bg) do
+  defp wrap_markdown({nick_str, dot_color, has_nick?}, md_rows, full_w, bg, active_target) do
     bg_opts = if(bg, do: [bg: bg], else: [])
     body_w = full_w - @nick_gutter - 1
 
@@ -386,7 +389,16 @@ defmodule Egghead.TUI.Chat.View do
       span_leaves =
         Enum.map(span_row, fn span ->
           fg = span.fg || Colors.white()
-          text(span.text, [width: String.length(span.text), fg: fg, attrs: span.attrs] ++ bg_opts)
+          highlight? = active_target != nil and span_is_wikilink?(span, active_target)
+
+          opts =
+            if highlight? do
+              [width: String.length(span.text), fg: fg, attrs: Attrs.reverse()] ++ bg_opts
+            else
+              [width: String.length(span.text), fg: fg, attrs: span.attrs] ++ bg_opts
+            end
+
+          text(span.text, opts)
         end)
 
       used = Enum.reduce(span_row, 0, fn span, acc -> acc + String.length(span.text) end)
@@ -395,6 +407,10 @@ defmodule Egghead.TUI.Chat.View do
 
       hbox([height: 1], [gutter, sep] ++ span_leaves ++ [pad_leaf])
     end)
+  end
+
+  defp span_is_wikilink?(span, target) do
+    Map.get(span, :link) == {:wikilink, target}
   end
 
   # Render the nick gutter as an hbox: padding + dot + name.

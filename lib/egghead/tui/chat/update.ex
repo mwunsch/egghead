@@ -57,6 +57,17 @@ defmodule Egghead.TUI.Chat.Update do
     {handle_room_event(event, model), :none}
   end
 
+  # Injected after /save completes — append a system line with
+  # a wikilink so the user can Tab→Enter to navigate to it.
+  def update({:saved_record, record_id}, %Model{} = model) do
+    entry = Entry.system("Transcript saved → [[#{record_id}]]")
+    {Model.append_entry(model, entry), :none}
+  end
+
+  def update({:save_failed, reason}, %Model{} = model) do
+    {Model.append_entry(model, Entry.system(reason)), :none}
+  end
+
   # An unwrapped mailbox message — the Runtime tags anything it
   # can't classify as `{:unknown_msg, raw}`. We just ignore.
   def update({:unknown_msg, _}, %Model{} = model), do: {model, :none}
@@ -74,7 +85,23 @@ defmodule Egghead.TUI.Chat.Update do
     {%{model | mention: nil}, :none}
   end
 
+  # Escape dismisses link-nav mode in the transcript.
+  def update({:key, :escape}, %Model{link_index: idx} = model) when idx != nil do
+    {Model.link_deselect(model), :none}
+  end
+
   def update({:key, :escape}, %Model{} = model), do: {model, :none}
+
+  # When in link-nav mode, Enter follows the active wikilink to records.
+  def update({:key, :enter}, %Model{link_index: idx} = model) when idx != nil do
+    case Model.active_link(model) do
+      nil ->
+        {Model.link_deselect(model), :none}
+
+      target ->
+        {Model.link_deselect(model), {:switch_screen, :records, [preferred_id: target]}}
+    end
+  end
 
   # When the command dropdown is open, Enter fills the input (same as Tab).
   def update({:key, :enter}, %Model{command: %{candidates: [_ | _]} = ctx} = model) do
@@ -115,7 +142,18 @@ defmodule Egghead.TUI.Chat.Update do
     {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
   end
 
-  def update({:key, :tab}, %Model{} = model), do: {model, :none}
+  # When input is empty, Tab cycles wikilinks in the transcript.
+  def update({:key, :tab}, %Model{} = model) do
+    if Model.input_empty?(model),
+      do: {Model.link_next(model), :none},
+      else: {model, :none}
+  end
+
+  def update({:key, :shift_tab}, %Model{} = model) do
+    if Model.input_empty?(model),
+      do: {Model.link_prev(model), :none},
+      else: {model, :none}
+  end
 
   # Shift+Enter and Alt+Enter insert a literal newline. Shift+Enter
   # only arrives from Kitty-protocol terminals (iTerm, kitty, ghostty,
@@ -545,14 +583,14 @@ defmodule Egghead.TUI.Chat.Update do
        fn ->
          try do
            case Egghead.chat_save(room_id) do
-             {:ok, record} ->
-               {:inject, {:room_event, {:system_notice, "Transcript saved as #{record.id}"}}}
+             {:ok, record_id} ->
+               {:saved_record, record_id}
 
              _ ->
-               {:inject, {:room_event, {:system_notice, "Save failed"}}}
+               {:save_failed, "Save failed"}
            end
          catch
-           _, _ -> {:inject, {:room_event, {:system_notice, "Save failed"}}}
+           _, _ -> {:save_failed, "Save failed"}
          end
        end}
 

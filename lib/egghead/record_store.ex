@@ -209,6 +209,7 @@ defmodule Egghead.RecordStore do
           case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
             {:ok, record} ->
               Index.upsert_record(state.index, record)
+              broadcast_record_change(record.id)
               {:reply, {:ok, record}, state}
 
             {:error, reason} ->
@@ -237,6 +238,7 @@ defmodule Egghead.RecordStore do
               {:ok, record} ->
                 Index.upsert_record(state.index, record)
                 maybe_restart_agent(record)
+                broadcast_record_change(record.id)
                 {:reply, {:ok, record}, state}
 
               {:error, reason} ->
@@ -315,6 +317,7 @@ defmodule Egghead.RecordStore do
             {:ok, record} ->
               Index.upsert_record(state.index, record)
               maybe_restart_agent(record)
+              broadcast_record_change(record.id)
 
             {:error, _} ->
               :skip
@@ -325,8 +328,21 @@ defmodule Egghead.RecordStore do
       end
     else
       Index.delete_by_path(state.index, path)
-      # A deleted file might have been an agent — sync
+      broadcast_record_change(nil)
       sync_agents_async()
+    end
+  end
+
+  @doc "PubSub topic for record change notifications."
+  def records_topic, do: "records:changes"
+
+  defp broadcast_record_change(record_id) do
+    if Process.whereis(Egghead.PubSub) do
+      Phoenix.PubSub.broadcast(
+        Egghead.PubSub,
+        records_topic(),
+        {:record_changed, record_id}
+      )
     end
   end
 

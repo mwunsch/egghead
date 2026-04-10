@@ -30,5 +30,10 @@ defmodule Egghead.TUI.Records do
   end
 
   @impl true
-  def subscriptions(_model), do: [:keys]
+  def subscriptions(_model) do
+    [
+      :keys,
+      {:pubsub, Egghead.RecordStore.records_topic(), &{:record_event, &1}}
+    ]
+  end
 end

@@ -92,6 +92,7 @@ defmodule Egghead.TUI.Records.Model do
   @records_commands [
     %{name: "quit", description: "Exit the TUI"},
     %{name: "help", description: "Show keybindings & commands"},
+    %{name: "copy", description: "Copy current record to clipboard"},
     %{name: "debug", description: "Dump current view tree to /tmp/egghead-render.log"},
     %{name: "chat", description: "Enter chat mode"},
     %{name: "system", description: "Agent diagnostics (not yet implemented)"}
@@ -138,7 +139,17 @@ defmodule Egghead.TUI.Records.Model do
       RecordStore.list_records()
       |> Enum.sort_by(&sort_key/1, :desc)
 
-    model = %{model | all: all} |> refilter()
+    # When navigating to a specific record (e.g. following a
+    # wikilink from chat), clear the filter and show all classes
+    # so the target is guaranteed to be visible — same behaviour
+    # as follow_active_link / nav_back within records mode.
+    model =
+      if prefer_id do
+        %{model | all: all, filter: "", filter_cursor: 0, show_all_classes: true}
+      else
+        %{model | all: all}
+      end
+      |> refilter()
 
     selection =
       case prefer_id && Enum.find_index(model.filtered, &(&1.id == prefer_id)) do

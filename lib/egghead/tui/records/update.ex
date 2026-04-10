@@ -87,6 +87,14 @@ defmodule Egghead.TUI.Records.Update do
 
   def update({:editor_failed, _reason}, model), do: {model, :none}
 
+  # ---- record change events -----------------------------------------------
+
+  def update({:record_event, {:record_changed, _id}}, model) do
+    {Model.reload(model, model.selected_id), :none}
+  end
+
+  def update({:record_event, _}, model), do: {model, :none}
+
   # ---- command mode -------------------------------------------------------
   #
   # When the user is in command mode, key handling is intercepted
@@ -285,6 +293,12 @@ defmodule Egghead.TUI.Records.Update do
 
   defp execute_command(%{name: "help"}, model) do
     {Model.show_help(model) |> Model.exit_command_mode(), :none}
+  end
+
+  defp execute_command(%{name: "copy"}, model) do
+    body = model.selected_body || ""
+    Egghead.OpenTUI.Clipboard.copy(body)
+    {Model.exit_command_mode(model), :none}
   end
 
   defp execute_command(%{name: "debug"}, model) do

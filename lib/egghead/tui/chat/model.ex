@@ -57,7 +57,8 @@ defmodule Egghead.TUI.Chat.Model do
           command: map() | nil,
           status_message: String.t() | nil,
           anim_frame: non_neg_integer(),
-          providers?: boolean()
+          providers?: boolean(),
+          link_index: non_neg_integer() | nil
         }
 
   defstruct room_id: nil,
@@ -74,7 +75,8 @@ defmodule Egghead.TUI.Chat.Model do
             command: nil,
             status_message: nil,
             anim_frame: 0,
-            providers?: false
+            providers?: false,
+            link_index: nil
 
   @doc """
   Build a fresh model. The `:room_id` opt is required for the
@@ -184,6 +186,63 @@ defmodule Egghead.TUI.Chat.Model do
 
   @spec input_empty?(t()) :: boolean()
   def input_empty?(%__MODULE__{input: buffer}), do: EditBuffer.empty?(buffer)
+
+  # ---- link navigation (wikilinks in transcript) ----------------------------
+
+  @wikilink_re ~r/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/
+
+  @doc "All wikilink targets found in the transcript, in order."
+  @spec transcript_links(t()) :: [String.t()]
+  def transcript_links(%__MODULE__{transcript: transcript}) do
+    transcript
+    |> Enum.flat_map(fn entry ->
+      Regex.scan(@wikilink_re, entry.text || "")
+      |> Enum.map(fn [_, target | _] -> target end)
+    end)
+    |> Enum.uniq()
+  end
+
+  @doc "Cycle forward through wikilinks. No-op when none exist."
+  @spec link_next(t()) :: t()
+  def link_next(%__MODULE__{} = model) do
+    links = transcript_links(model)
+    case links do
+      [] -> model
+      _ ->
+        n = length(links)
+        new_idx = if model.link_index == nil, do: 0, else: rem(model.link_index + 1, n)
+        %{model | link_index: new_idx}
+    end
+  end
+
+  @doc "Cycle backward through wikilinks."
+  @spec link_prev(t()) :: t()
+  def link_prev(%__MODULE__{} = model) do
+    links = transcript_links(model)
+    case links do
+      [] -> model
+      _ ->
+        n = length(links)
+        new_idx = if model.link_index == nil, do: n - 1, else: rem(model.link_index - 1 + n, n)
+        %{model | link_index: new_idx}
+    end
+  end
+
+  @doc "The currently-active wikilink target, or nil."
+  @spec active_link(t()) :: String.t() | nil
+  def active_link(%__MODULE__{link_index: nil}), do: nil
+  def active_link(%__MODULE__{} = model) do
+    Enum.at(transcript_links(model), model.link_index)
+  end
+
+  @doc "Exit link-nav mode."
+  @spec link_deselect(t()) :: t()
+  def link_deselect(%__MODULE__{} = model), do: %{model | link_index: nil}
+
+  @doc "True when cycling links."
+  @spec link_mode?(t()) :: boolean()
+  def link_mode?(%__MODULE__{link_index: nil}), do: false
+  def link_mode?(%__MODULE__{}), do: true
 
   # ---- internals -----------------------------------------------------------
 

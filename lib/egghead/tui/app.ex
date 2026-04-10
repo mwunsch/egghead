@@ -148,8 +148,14 @@ defmodule Egghead.TUI.App do
     end
   end
 
-  defp handle_cmd({:switch_screen, :records, _init_arg}, state) do
-    {%{state | screen: :records}, :none}
+  defp handle_cmd({:switch_screen, :records, init_arg}, state) do
+    model =
+      case Keyword.get(init_arg, :preferred_id) do
+        nil -> state.records
+        id -> Egghead.TUI.Records.Model.reload(state.records, id)
+      end
+
+    {%{state | screen: :records, records: model}, :none}
   end
 
   # Anything we don't intercept is a normal runtime command and

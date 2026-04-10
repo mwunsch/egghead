@@ -650,7 +650,8 @@ defmodule Egghead.TUI.Chat.Update do
     help_text = """
     Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
     Commands: /save /continue /handoff <agent> /leave /help /quit
-    Navigation: F1 records │ F2 chat │ Esc dismiss\
+    Navigation: F1 records │ F2 chat │ Esc dismiss
+    Copy: hold Shift + drag to select text\
     """
 
     model =

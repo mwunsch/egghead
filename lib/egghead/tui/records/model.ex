@@ -737,6 +737,11 @@ defmodule Egghead.TUI.Records.Model do
     record. A `+ Create "title"` row appears at the bottom of the
     list — `Enter` creates the record and opens it in `$EDITOR`.
 
+    ## Copying text
+
+    Hold `Shift` while clicking and dragging to use your terminal's
+    native text selection.
+
     Press `Esc` to dismiss this help.
     """
   end

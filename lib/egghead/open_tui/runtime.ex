@@ -49,13 +49,9 @@ defmodule Egghead.OpenTUI.Runtime do
 
   ## Suspending the terminal
 
-  `{:suspend, fn}` is the runtime's headline feature compared
-  to TermUI on `main`, which uses `Application.put_env` and
-  `:quit` to communicate "spawn $EDITOR." Here, the screen's
-  `update/2` returns a `{:suspend, fn}` command and the runtime
-  handles tear-down and resume. The function runs while the
-  terminal is in cooked mode and out of the alt screen, so it
-  can drive vim, less, or anything else that wants the tty.
+  `{:suspend, fn}` tears down the terminal, runs the function
+  in cooked mode (so it can drive vim, less, or anything else
+  that wants the tty), then restores the terminal on return.
   """
 
   alias Egghead.OpenTUI.{Bridge, Input, Renderer, Terminal}
@@ -116,7 +112,12 @@ defmodule Egghead.OpenTUI.Runtime do
         # exactly one topic per runtime — multi-topic can grow
         # later if a screen ever needs it. The wrap fn turns the
         # raw broadcast message into a screen-domain message.
-        pubsub: nil
+        pubsub: nil,
+        # The Phoenix.PubSub server name. Required for screens
+        # that declare {:pubsub, topic, wrap} subscriptions.
+        # Passed in via opts so the runtime has no compile-time
+        # dependency on any particular application.
+        pubsub_server: Keyword.get(opts, :pubsub_server)
       }
 
       state = execute(cmd, state, behaviour)
@@ -291,11 +292,11 @@ defmodule Egghead.OpenTUI.Runtime do
         state
 
       {{_topic, _}, nil} ->
-        unsubscribe_pubsub(state.pubsub)
+        unsubscribe_pubsub(state)
         %{state | pubsub: nil}
 
       {nil, {topic, _wrap} = sub} ->
-        :ok = Phoenix.PubSub.subscribe(Egghead.PubSub, topic)
+        :ok = Phoenix.PubSub.subscribe(state.pubsub_server, topic)
         %{state | pubsub: sub}
 
       {{topic, _}, {topic, _wrap} = sub} ->
@@ -303,14 +304,14 @@ defmodule Egghead.OpenTUI.Runtime do
         %{state | pubsub: sub}
 
       {_old, {topic, _wrap} = sub} ->
-        unsubscribe_pubsub(state.pubsub)
-        :ok = Phoenix.PubSub.subscribe(Egghead.PubSub, topic)
+        unsubscribe_pubsub(state)
+        :ok = Phoenix.PubSub.subscribe(state.pubsub_server, topic)
         %{state | pubsub: sub}
     end
   end
 
-  defp unsubscribe_pubsub({topic, _wrap}) do
-    _ = Phoenix.PubSub.unsubscribe(Egghead.PubSub, topic)
+  defp unsubscribe_pubsub(%{pubsub: {topic, _wrap}, pubsub_server: server}) do
+    _ = Phoenix.PubSub.unsubscribe(server, topic)
     :ok
   end
 

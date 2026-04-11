@@ -156,7 +156,7 @@ defmodule Egghead do
   """
   @spec tui() :: :ok | {:error, term()}
   def tui do
-    Egghead.OpenTUI.Runtime.run(Egghead.TUI.App, [])
+    Egghead.OpenTUI.Runtime.run(Egghead.TUI.App, pubsub_server: Egghead.PubSub)
   end
 
   # --- Chat API ---

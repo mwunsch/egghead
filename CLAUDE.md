@@ -10,9 +10,8 @@ or browse via `mix egghead.tui`.
 
 - **Don't commit `records/`** unless explicitly told. It's a live data store.
 - **Don't commit `CLAUDE.md`** unless explicitly told.
-- **Don't patch `deps/term_ui/`** — it's gitignored and gets wiped on the
-  next dep update. Real fixes go upstream; document workarounds in
-  `records/design/termui-learnings.md`.
+- **Don't patch `native/bridge/`** without understanding the Zig NIF
+  build. The bridge links against `libopentui.dylib` at compile time.
 - **After every commit, update `records/meta/session-log.md`** with the
   commit hash and a short description, then play back the remaining
   "Next Areas" list to the user so we maintain continuity across sessions.
@@ -113,10 +112,10 @@ library embedding. Prefer reusing these over reinventing.
 
 ## TUI
 
-`mix egghead.tui` (or `./bin/egghead`). Built on TermUI (Elm architecture).
-Logs go to `/tmp/egghead.log` — never to stdout, which would corrupt the
-alt-screen rendering. Pinned to a specific TermUI ref because of upstream
-bugs we work around; see `records/design/termui-learnings.md`.
+`mix egghead.tui` (or `./bin/egghead`). Built on OpenTUI (Zig NIF) with an
+Elm-architecture runtime. See `lib/egghead/open_tui/README.md` for the
+framework documentation. Logs go to `/tmp/egghead.log` — never to stdout,
+which would corrupt the alt-screen rendering.
 
 ### Two modes
 
@@ -141,27 +140,28 @@ chat mode to records mode.
 
 ### TUI gotchas (have burned us before)
 
-- **Two `Style` modules in TermUI**: use `TermUI.Renderer.Style`, NOT
-  `TermUI.Style`. Easy to import the wrong one and get nil cells.
-- **`handle_info/2` MUST return `{state, []}`**, not bare `state`. The
-  catch-all clause in `app.ex` was wrong for months and only surfaced when
-  chat mode introduced a PubSub subscriber.
-- **Don't run the TUI from `iex`** — TermUI needs exclusive terminal
-  ownership; the IEx group leader and TermUI raw mode fight.
+- **Don't run the TUI from `iex`** — the NIF needs exclusive terminal
+  ownership; the IEx group leader and raw mode fight.
 - **`mix egghead.tui` redirects logs** to `/tmp/egghead.log`. If you see
   log spam in the alt screen during dev, something is bypassing this.
-- **`$EDITOR` flow uses quit-and-restart** (BubbleTea-style): TUI quits,
-  parent loop spawns the editor with `:nouse_stdio` Port, restores raw
-  mode, drains stale terminal capability responses, restarts the runtime.
-  If you see garbage on top of the screen after editor exit, the drain
-  isn't catching something.
-- **`stty` calls go through `Port.open(:nouse_stdio)`**, NOT `System.cmd` —
-  the latter pipes stdin and the TTY operations silently fail.
+- **`$EDITOR` uses `{:suspend, fn}`** — the runtime tears down the terminal,
+  runs the function (editor gets a clean tty), then restores. If you see
+  garbage after editor exit, `Bridge.drain_input` isn't catching something.
+- **The NIF opens `/dev/tty` directly** — not stdin. This is correct for
+  POSIX (resolves to the controlling terminal) and works with PTY wrappers
+  like termscope that call `forkpty()`. But `System.cmd("stty", ...)`
+  still fails inside the BEAM because it pipes stdin.
+- **`enable_mouse(handle, true)` floods input** with motion events on every
+  cursor move, drowning keyboard events. Use `false` (button + wheel only).
+  In-app mouse text selection needs a different approach (see below).
 - **`ANSI :black` ≠ terminal default background** on most setups. Use `nil`
-  bg → Cell `:default` → SGR 49 for content; only set explicit bg on
-  chrome bars and selection highlights.
+  bg → SGR 49 for content; only set explicit bg on chrome bars and selection
+  highlights.
 - **Streaming flushes on `\n\n`**, not on every newline. The chat
   display would be unreadable otherwise. See coordinator on_chunk.
+- **`Egghead.OpenTUI.*` modules must not reference `Egghead.*` application
+  modules** (code or docs). The framework layer is application-agnostic.
+  PubSub is injected via `:pubsub_server` opt, not hardcoded.
 
 ## MCP
 
@@ -203,12 +203,13 @@ want to ask the swarm a question without managing rooms themselves.
 | `lib/egghead/agent/tools.ex` | Agent-facing tool implementations |
 | `lib/egghead/mcp/handler.ex` | MCP tool surface for external clients |
 | `lib/egghead/llm/registry.ex` | Multi-provider, env detection, model resolve |
+| `lib/egghead/open_tui/` | OpenTUI framework (see README.md inside) |
+| `lib/egghead/open_tui/runtime.ex` | Elm event loop, command execution |
+| `lib/egghead/open_tui/bridge.ex` | Zig NIF interface to libopentui |
 | `lib/egghead/tui/app.ex` | Root Elm component (records + chat modes) |
-| `lib/egghead/tui/markdown.ex` | Earmark AST → styled terminal text |
-| `lib/egghead/tui/state.ex` | TUI state struct |
-| `lib/egghead/tui/chat_render.ex` | Chat-mode entry rendering |
+| `lib/egghead/tui/records/` | Records screen (Model/Update/View) |
+| `lib/egghead/tui/chat/` | Chat screen (Model/Update/View) |
 | `lib/mix/tasks/egghead.tui.ex` | TUI mix task (logger redirect, cleanup) |
-| `test/tui/app_test.exs` | Headless TUI tests (Runtime skip_terminal: true) |
 
 ## Quick `iex` recipes
 
@@ -234,6 +235,9 @@ In `records/design/`:
 - `context-pressure.md` — handoffs, lean transcript diff
 - `security-model.md` — mutation spectrum and capability tokens
 - `tui.md` — TUI design and mockups
-- `termui-learnings.md` — verified TermUI API behavior, known pitfalls
 - `tui-theme-system.md` — owned palette plan (Mocha/Latte)
 - `decisions.md` — decision log
+
+In `lib/egghead/open_tui/`:
+
+- `README.md` — OpenTUI framework docs, module inventory, unexposed capabilities

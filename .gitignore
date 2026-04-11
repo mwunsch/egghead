@@ -27,3 +27,8 @@ egghead-*.tar
 
 # SQLite index (derived, rebuildable from files)
 .egghead/
+
+# Native build artifacts (downloaded/built by mix compile via build_dot_zig)
+/priv/*/
+/zig-out/
+/.zig-cache/

@@ -1,33 +1,40 @@
-defmodule Egghead.TUI.Markdown.Table do
+defmodule Egghead.OpenTUI.Markdown.Table do
   @moduledoc """
-  Renders Earmark GFM table AST nodes to styled terminal lines.
+  Render Earmark GFM table AST nodes to styled rows for
+  `Egghead.OpenTUI.Markdown`.
 
   The Earmark AST shape for a table:
 
       {"table", [], [
-        {"thead", [], [{"tr", [], [{"th", [{"style", "text-align: left;"}], ["Header"], %{}}, ...], %{}}], %{}},
-        {"tbody", [], [{"tr", [], [{"td", [{"style", "..."}], ["Cell"], %{}}, ...], %{}}, ...], %{}}
+        {"thead", [], [
+          {"tr", [], [{"th", [{"style", "text-align: left;"}], ["Header"], %{}}, ...], %{}}
+        ], %{}},
+        {"tbody", [], [
+          {"tr", [], [{"td", [...], ["Cell"], %{}}, ...], %{}},
+          ...
+        ], %{}}
       ], %{}}
 
-  We extract a list of rows + an alignment list, compute column widths,
-  and render with Unicode box-drawing characters.
+  We extract a list of rows + an alignment list, compute column
+  widths to fit `width` total columns, and render with Unicode
+  box-drawing characters. Header row uses the `:table_header`
+  theme key, body cells use `:table_cell`, borders use
+  `:table_border`.
   """
 
-  alias Egghead.TUI.Theme
+  alias Egghead.OpenTUI.Markdown
 
   @doc """
-  Render a table AST node to a list of {string, style} tuples.
-
-  Returns lines bounded to `width` characters total, including borders.
-  Header row uses bold, body rows use the default text style.
+  Render a table AST node to a list of styled rows. Each row is
+  a list of spans (matching `Egghead.OpenTUI.Markdown`'s
+  output shape).
   """
-  @spec render(list(), pos_integer()) :: [{String.t(), TermUI.Renderer.Style.t()}]
-  def render(table_children, width) do
+  @spec render(list(), pos_integer(), Markdown.theme()) :: Markdown.rendered()
+  def render(table_children, width, theme) do
     {header_row, body_rows, aligns} = collect_rows(table_children)
 
     case header_row do
       nil ->
-        # Malformed table — fall back to text extraction
         []
 
       _ ->
@@ -36,28 +43,28 @@ defmodule Egghead.TUI.Markdown.Table do
         widths = compute_col_widths(all_rows, col_count, width)
         aligns = pad_aligns(aligns, col_count)
 
+        border_ctx = Markdown.apply_style(Markdown.default_ctx(), theme[:table_border])
+        header_ctx = Markdown.apply_style(Markdown.default_ctx(), theme[:table_header])
+        cell_ctx = Markdown.apply_style(Markdown.default_ctx(), theme[:table_cell])
+
         top = border_line(:top, widths)
         sep = border_line(:mid, widths)
         bot = border_line(:bot, widths)
 
-        header_line = render_row(header_row, widths, aligns, true)
-        body_lines = Enum.map(body_rows, &render_row(&1, widths, aligns, false))
-
-        sep_style = Theme.separator()
-        head_style = Theme.md_h3()
-        body_style = Theme.normal()
+        header_line = render_row(header_row, widths, aligns)
+        body_lines = Enum.map(body_rows, &render_row(&1, widths, aligns))
 
         [
-          {top, sep_style},
-          {header_line, head_style},
-          {sep, sep_style}
+          [Markdown.plain_span(top, border_ctx)],
+          [Markdown.plain_span(header_line, header_ctx)],
+          [Markdown.plain_span(sep, border_ctx)]
         ] ++
-          Enum.map(body_lines, fn line -> {line, body_style} end) ++
-          [{bot, sep_style}, {"", nil}]
+          Enum.map(body_lines, fn line -> [Markdown.plain_span(line, cell_ctx)] end) ++
+          [[Markdown.plain_span(bot, border_ctx)], []]
     end
   end
 
-  # --- AST extraction ---
+  # ---- AST extraction -----------------------------------------------------
 
   defp collect_rows(table_children) do
     Enum.reduce(table_children, {nil, [], []}, fn
@@ -79,9 +86,7 @@ defmodule Egghead.TUI.Markdown.Table do
       cells
       |> Enum.map(fn
         {tag, attrs, children, _} when tag in ["th", "td"] ->
-          text = text_content(children)
-          align = parse_align(attrs)
-          {text, align}
+          {text_content(children), parse_align(attrs)}
 
         _ ->
           {"", :left}
@@ -123,10 +128,8 @@ defmodule Egghead.TUI.Markdown.Table do
   defp max_row_length([]), do: 0
   defp max_row_length(rows), do: rows |> Enum.map(&length/1) |> Enum.max()
 
-  # --- Column widths ---
+  # ---- column widths ------------------------------------------------------
 
-  # Each column gets max(content_width) capped to fit overall width.
-  # Borders take 1 char each: "│ col1 │ col2 │" = (cols * 3 + 1) extra chars.
   defp compute_col_widths(all_rows, col_count, max_width) do
     natural =
       Enum.map(0..(col_count - 1), fn col ->
@@ -141,7 +144,6 @@ defmodule Egghead.TUI.Markdown.Table do
         |> max(1)
       end)
 
-    # Total width if we used natural widths: sum + borders
     overhead = col_count * 3 + 1
     available = max(col_count, max_width - overhead)
     natural_total = Enum.sum(natural)
@@ -149,14 +151,13 @@ defmodule Egghead.TUI.Markdown.Table do
     if natural_total <= available do
       natural
     else
-      # Scale down proportionally
       Enum.map(natural, fn w ->
         max(1, round(w / natural_total * available))
       end)
     end
   end
 
-  # --- Row rendering ---
+  # ---- row rendering ------------------------------------------------------
 
   defp border_line(kind, widths) do
     {left, mid, right} =
@@ -170,7 +171,7 @@ defmodule Egghead.TUI.Markdown.Table do
     left <> Enum.join(parts, mid) <> right
   end
 
-  defp render_row(cells, widths, aligns, _header?) do
+  defp render_row(cells, widths, aligns) do
     rendered_cells =
       widths
       |> Enum.with_index()

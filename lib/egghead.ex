@@ -146,89 +146,17 @@ defmodule Egghead do
 
   @doc """
   Launches the terminal UI. Blocks until the TUI exits.
+
+  Drives the OpenTUI-backed runtime
+  (`Egghead.OpenTUI.Runtime`) running the records-list screen
+  (`Egghead.TUI.Records`). The runtime owns terminal lifecycle
+  (raw mode, alt screen, cleanup on crash) entirely through the
+  Zig NIF bridge — no stty Port hacks, no ANSI cleanup escape
+  hatches needed.
   """
   @spec tui() :: :ok | {:error, term()}
   def tui do
-    # Register cleanup for abnormal exits (Ctrl+C with +Bd, SIGTERM, etc.)
-    System.at_exit(fn _status -> reset_terminal() end)
-
-    # Disable flow control so Ctrl+Q reaches the app (not swallowed as XON).
-    # Must use :nouse_stdio — System.cmd stty fails because it pipes stdin.
-    # OTP 28's shell.start_interactive may not disable ixon.
-    ensure_stty_raw()
-
-    tui_loop()
-  end
-
-  defp tui_loop do
-    result = TermUI.Runtime.run(root: Egghead.TUI.App)
-    reset_terminal()
-
-    # Check if the TUI quit to open an editor (set by App.open_in_editor)
-    case Application.get_env(:egghead, :pending_editor) do
-      {editor, path, restore} ->
-        Application.delete_env(:egghead, :pending_editor)
-
-        # Run editor with a fully clean terminal — no competing IO readers,
-        # no alternate screen, no raw mode. Port with :nouse_stdio inherits
-        # the BEAM's terminal FDs directly.
-        sh = System.find_executable("sh") || "/bin/sh"
-        escaped = path |> String.replace("'", "'\\''")
-
-        port =
-          Port.open({:spawn_executable, sh}, [
-            :nouse_stdio,
-            :exit_status,
-            args: ["-c", "#{editor} '#{escaped}'"]
-          ])
-
-        receive do
-          {^port, {:exit_status, _}} -> :ok
-        end
-
-        # Save restore state for the next Runtime init
-        Application.put_env(:egghead, :tui_restore, restore)
-
-        ensure_stty_raw()
-
-        # Restart the TUI
-        tui_loop()
-
-      _ ->
-        result
-    end
-  end
-
-  # Set stty raw mode via :nouse_stdio port (real terminal on fd 0).
-  # TermUI's System.cmd stty fallback doesn't work (piped stdin).
-  defp ensure_stty_raw do
-    sh = System.find_executable("sh") || "/bin/sh"
-
-    port =
-      Port.open({:spawn_executable, sh}, [
-        :nouse_stdio,
-        :exit_status,
-        args: ["-c", "stty raw -echo -isig -ixon min 1 time 0"]
-      ])
-
-    receive do
-      {^port, {:exit_status, _}} -> :ok
-    end
-  end
-
-  defp reset_terminal do
-    # Disable all mouse tracking modes
-    IO.write("\e[?1006l\e[?1003l\e[?1002l\e[?1000l")
-    # Show cursor
-    IO.write("\e[?25h")
-    # Exit alternate screen
-    IO.write("\e[?1049l")
-    # Reset terminal attributes
-    IO.write("\e[0m\e[?7h")
-    # Disable Kitty keyboard protocol
-    IO.write("\e[>0u")
-  rescue
-    _ -> :ok
+    Egghead.OpenTUI.Runtime.run(Egghead.TUI.App, pubsub_server: Egghead.PubSub)
   end
 
   # --- Chat API ---

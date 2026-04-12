@@ -421,8 +421,6 @@ body { min-height: 100vh; }
 }
 
 .markdown-body code {
-  background: var(--code-bg);
-  padding: 1px 4px;
   font-family: var(--font-mono);
   font-size: 0.88em;
   color: var(--fg);
@@ -443,7 +441,7 @@ body { min-height: 100vh; }
 }
 
 .markdown-body pre::before {
-  content: "```"; display: block; color: var(--syntax);
+  content: "```" attr(data-lang); display: block; color: var(--syntax);
   font-family: var(--font-mono); font-size: 12px; margin-bottom: 4px;
 }
 
@@ -460,23 +458,31 @@ body { min-height: 100vh; }
 
 .markdown-body ul, .markdown-body ol { margin: 0.5em 0 0.8em 1.5em; }
 .markdown-body li { margin-bottom: 0.2em; }
-.markdown-body ul > li { list-style-type: disc; }
+.markdown-body ul { list-style-type: "- "; }
 
 .markdown-body li.task { list-style: none; margin-left: -1.5em; }
 .markdown-body li.task input { margin-right: 6px; }
 .markdown-body li.task.done { color: var(--muted); }
 
 .markdown-body blockquote {
-  border-left: 3px solid var(--accent);
-  padding: 0.2em 0 0.2em 1em;
+  border-left: none;
+  padding: 0.2em 0 0.2em 1.5em;
   color: var(--muted);
   margin: 0.5em 0 0.8em;
   font-style: italic;
+  position: relative;
 }
 
 .markdown-body blockquote::before {
-  content: "> "; color: var(--syntax); font-family: var(--font-mono);
-  font-style: normal; font-size: 0.8em;
+  content: ">";
+  position: absolute;
+  left: 0;
+  top: 0.2em;
+  color: var(--syntax);
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 1em;
+  line-height: 1.7;
 }
 
 .markdown-body hr { border: none; border-top: 1px solid var(--chrome-lo); margin: 1.5em 0; }
@@ -496,6 +502,38 @@ body { min-height: 100vh; }
 .markdown-body del { color: var(--muted); }
 .markdown-body del::before, .markdown-body del::after {
   content: "~~"; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em;
+}
+
+.properties-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-chrome svg { display: inline-block; vertical-align: -2px; margin-right: 4px; }
+
+/* Win95 raised chrome button */
+.btn-chrome {
+  background: var(--chrome);
+  border: none;
+  padding: 4px 16px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-dk),
+    inset 2px 2px 0 var(--chrome-mid),
+    inset -2px -2px 0 var(--chrome-lo);
+}
+
+.btn-chrome:active {
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-dk),
+    inset -1px -1px 0 var(--chrome-hi),
+    inset 2px 2px 0 var(--chrome-lo),
+    inset -2px -2px 0 var(--chrome-mid);
 }
 
 .empty-state {

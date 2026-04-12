@@ -51,11 +51,11 @@ Hooks.CopyMarkdown = {
   mounted() {
     this.el.addEventListener("click", () => {
       const markdown = this.el.dataset.markdown;
-      if (markdown) {
+      const label = this.el.querySelector(".btn-label");
+      if (markdown && label) {
         navigator.clipboard.writeText(markdown).then(() => {
-          const orig = this.el.textContent;
-          this.el.textContent = "Copied!";
-          setTimeout(() => (this.el.textContent = orig), 1500);
+          label.textContent = "Copied!";
+          setTimeout(() => (label.textContent = "Copy"), 1500);
         });
       }
     });

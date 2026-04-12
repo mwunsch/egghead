@@ -412,6 +412,20 @@ defmodule Egghead.Web.AppLive do
                   <dd><span class={"class-badge #{@selected_record.class}"}>{@selected_record.class}</span></dd>
                 </div>
               </dl>
+              <div class="properties-actions">
+                <button
+                  class="btn-chrome"
+                  id="copy-md-btn"
+                  phx-hook="CopyMarkdown"
+                  data-markdown={@selected_record.body || ""}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="5" y="5" width="9" height="9" rx="1" />
+                    <path d="M3 11V3a1 1 0 0 1 1-1h8" />
+                  </svg>
+                  <span class="btn-label">Copy</span>
+                </button>
+              </div>
             </div>
             <article class="record-body markdown-body">
               {Phoenix.HTML.raw(@selected_body_html)}

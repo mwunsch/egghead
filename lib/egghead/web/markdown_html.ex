@@ -56,13 +56,16 @@ defmodule Egghead.Web.MarkdownHTML do
 
   defp render_node({"pre", _, [{"code", attrs, [code], _}], _}, _link_fn, _exists_fn)
        when is_binary(code) do
-    lang_class =
+    lang =
       case List.keyfind(attrs, "class", 0) do
-        {"class", lang} -> " class=\"language-#{escape_attr(lang)}\""
-        _ -> ""
+        {"class", lang} -> lang
+        _ -> nil
       end
 
-    "<pre><code#{lang_class}>#{escape(code)}</code></pre>\n"
+    lang_attr = if lang, do: " class=\"language-#{escape_attr(lang)}\"", else: ""
+    data_lang = if lang, do: " data-lang=\"#{escape_attr(lang)}\"", else: ""
+
+    "<pre#{data_lang}><code#{lang_attr}>#{escape(code)}</code></pre>\n"
   end
 
   defp render_node({"pre", attrs, children, meta}, link_fn, exists_fn) do

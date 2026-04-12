@@ -46,7 +46,8 @@ defmodule Egghead.Web.MarkdownHTMLTest do
       """
 
       html = MarkdownHTML.render(md)
-      assert html =~ "<pre><code class=\"language-elixir\">"
+      assert html =~ "data-lang=\"elixir\""
+      assert html =~ "<code class=\"language-elixir\">"
       assert html =~ "def hello, do: :world"
       assert html =~ "</code></pre>"
     end

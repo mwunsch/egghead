@@ -30,5 +30,6 @@ egghead-*.tar
 
 # Native build artifacts (downloaded/built by mix compile via build_dot_zig)
 /priv/*/
+!/priv/static/
 /zig-out/
 /.zig-cache/

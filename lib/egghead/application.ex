@@ -29,7 +29,7 @@ defmodule Egghead.Application do
           {Phoenix.PubSub, name: Egghead.PubSub},
           {Egghead.RecordSupervisor, records_dir: records_dir, db_path: db_path},
           {Egghead.Agent.LayerSupervisor, records_dir: records_dir}
-        ]
+        ] ++ web_children()
       else
         []
       end
@@ -50,5 +50,13 @@ defmodule Egghead.Application do
     end
 
     result
+  end
+
+  defp web_children do
+    if Application.get_env(:egghead, :start_web, true) do
+      [Egghead.Web.Endpoint]
+    else
+      []
+    end
   end
 end

@@ -113,7 +113,9 @@ defmodule Mix.Tasks.Compile.OpentuiFetch do
       :ok
     else
       asset = OpenTUIPaths.opentui_asset(target)
-      url = "https://github.com/sst/opentui/releases/download/#{OpenTUIPaths.opentui_version()}/#{asset}"
+
+      url =
+        "https://github.com/sst/opentui/releases/download/#{OpenTUIPaths.opentui_version()}/#{asset}"
 
       Mix.shell().info("==> downloading #{asset}")
 
@@ -159,6 +161,7 @@ defmodule Egghead.MixProject do
       app: :egghead,
       version: "0.1.0",
       elixir: "~> 1.19",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       compilers: [:opentui_fetch, :build_dot_zig] ++ Mix.compilers(),
       zig_target: @zig_target,
@@ -178,6 +181,9 @@ defmodule Egghead.MixProject do
     ]
   end
 
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
@@ -191,7 +197,11 @@ defmodule Egghead.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:bandit, "~> 1.6"},
       {:plug, "~> 1.16"},
-      {:req, "~> 0.5"}
+      {:req, "~> 0.5"},
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_html, "~> 4.1"},
+      {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end
 

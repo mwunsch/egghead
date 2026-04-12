@@ -198,12 +198,23 @@ defmodule Egghead.OpenTUI.Markdown do
 
   # ---- block-level rendering ---------------------------------------------
 
-  defp render_node({"h1", _, children, _}, width, theme), do: heading(children, "# ", :h1, width, theme)
-  defp render_node({"h2", _, children, _}, width, theme), do: heading(children, "## ", :h2, width, theme)
-  defp render_node({"h3", _, children, _}, width, theme), do: heading(children, "### ", :h3, width, theme)
-  defp render_node({"h4", _, children, _}, width, theme), do: heading(children, "#### ", :h4, width, theme)
-  defp render_node({"h5", _, children, _}, width, theme), do: heading(children, "##### ", :h5, width, theme)
-  defp render_node({"h6", _, children, _}, width, theme), do: heading(children, "###### ", :h6, width, theme)
+  defp render_node({"h1", _, children, _}, width, theme),
+    do: heading(children, "# ", :h1, width, theme)
+
+  defp render_node({"h2", _, children, _}, width, theme),
+    do: heading(children, "## ", :h2, width, theme)
+
+  defp render_node({"h3", _, children, _}, width, theme),
+    do: heading(children, "### ", :h3, width, theme)
+
+  defp render_node({"h4", _, children, _}, width, theme),
+    do: heading(children, "#### ", :h4, width, theme)
+
+  defp render_node({"h5", _, children, _}, width, theme),
+    do: heading(children, "##### ", :h5, width, theme)
+
+  defp render_node({"h6", _, children, _}, width, theme),
+    do: heading(children, "###### ", :h6, width, theme)
 
   defp render_node({"p", _, children, _}, width, theme) do
     spans = extract_spans(children, default_ctx(), theme)
@@ -551,6 +562,7 @@ defmodule Egghead.OpenTUI.Markdown do
   # it produces a functionally equivalent result.
   defp delimit(marker, kids, ctx, style, theme) do
     styled = apply_style(ctx, style)
+
     [plain_span(marker, styled)] ++
       extract_spans(kids, styled, theme) ++
       [plain_span(marker, styled)]

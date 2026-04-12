@@ -541,20 +541,23 @@ defmodule Egghead.TUI.Records.Model do
   @doc "Kill from beginning of input to cursor."
   @spec command_kill_to_bol(t()) :: t()
   def command_kill_to_bol(model),
-    do: apply_command_edit(model, &Readline.kill_to_bol/2)
-    |> Map.put(:command_selected, 0)
+    do:
+      apply_command_edit(model, &Readline.kill_to_bol/2)
+      |> Map.put(:command_selected, 0)
 
   @doc "Kill the previous word."
   @spec command_kill_word(t()) :: t()
   def command_kill_word(model),
-    do: apply_command_edit(model, &Readline.kill_word/2)
-    |> Map.put(:command_selected, 0)
+    do:
+      apply_command_edit(model, &Readline.kill_word/2)
+      |> Map.put(:command_selected, 0)
 
   @doc "Kill the next word."
   @spec command_kill_word_forward(t()) :: t()
   def command_kill_word_forward(model),
-    do: apply_command_edit(model, &Readline.kill_word_forward/2)
-    |> Map.put(:command_selected, 0)
+    do:
+      apply_command_edit(model, &Readline.kill_word_forward/2)
+      |> Map.put(:command_selected, 0)
 
   @doc "Move the cursor to the beginning of the input."
   @spec command_move_to_start(t()) :: t()
@@ -615,6 +618,7 @@ defmodule Egghead.TUI.Records.Model do
 
   def filtered_commands(%__MODULE__{command_input: input}) do
     needle = String.downcase(input)
+
     Enum.filter(@records_commands, fn cmd ->
       String.starts_with?(String.downcase(cmd.name), needle)
     end)

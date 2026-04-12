@@ -443,7 +443,12 @@ defmodule Egghead.TUI.Chat.UpdateTest do
     end
 
     test "mouse wheel_up / wheel_down adjust scroll" do
-      {m, :none} = Update.update({:mouse, %{kind: :wheel_up, press?: true, col: 0, row: 0}}, scrollable_model())
+      {m, :none} =
+        Update.update(
+          {:mouse, %{kind: :wheel_up, press?: true, col: 0, row: 0}},
+          scrollable_model()
+        )
+
       assert m.scroll == 3
       {m, :none} = Update.update({:mouse, %{kind: :wheel_down, press?: true, col: 0, row: 0}}, m)
       assert m.scroll == 0

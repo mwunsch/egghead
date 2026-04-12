@@ -264,6 +264,7 @@ defmodule Egghead.TUI.Records.View do
   defp command_empty_row(width) do
     line = "  (no matching commands)"
     pad = max(width - String.length(line), 0)
+
     text(line <> String.duplicate(" ", pad),
       height: 1,
       fg: Colors.muted(),

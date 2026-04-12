@@ -129,8 +129,7 @@ defmodule Egghead.OpenTUI.Terminal do
     :ok = Bridge.enable_mouse(handle, false)
     :ok = enable_bracketed_paste()
 
-    {:reply, :ok,
-     %{state | handle: handle, width: width, height: height, suspended?: false}}
+    {:reply, :ok, %{state | handle: handle, width: width, height: height, suspended?: false}}
   end
 
   @impl true

@@ -187,7 +187,10 @@ defmodule Egghead.TUI.Chat.Update do
     {%{model | command: %{ctx | selected: rem(ctx.selected - 1 + n, n)}}, :none}
   end
 
-  def update({:key, :up}, %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model) do
+  def update(
+        {:key, :up},
+        %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model
+      ) do
     {%{model | mention: Mentions.move_up(ctx)}, :none}
   end
 
@@ -200,7 +203,10 @@ defmodule Egghead.TUI.Chat.Update do
     {%{model | command: %{ctx | selected: rem(ctx.selected + 1, n)}}, :none}
   end
 
-  def update({:key, :down}, %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model) do
+  def update(
+        {:key, :down},
+        %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model
+      ) do
     {%{model | mention: Mentions.move_down(ctx)}, :none}
   end
 
@@ -498,7 +504,9 @@ defmodule Egghead.TUI.Chat.Update do
           Enum.map(agents, fn
             %Model.AgentPresence{id: ^agent_id} = a ->
               %{a | ctx_pct: pct, ctx_window: cw, session_tokens: st}
-            a -> a
+
+            a ->
+              a
           end)
 
         %{model | agents: agents}
@@ -559,7 +567,12 @@ defmodule Egghead.TUI.Chat.Update do
 
     case Map.get(@chat_commands, cmd_name) do
       nil ->
-        model = Model.append_entry(Model.clear_input(model), Entry.system("Unknown command: /#{cmd_name}"))
+        model =
+          Model.append_entry(
+            Model.clear_input(model),
+            Entry.system("Unknown command: /#{cmd_name}")
+          )
+
         {model, :none}
 
       handler ->
@@ -623,7 +636,9 @@ defmodule Egghead.TUI.Chat.Update do
     target = String.trim(arg)
 
     if target == "" do
-      model = Model.append_entry(Model.clear_input(model), Entry.system("Usage: /handoff <agent>"))
+      model =
+        Model.append_entry(Model.clear_input(model), Entry.system("Usage: /handoff <agent>"))
+
       {model, :none}
     else
       cmd =

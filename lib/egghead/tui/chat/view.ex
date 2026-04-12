@@ -52,8 +52,12 @@ defmodule Egghead.TUI.Chat.View do
     main_region =
       if sb_width > 0 do
         # 1-col separator between transcript and sidebar.
-        sep = vbox([width: 1, height: transcript_height],
-          List.duplicate(text("│", height: 1, fg: Colors.muted()), transcript_height))
+        sep =
+          vbox(
+            [width: 1, height: transcript_height],
+            List.duplicate(text("│", height: 1, fg: Colors.muted()), transcript_height)
+          )
+
         hbox([height: transcript_height], [
           transcript_region(model, transcript_width - 1, transcript_height),
           sep,
@@ -94,7 +98,8 @@ defmodule Egghead.TUI.Chat.View do
     [command_dropdown(model, width, h)]
   end
 
-  defp dropdown_node(%Model{mention: %Mentions.Context{candidates: [_ | _]}} = model, width, h) when h > 0 do
+  defp dropdown_node(%Model{mention: %Mentions.Context{candidates: [_ | _]}} = model, width, h)
+       when h > 0 do
     [mention_dropdown(model, width, h)]
   end
 
@@ -189,7 +194,9 @@ defmodule Egghead.TUI.Chat.View do
       model.streams
       |> Map.values()
       |> Enum.sort_by(& &1.started_at)
-      |> Enum.flat_map(fn stream -> stream_to_rows(stream, body_width, width, model.anim_frame) end)
+      |> Enum.flat_map(fn stream ->
+        stream_to_rows(stream, body_width, width, model.anim_frame)
+      end)
 
     transcript_rows ++ stream_rows
   end
@@ -426,7 +433,10 @@ defmodule Egghead.TUI.Chat.View do
         hbox([width: @nick_gutter, height: 1], [
           text(leading, [width: String.length(leading), fg: Colors.dim()] ++ bg_opts),
           text("●", [width: 1, fg: dot_color] ++ bg_opts),
-          text(trailing, [width: String.length(trailing), fg: Colors.white(), attrs: Attrs.bold()] ++ bg_opts)
+          text(
+            trailing,
+            [width: String.length(trailing), fg: Colors.white(), attrs: Attrs.bold()] ++ bg_opts
+          )
         ])
 
       _ ->
@@ -528,6 +538,7 @@ defmodule Egghead.TUI.Chat.View do
   # tinted background. Remaining space filled with bg.
   defp sidebar(agents, sb_width, height) do
     header_label = " #{length(agents)} Agents"
+
     header_row =
       text(pad_to(header_label, sb_width),
         height: 1,
@@ -587,6 +598,7 @@ defmodule Egghead.TUI.Chat.View do
     # Leave 3 chars right margin so e.g. "62.3%" doesn't butt
     # against the screen edge.
     bar = context_bar(a.ctx_pct, sb_width - 3)
+
     ctx_row =
       text(pad_to("  #{bar}", sb_width),
         height: 1,
@@ -847,7 +859,6 @@ defmodule Egghead.TUI.Chat.View do
   end
 
   defp maybe_add_cursor_overflow(rows, _cells, _buf_idx, _text_w, false, _cursor_col), do: rows
-
 
   defp ghost_text(%Model{mention: nil}), do: ""
   defp ghost_text(%Model{mention: %Mentions.Context{} = ctx}), do: Mentions.ghost_suffix(ctx)

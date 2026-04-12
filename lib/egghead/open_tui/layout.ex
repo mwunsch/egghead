@@ -32,8 +32,7 @@ defmodule Egghead.OpenTUI.Layout do
   """
 
   @type rect ::
-          {x :: non_neg_integer(), y :: non_neg_integer(),
-           w :: pos_integer(), h :: pos_integer()}
+          {x :: non_neg_integer(), y :: non_neg_integer(), w :: pos_integer(), h :: pos_integer()}
 
   @type tree :: Egghead.OpenTUI.View.tree()
   @type leaf_rect :: {tree(), rect()}
@@ -101,8 +100,10 @@ defmodule Egghead.OpenTUI.Layout do
   defp fixed_main({:vbox, opts, _}, :horizontal), do: Map.get(opts, :width, 0)
   defp fixed_main({:hbox, opts, _}, :vertical), do: Map.get(opts, :height, 0)
   defp fixed_main({:text, _content, opts}, :vertical), do: Map.get(opts, :height, 1)
+
   defp fixed_main({:text, content, opts}, :horizontal),
     do: Map.get(opts, :width, String.length(content))
+
   defp fixed_main({:fill, opts}, :vertical), do: Map.get(opts, :height, 0)
   defp fixed_main({:fill, opts}, :horizontal), do: Map.get(opts, :width, 0)
   defp fixed_main({:cursor, _opts}, _), do: 0

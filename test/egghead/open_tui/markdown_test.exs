@@ -18,6 +18,7 @@ defmodule Egghead.OpenTUI.MarkdownTest do
 
     test "headings carry the heading color and bold attribute" do
       [row | _] = Markdown.render("# Hello", 80)
+
       assert Enum.any?(row, fn span ->
                span.fg == Colors.heading() and Bitwise.band(span.attrs, Attrs.bold()) != 0
              end)
@@ -179,8 +180,22 @@ defmodule Egghead.OpenTUI.MarkdownTest do
   describe "theming" do
     test "default_theme/0 includes all required keys" do
       theme = Markdown.default_theme()
-      keys = [:h1, :h2, :h3, :bold, :italic, :strikethrough, :code_inline, :code_block,
-              :link, :wikilink, :blockquote, :hr]
+
+      keys = [
+        :h1,
+        :h2,
+        :h3,
+        :bold,
+        :italic,
+        :strikethrough,
+        :code_inline,
+        :code_block,
+        :link,
+        :wikilink,
+        :blockquote,
+        :hr
+      ]
+
       Enum.each(keys, fn k -> assert Map.has_key?(theme, k) end)
     end
 

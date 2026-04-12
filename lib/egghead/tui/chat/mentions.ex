@@ -132,8 +132,9 @@ defmodule Egghead.TUI.Chat.Mentions do
 
   defp id_char?(c) when c in @id_extra, do: true
 
-  defp id_char?(<<b>>) when (b >= ?a and b <= ?z) or (b >= ?A and b <= ?Z) or (b >= ?0 and b <= ?9),
-    do: true
+  defp id_char?(<<b>>)
+       when (b >= ?a and b <= ?z) or (b >= ?A and b <= ?Z) or (b >= ?0 and b <= ?9),
+       do: true
 
   defp id_char?(_), do: false
 
@@ -149,7 +150,9 @@ defmodule Egghead.TUI.Chat.Mentions do
     needle = String.downcase(prefix)
 
     agents
-    |> Enum.filter(fn a -> a |> agent_basename() |> String.downcase() |> String.starts_with?(needle) end)
+    |> Enum.filter(fn a ->
+      a |> agent_basename() |> String.downcase() |> String.starts_with?(needle)
+    end)
     |> Enum.take(limit)
   end
 
@@ -168,7 +171,9 @@ defmodule Egghead.TUI.Chat.Mentions do
     needle = String.downcase(prefix)
 
     records
-    |> Enum.filter(fn r -> r |> record_id() |> String.downcase() |> String.starts_with?(needle) end)
+    |> Enum.filter(fn r ->
+      r |> record_id() |> String.downcase() |> String.starts_with?(needle)
+    end)
     |> Enum.take(limit)
   end
 
@@ -269,6 +274,7 @@ defmodule Egghead.TUI.Chat.Mentions do
   defp agent_id(%{"id" => id}), do: id
 
   defp delete_n_before(buffer, 0), do: buffer
+
   defp delete_n_before(buffer, n) when n > 0,
     do: delete_n_before(EditBuffer.delete_before(buffer), n - 1)
 end

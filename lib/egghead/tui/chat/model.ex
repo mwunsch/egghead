@@ -179,7 +179,8 @@ defmodule Egghead.TUI.Chat.Model do
   end
 
   @spec clear_input(t()) :: t()
-  def clear_input(%__MODULE__{} = m), do: %{m | input: EditBuffer.new(), mention: nil, command: nil}
+  def clear_input(%__MODULE__{} = m),
+    do: %{m | input: EditBuffer.new(), mention: nil, command: nil}
 
   @spec input_text(t()) :: String.t()
   def input_text(%__MODULE__{input: buffer}), do: EditBuffer.to_text(buffer)
@@ -206,8 +207,11 @@ defmodule Egghead.TUI.Chat.Model do
   @spec link_next(t()) :: t()
   def link_next(%__MODULE__{} = model) do
     links = transcript_links(model)
+
     case links do
-      [] -> model
+      [] ->
+        model
+
       _ ->
         n = length(links)
         new_idx = if model.link_index == nil, do: 0, else: rem(model.link_index + 1, n)
@@ -219,8 +223,11 @@ defmodule Egghead.TUI.Chat.Model do
   @spec link_prev(t()) :: t()
   def link_prev(%__MODULE__{} = model) do
     links = transcript_links(model)
+
     case links do
-      [] -> model
+      [] ->
+        model
+
       _ ->
         n = length(links)
         new_idx = if model.link_index == nil, do: n - 1, else: rem(model.link_index - 1 + n, n)
@@ -231,6 +238,7 @@ defmodule Egghead.TUI.Chat.Model do
   @doc "The currently-active wikilink target, or nil."
   @spec active_link(t()) :: String.t() | nil
   def active_link(%__MODULE__{link_index: nil}), do: nil
+
   def active_link(%__MODULE__{} = model) do
     Enum.at(transcript_links(model), model.link_index)
   end

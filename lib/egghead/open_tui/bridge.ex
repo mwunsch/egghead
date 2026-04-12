@@ -210,7 +210,8 @@ defmodule Egghead.OpenTUI.Bridge do
   alternative (drawing a glyph like `▌` into the buffer) takes
   up its own column and shifts the surrounding content.
   """
-  @spec set_cursor_position(non_neg_integer(), non_neg_integer(), non_neg_integer(), boolean()) :: :ok
+  @spec set_cursor_position(non_neg_integer(), non_neg_integer(), non_neg_integer(), boolean()) ::
+          :ok
   def set_cursor_position(_handle, _x, _y, _visible),
     do: :erlang.nif_error(:nif_not_loaded)
 

@@ -13,7 +13,6 @@ defmodule Egghead.Web.Router do
   scope "/", Egghead.Web do
     pipe_through(:browser)
 
-    live("/", RecordsLive)
-    live("/chat", ChatLive)
+    live("/", AppLive)
   end
 end

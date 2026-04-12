@@ -144,6 +144,7 @@ body { min-height: 100vh; }
   background: var(--chrome);
   padding: 2px;
   gap: 2px;
+  position: relative;
 }
 
 /* ================================================================
@@ -203,29 +204,28 @@ body { min-height: 100vh; }
 }
 
 .nav-search {
-  padding: 6px 8px;
+  padding: 4px 4px;
   background: var(--chrome);
-  border-bottom: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 -1px 0 var(--chrome-hi);
-  position: relative;
 }
 
-.nav-search::before {
+.nav-search form { position: relative; }
+
+.nav-search form::before {
   content: "\1F50D";
   position: absolute;
-  left: 14px;
+  left: 6px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 12px;
+  font-size: 11px;
   z-index: 1;
   pointer-events: none;
-  opacity: 0.5;
+  opacity: 0.4;
 }
 
 /* Sunken text input */
 .nav-search input {
   width: 100%;
-  padding: 4px 6px 4px 24px;
+  padding: 4px 6px 4px 22px;
   background: #FFFFFF;
   color: var(--fg);
   border: none;
@@ -239,11 +239,129 @@ body { min-height: 100vh; }
     inset -2px -2px 0 var(--chrome-mid);
 }
 
+/* Nav toolbar — icon buttons above the search bar */
+.nav-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-lo);
+  box-shadow: inset 0 1px 0 var(--chrome-hi);
+  gap: 4px;
+}
+
+.toolbar-btn {
+  background: var(--chrome);
+  border: none;
+  padding: 3px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--fg);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-dk),
+    inset 2px 2px 0 var(--chrome-mid),
+    inset -2px -2px 0 var(--chrome-lo);
+}
+
+.toolbar-btn:active {
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-dk),
+    inset -1px -1px 0 var(--chrome-hi),
+    inset 2px 2px 0 var(--chrome-lo),
+    inset -2px -2px 0 var(--chrome-mid);
+}
+
+.toolbar-btn.toggled {
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-dk),
+    inset -1px -1px 0 var(--chrome-hi),
+    inset 2px 2px 0 var(--chrome-lo),
+    inset -2px -2px 0 var(--chrome-mid);
+  background: var(--chrome-mid);
+}
+
+.toolbar-btn svg { display: block; flex-shrink: 0; }
+.toolbar-label { white-space: nowrap; }
+
+.toolbar-spacer { flex: 1; }
+
+/* Class filter dropdown */
+.class-filter-wrap { position: relative; }
+
+.class-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  width: 160px;
+  background: var(--chrome);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-dk),
+    2px 2px 0 rgba(0,0,0,0.2);
+  padding: 2px;
+}
+
+.class-dropdown-inner {
+  background: #FFFFFF;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi);
+}
+
+.dropdown-actions {
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-lo);
+}
+
+.dropdown-link {
+  background: none;
+  border: none;
+  color: var(--link);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.class-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+.class-option:hover { background: var(--titlebar); color: #FFFFFF; }
+.class-option input { cursor: pointer; }
+
+.record-list-wrap {
+  flex: 1;
+  overflow-y: auto;
+  background: #FFFFFF;
+  margin: 0 4px 4px;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi),
+    inset 2px 2px 0 var(--chrome-dk),
+    inset -2px -2px 0 var(--chrome-mid);
+}
+
 .record-list {
   list-style: none;
-  overflow-y: auto;
-  flex: 1;
-  background: #FFFFFF;
+  padding: 2px;
 }
 
 .record-item {
@@ -280,6 +398,53 @@ body { min-height: 100vh; }
   font-size: 11px;
   color: var(--muted);
   flex-shrink: 0;
+}
+
+/* Phantom create row */
+.record-item.phantom {
+  color: var(--muted);
+  font-style: italic;
+  border-top: 1px dashed var(--chrome-lo);
+}
+
+.record-item.phantom .record-title { color: var(--heading); font-style: italic; }
+.record-item.phantom .record-meta { font-family: var(--font-mono); }
+
+/* File tree */
+.file-tree { padding: 4px 0; }
+.tree-group { margin-bottom: 2px; }
+.tree-group ul { list-style: none; }
+
+.tree-dir {
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.file-tree .record-item { padding-left: 20px; }
+
+/* Record status bar */
+.record-status-bar {
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  right: 0;
+  display: flex;
+  padding: 1px 4px;
+  background: var(--chrome);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--fg);
+  gap: 2px;
+}
+
+.record-status-bar .status-cell {
+  padding: 1px 8px;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi);
 }
 
 /* ---- Center: record pane ---- */
@@ -685,13 +850,24 @@ body { min-height: 100vh; }
 }
 
 @media (max-width: 768px) {
-  .nav-sidebar {
-    position: fixed;
-    top: 28px;
-    left: 0;
-    bottom: 0;
-    z-index: 100;
+  /* Full notational-velocity: search above record, no sidebar */
+  .app-body {
+    flex-direction: column;
   }
+
+  .nav-sidebar {
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0;
+    max-height: 45vh;
+    box-shadow: none;
+  }
+
+  .nav-sidebar.collapsed {
+    max-height: 0;
+  }
+
+  .nav-inner { min-width: 0; }
 
   .chat-sidebar {
     position: fixed;
@@ -699,16 +875,25 @@ body { min-height: 100vh; }
     right: 0;
     bottom: 0;
     z-index: 100;
-    width: 100%;
-    min-width: 100%;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0;
+  }
+
+  .chat-sidebar.collapsed {
+    width: 0 !important;
+    min-width: 0;
   }
 
   .chat-inner { min-width: 100vw; }
+
   .record-pane { padding: 12px; }
   .record-heading { font-size: 22px; }
+  .record-status-bar { position: relative; bottom: auto; }
 }
 
 @media (max-width: 480px) {
   .record-pane { padding: 8px; }
   .record-heading { font-size: 20px; }
+  .properties { padding: 8px 10px; }
 }

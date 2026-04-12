@@ -129,6 +129,38 @@ defmodule Egghead.Web.AppLiveTest do
       assert html =~ "Link Target"
       assert html =~ "linked from"
     end
+
+    test "class filter dropdown opens", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/")
+
+      # Default: all classes selected, all records visible
+      html = render(view)
+      assert html =~ "Design Document"
+      assert html =~ "Hello World"
+
+      # Open dropdown via the filter icon button
+      view |> element(".class-filter-wrap .toolbar-btn") |> render_click()
+      assert has_element?(view, ".class-dropdown")
+    end
+
+    test "phantom create row appears for new titles", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/")
+
+      view
+      |> element("form[phx-change=\"search\"]")
+      |> render_change(%{"query" => "brand new note"})
+
+      html = render(view)
+      assert html =~ "Create"
+      assert html =~ "brand-new-note"
+    end
+
+    test "shows backlinks count and word count", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/?id=hello-world")
+
+      assert html =~ "words"
+      assert html =~ "backlinks"
+    end
   end
 
   describe "chat" do

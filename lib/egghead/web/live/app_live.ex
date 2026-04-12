@@ -2,6 +2,7 @@ defmodule Egghead.Web.AppLive do
   use Egghead.Web, :live_view
 
   alias Egghead.Web.MarkdownHTML
+  alias Egghead.TUI.Records.Slug
 
   @impl true
   def mount(params, _session, socket) do
@@ -23,11 +24,15 @@ defmodule Egghead.Web.AppLive do
         query: "",
         all: all,
         filtered: all,
+        class_filter: MapSet.new([:durable, :inbox, :deliberation, :agent]),
+        class_dropdown_open: false,
         nav_view: :search,
         # Record state
         selected_id: selected_id,
         selected_record: nil,
         selected_body_html: nil,
+        backlinks: [],
+        word_count: 0,
         # Chat state
         room_id: room_id,
         transcript: [],
@@ -35,6 +40,7 @@ defmodule Egghead.Web.AppLive do
         chat_status: nil,
         agents: []
       )
+      |> apply_filter()
       |> hydrate_selection()
       |> hydrate_chat()
 
@@ -46,7 +52,13 @@ defmodule Egghead.Web.AppLive do
     case params["id"] do
       nil ->
         {:noreply,
-         assign(socket, selected_id: nil, selected_record: nil, selected_body_html: nil)}
+         assign(socket,
+           selected_id: nil,
+           selected_record: nil,
+           selected_body_html: nil,
+           backlinks: [],
+           word_count: 0
+         )}
 
       id ->
         {:noreply, socket |> assign(selected_id: id) |> hydrate_selection()}
@@ -65,16 +77,58 @@ defmodule Egghead.Web.AppLive do
   end
 
   def handle_event("search", %{"query" => query}, socket) do
-    filtered = filter_records(socket.assigns.all, query)
-    {:noreply, assign(socket, query: query, filtered: filtered)}
+    {:noreply, socket |> assign(query: query) |> apply_filter()}
   end
 
   def handle_event("select_record", %{"id" => id}, socket) do
     {:noreply, push_patch(socket, to: "/?id=#{id}")}
   end
 
+  def handle_event("toggle_class_dropdown", _, socket) do
+    {:noreply, assign(socket, class_dropdown_open: !socket.assigns.class_dropdown_open)}
+  end
+
+  def handle_event("toggle_class", %{"class" => class}, socket) do
+    class_atom = String.to_existing_atom(class)
+    current = socket.assigns.class_filter
+
+    updated =
+      if MapSet.member?(current, class_atom),
+        do: MapSet.delete(current, class_atom),
+        else: MapSet.put(current, class_atom)
+
+    {:noreply, socket |> assign(class_filter: updated) |> apply_filter()}
+  end
+
+  def handle_event("class_select_all", _, socket) do
+    {:noreply,
+     socket
+     |> assign(class_filter: MapSet.new([:durable, :inbox, :deliberation, :agent]))
+     |> apply_filter()}
+  end
+
+  def handle_event("class_select_none", _, socket) do
+    {:noreply, socket |> assign(class_filter: MapSet.new()) |> apply_filter()}
+  end
+
   def handle_event("switch_nav_view", %{"view" => view}, socket) do
     {:noreply, assign(socket, nav_view: String.to_existing_atom(view))}
+  end
+
+  def handle_event("create_record", %{"title" => title}, socket) do
+    slug = Slug.slugify(title)
+
+    if slug != "" do
+      case Egghead.create_record(%{id: slug, class: :durable, title: title}) do
+        {:ok, _record} ->
+          {:noreply, push_patch(socket, to: "/?id=#{slug}")}
+
+        {:error, _reason} ->
+          {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("send_chat", %{"message" => message}, socket) do
@@ -106,11 +160,11 @@ defmodule Egghead.Web.AppLive do
   @impl true
   def handle_info({:record_changed, _id}, socket) do
     all = Egghead.list_records() |> Enum.sort_by(&(&1.updated || ""), :desc)
-    filtered = filter_records(all, socket.assigns.query)
 
     socket =
       socket
-      |> assign(all: all, filtered: filtered)
+      |> assign(all: all)
+      |> apply_filter()
       |> hydrate_selection()
 
     {:noreply, socket}
@@ -181,17 +235,50 @@ defmodule Egghead.Web.AppLive do
 
   def handle_info(_other, socket), do: {:noreply, socket}
 
-  # --- Private helpers ---
+  # --- Private: records ---
 
-  defp filter_records(records, ""), do: records
+  defp apply_filter(socket) do
+    records = socket.assigns.all
+    query = socket.assigns.query
+    classes = socket.assigns.class_filter
 
-  defp filter_records(records, query) do
+    filtered =
+      records
+      |> filter_by_class(classes)
+      |> filter_by_query(query)
+
+    assign(socket, filtered: filtered)
+  end
+
+  defp filter_by_class(records, classes) do
+    Enum.filter(records, &MapSet.member?(classes, &1.class))
+  end
+
+  defp filter_by_query(records, ""), do: records
+
+  defp filter_by_query(records, query) do
     needle = String.downcase(query)
 
     Enum.filter(records, fn r ->
       String.contains?(String.downcase(r.id || ""), needle) or
         String.contains?(String.downcase(r.title || ""), needle)
     end)
+  end
+
+  defp creation_target(query, filtered) do
+    title = String.trim(query)
+
+    if title == "" do
+      nil
+    else
+      slug = Slug.slugify(title)
+
+      cond do
+        slug == "" -> nil
+        Enum.any?(filtered, &(&1.id == slug)) -> nil
+        true -> {title, slug}
+      end
+    end
   end
 
   defp hydrate_selection(socket) do
@@ -208,10 +295,28 @@ defmodule Egghead.Web.AppLive do
                 exists_fn: &record_exists?/1
               )
 
-            assign(socket, selected_record: record, selected_body_html: html)
+            backlinks = Egghead.find_backlinks(id)
+
+            word_count =
+              case record.body do
+                nil -> 0
+                body -> body |> String.split(~r/\s+/, trim: true) |> length()
+              end
+
+            assign(socket,
+              selected_record: record,
+              selected_body_html: html,
+              backlinks: backlinks,
+              word_count: word_count
+            )
 
           {:error, _} ->
-            assign(socket, selected_record: nil, selected_body_html: nil)
+            assign(socket,
+              selected_record: nil,
+              selected_body_html: nil,
+              backlinks: [],
+              word_count: 0
+            )
         end
     end
   end
@@ -222,6 +327,19 @@ defmodule Egghead.Web.AppLive do
       _ -> false
     end
   end
+
+  defp build_file_tree(records) do
+    records
+    |> Enum.group_by(fn r ->
+      case String.split(r.id || "", "/") do
+        [_single] -> ""
+        parts -> parts |> Enum.drop(-1) |> Enum.join("/")
+      end
+    end)
+    |> Enum.sort_by(fn {dir, _} -> dir end)
+  end
+
+  # --- Private: chat ---
 
   defp hydrate_chat(socket) do
     case socket.assigns.room_id do
@@ -242,7 +360,11 @@ defmodule Egghead.Web.AppLive do
                     Egghead.TUI.Chat.Entry.user(msg.sender.name, msg.content)
 
                   :agent ->
-                    Egghead.TUI.Chat.Entry.agent(msg.sender.id, msg.sender.name, msg.content)
+                    Egghead.TUI.Chat.Entry.agent(
+                      msg.sender.id,
+                      msg.sender.name,
+                      msg.content
+                    )
                 end
               end)
 
@@ -304,6 +426,14 @@ defmodule Egghead.Web.AppLive do
 
   @impl true
   def render(assigns) do
+    phantom = creation_target(assigns.query, assigns.filtered)
+    file_tree = if assigns.nav_view == :tree, do: build_file_tree(assigns.filtered), else: []
+
+    assigns =
+      assigns
+      |> assign(:phantom, phantom)
+      |> assign(:file_tree, file_tree)
+
     ~H"""
     <div class="app-shell">
       <header class="app-header">
@@ -339,8 +469,47 @@ defmodule Egghead.Web.AppLive do
         <%!-- Left nav sidebar --%>
         <aside class={["nav-sidebar", !@nav_open && "collapsed"]}>
           <div class="nav-inner">
+            <div class="nav-toolbar">
+              <button
+                class={["toolbar-btn", @nav_view == :tree && "toggled"]}
+                phx-click="switch_nav_view"
+                phx-value-view={if @nav_view == :tree, do: "search", else: "tree"}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 2h4v4H2zM8 3h6M8 7h4M2 10h4v4H2zM8 11h6" />
+                </svg>
+                <span class="toolbar-label">Tree</span>
+              </button>
+              <div class="toolbar-spacer"></div>
+              <div class="class-filter-wrap">
+                <button
+                  class="toolbar-btn"
+                  phx-click="toggle_class_dropdown"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 3h14M3 8h10M5 13h6" />
+                  </svg>
+                  <span class="toolbar-label">Filter</span>
+                </button>
+                <div :if={@class_dropdown_open} class="class-dropdown">
+                  <div class="dropdown-actions">
+                    <button class="dropdown-link" phx-click="class_select_all">All</button>
+                    <button class="dropdown-link" phx-click="class_select_none">None</button>
+                  </div>
+                  <label :for={c <- [:durable, :agent, :deliberation, :inbox]} class="class-option">
+                    <input
+                      type="checkbox"
+                      checked={MapSet.member?(@class_filter, c)}
+                      phx-click="toggle_class"
+                      phx-value-class={c}
+                    />
+                    {c}
+                  </label>
+                </div>
+              </div>
+            </div>
             <div class="nav-search">
-              <form phx-change="search" phx-submit="search">
+              <form phx-change="search" phx-submit={if @phantom, do: "create_record", else: "search"}>
                 <input
                   type="text"
                   name="query"
@@ -349,19 +518,53 @@ defmodule Egghead.Web.AppLive do
                   autocomplete="off"
                   phx-debounce="100"
                 />
+                <input :if={@phantom} type="hidden" name="title" value={elem(@phantom, 0)} />
               </form>
             </div>
-            <ul class="record-list">
-              <li
-                :for={record <- @filtered}
-                class={["record-item", record.id == @selected_id && "selected"]}
-                phx-click="select_record"
-                phx-value-id={record.id}
-              >
-                <span class="record-title">{record.title || record.id}</span>
-                <span class="record-meta">{record.class}</span>
-              </li>
-            </ul>
+
+            <%!-- Record list --%>
+            <div class="record-list-wrap">
+              <%!-- List view --%>
+              <ul :if={@nav_view == :search} class="record-list">
+                <li
+                  :for={record <- @filtered}
+                  class={["record-item", record.id == @selected_id && "selected"]}
+                  phx-click="select_record"
+                  phx-value-id={record.id}
+                >
+                  <span class="record-title">{record.title || record.id}</span>
+                  <span class="record-meta">{record.class}</span>
+                </li>
+                <li
+                  :if={@phantom}
+                  class="record-item phantom"
+                  phx-click="create_record"
+                  phx-value-title={elem(@phantom, 0)}
+                >
+                  <span class="record-title">Create "{elem(@phantom, 0)}"</span>
+                  <span class="record-meta">{elem(@phantom, 1)}</span>
+                </li>
+              </ul>
+
+              <%!-- Tree view --%>
+              <ul :if={@nav_view == :tree} class="record-list file-tree">
+                <li :for={{dir, records} <- @file_tree} class="tree-group">
+                  <div :if={dir != ""} class="tree-dir">{dir}/</div>
+                  <ul>
+                    <li
+                      :for={record <- records}
+                      class={["record-item", record.id == @selected_id && "selected"]}
+                      phx-click="select_record"
+                      phx-value-id={record.id}
+                    >
+                      <span class="record-title">
+                        {record.title || List.last(String.split(record.id, "/"))}
+                      </span>
+                    </li>
+                  </ul>
+                </li>
+              </ul>
+            </div>
           </div>
         </aside>
 
@@ -432,9 +635,16 @@ defmodule Egghead.Web.AppLive do
             </article>
           </div>
           <div :if={!@selected_record} class="empty-state">
-            <p>Select a record from the sidebar to begin.</p>
+            <p>Select a record to begin.</p>
           </div>
         </main>
+
+        <%!-- Status bar --%>
+        <div :if={@selected_record} class="record-status-bar">
+          <span class="status-cell">{length(@backlinks)} backlinks</span>
+          <span class="status-cell">{@word_count} words</span>
+          <span class="status-cell">{@selected_record.class}</span>
+        </div>
 
         <%!-- Right: chat sidebar --%>
         <aside class={["chat-sidebar", !@chat_open && "collapsed"]}>

@@ -630,7 +630,7 @@ body { min-height: 100vh; }
 .markdown-body li.task.done { color: var(--muted); }
 
 .markdown-body blockquote {
-  border-left: none;
+  border-left: 3px solid var(--chrome-lo);
   padding: 0.2em 0 0.2em 1.5em;
   color: var(--muted);
   margin: 0.5em 0 0.8em;
@@ -641,7 +641,7 @@ body { min-height: 100vh; }
 .markdown-body blockquote::before {
   content: ">";
   position: absolute;
-  left: 0;
+  left: 6px;
   top: 0.2em;
   color: var(--syntax);
   font-family: var(--font-mono);
@@ -656,12 +656,13 @@ body { min-height: 100vh; }
 .markdown-body th, .markdown-body td { border: 1px solid var(--chrome-lo); padding: 4px 8px; text-align: left; }
 .markdown-body th { background: var(--chrome); font-family: var(--font-ui); font-weight: 600; }
 
-.markdown-body a { color: var(--link); text-decoration: underline; }
-.markdown-body a:hover { color: #0000CC; }
+.markdown-body a { color: var(--link); text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
 
-.markdown-body a.wikilink { color: var(--wikilink); font-weight: 500; }
-.markdown-body a.wikilink::before { content: "[["; color: var(--syntax); font-family: var(--font-mono); font-weight: 400; font-size: 0.8em; }
-.markdown-body a.wikilink::after { content: "]]"; color: var(--syntax); font-family: var(--font-mono); font-weight: 400; font-size: 0.8em; }
+.markdown-body a.wikilink { color: var(--wikilink); font-weight: 500; text-decoration: none; }
+.markdown-body a.wikilink:hover { text-decoration: underline; }
+.markdown-body a.wikilink::before { content: "[["; color: var(--wikilink); font-family: var(--font-mono); font-weight: 400; font-size: 0.8em; }
+.markdown-body a.wikilink::after { content: "]]"; color: var(--wikilink); font-family: var(--font-mono); font-weight: 400; font-size: 0.8em; }
 .markdown-body a.wikilink.missing { color: var(--danger); }
 
 .markdown-body del { color: var(--muted); }
@@ -765,21 +766,272 @@ body { min-height: 100vh; }
     inset -2px -2px 0 var(--chrome-mid);
 }
 
-.chat-entry { margin-bottom: 2px; line-height: 1.4; }
+/* Chat bubbles */
+.bubble-row {
+  display: flex;
+  margin-bottom: 6px;
+}
 
-.nick { font-weight: 700; margin-right: 5px; font-size: 12px; }
-.entry-user .nick { color: var(--chat-user); }
-.entry-agent .nick { color: var(--chat-agent); }
-.entry-system .nick { color: var(--muted); }
-.entry-action .nick { color: var(--muted); }
+.agent-row { justify-content: flex-start; }
+.user-row { justify-content: flex-end; }
 
-.time { color: var(--muted); font-size: 10px; margin-right: 5px; font-family: var(--font-mono); }
+.bubble {
+  max-width: 85%;
+  padding: 4px 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
 
-.entry-body { display: inline; }
-.entry-body p { display: inline; margin: 0; }
-.entry-system { color: var(--muted); font-style: italic; font-size: 12px; }
-.entry-action { color: var(--muted); font-size: 12px; }
-.ghost { opacity: 0.4; }
+/* Win95 raised bubble for agents */
+.agent-bubble {
+  background: var(--chrome-mid);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo);
+}
+
+/* Win95 raised bubble for user, slightly different shade */
+.user-bubble {
+  background: #D0D8E8;
+  box-shadow:
+    inset 1px 1px 0 #E8ECF4,
+    inset -1px -1px 0 #9098A8;
+}
+
+.bubble-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.bubble-name {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.user-name { color: var(--chat-user); }
+
+.bubble-time {
+  color: var(--muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.bubble-body { font-family: var(--font-ui); }
+.bubble-body p { margin: 0 0 0.3em; }
+.bubble-body p:last-child { margin-bottom: 0; }
+
+/* Chat bubbles: NO isomorphic markdown. Sans font. Standard HTML rendering. */
+.bubble-body.markdown-body {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.bubble-body.markdown-body h1,
+.bubble-body.markdown-body h2,
+.bubble-body.markdown-body h3,
+.bubble-body.markdown-body h4 {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0.5em 0 0.2em;
+  color: var(--fg);
+}
+
+/* Kill ALL isomorphic pseudo-elements inside bubbles */
+.bubble-body.markdown-body h1::before,
+.bubble-body.markdown-body h2::before,
+.bubble-body.markdown-body h3::before,
+.bubble-body.markdown-body h4::before,
+.bubble-body.markdown-body strong::before,
+.bubble-body.markdown-body strong::after,
+.bubble-body.markdown-body em::before,
+.bubble-body.markdown-body em::after,
+.bubble-body.markdown-body code::before,
+.bubble-body.markdown-body code::after,
+.bubble-body.markdown-body del::before,
+.bubble-body.markdown-body del::after,
+.bubble-body.markdown-body blockquote::before,
+.bubble-body.markdown-body pre::before,
+.bubble-body.markdown-body pre::after,
+.bubble-body.markdown-body hr::before {
+  content: none;
+}
+
+/* Standard lists inside bubbles — no dash markers */
+.bubble-body.markdown-body ul { list-style-type: disc; }
+
+/* Standard code inside bubbles */
+.bubble-body.markdown-body code {
+  font-size: 12px;
+  background: rgba(0,0,0,0.06);
+  padding: 1px 4px;
+}
+
+.bubble-body.markdown-body pre {
+  font-size: 12px;
+  padding: 6px 8px;
+  background: rgba(0,0,0,0.04);
+  box-shadow: none;
+}
+
+/* Keep wikilink and mention styling visible in chat */
+.bubble-body.markdown-body a.wikilink::before { content: "[["; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em; }
+.bubble-body.markdown-body a.wikilink::after { content: "]]"; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em; }
+
+/* Action and system meta lines — not bubbles */
+.meta-line {
+  display: flex;
+  gap: 4px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-style: italic;
+  padding: 2px 8px;
+}
+
+.meta-line.action { font-style: normal; }
+
+.meta-sym { font-weight: 700; font-style: normal; flex-shrink: 0; }
+.meta-text p { display: inline; margin: 0; }
+
+/* Typing indicator bubble */
+.typing-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+}
+
+.typing-dots {
+  font-size: 18px;
+  letter-spacing: 2px;
+  color: var(--muted);
+}
+
+/* Agent roster */
+.agent-roster {
+  padding: 4px 8px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-lo);
+  box-shadow: inset 0 -1px 0 var(--chrome-hi);
+}
+
+.agent-card-wrap {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--chrome-lo);
+}
+
+.agent-card-wrap:last-child { border-bottom: none; }
+
+.agent-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.agent-status-dot { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+.agent-status-dot.active { color: #008000; }
+.agent-name { color: var(--fg); font-weight: 600; flex: 1; }
+.agent-ctx {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.agent-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 18px;
+  padding-bottom: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.agent-bar-track {
+  flex: 1;
+  height: 8px;
+  background: var(--chrome-mid);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi);
+}
+
+.agent-bar-fill {
+  height: 100%;
+  background: var(--titlebar);
+}
+
+.agent-bar-label { flex-shrink: 0; }
+
+/* Chat dropdown (commands / mentions) */
+.chat-dropdown {
+  background: #FFFFFF;
+  margin: 0 4px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi),
+    inset 2px 2px 0 var(--chrome-dk),
+    inset -2px -2px 0 var(--chrome-mid);
+}
+
+.dropdown-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 8px;
+  cursor: pointer;
+  gap: 8px;
+}
+
+.dropdown-item:hover, .dropdown-item.selected {
+  background: var(--titlebar);
+  color: #FFFFFF;
+}
+
+.dropdown-item.selected .dd-desc,
+.dropdown-item:hover .dd-desc { color: rgba(255,255,255,0.7); }
+
+.dd-name { font-weight: 600; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.dd-desc { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Paste chips */
+.paste-chips {
+  padding: 2px 4px;
+  background: var(--chrome);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.paste-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  background: var(--chrome-mid);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo);
+}
+
+.paste-icon { font-size: 14px; }
+.paste-head { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paste-tail { color: var(--muted); font-style: italic; font-size: 11px; }
 
 .chat-status {
   padding: 4px 8px;
@@ -789,6 +1041,29 @@ body { min-height: 100vh; }
   box-shadow: inset 0 1px 0 var(--chrome-hi);
   font-size: 12px;
   font-family: var(--font-ui);
+}
+
+.chat-input-wrap {
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome);
+  flex-shrink: 0;
+}
+
+.chat-drag-handle {
+  height: 10px;
+  cursor: row-resize;
+  background: var(--chrome);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-drag-handle::after {
+  content: "";
+  width: 32px;
+  height: 2px;
+  background: var(--chrome-lo);
 }
 
 .chat-input {
@@ -806,8 +1081,8 @@ body { min-height: 100vh; }
   font-size: 13px;
   outline: none;
   resize: none;
-  min-height: 32px;
-  max-height: 120px;
+  min-height: 36px;
+  overflow-y: auto;
   /* Sunken input */
   box-shadow:
     inset 1px 1px 0 var(--chrome-lo),

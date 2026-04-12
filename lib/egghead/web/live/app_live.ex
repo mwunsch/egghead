@@ -38,7 +38,12 @@ defmodule Egghead.Web.AppLive do
         transcript: [],
         active_streams: %{},
         chat_status: nil,
-        agents: []
+        chat_input: "",
+        chat_dropdown: nil,
+        paste_chips: [],
+        agents: [],
+        show_agents: false,
+        anim_frame: 0
       )
       |> apply_filter()
       |> hydrate_selection()
@@ -132,19 +137,21 @@ defmodule Egghead.Web.AppLive do
   end
 
   def handle_event("send_chat", %{"message" => message}, socket) do
-    message = String.trim(message)
+    # Expand any paste chips back to full text
+    message =
+      Enum.reduce(socket.assigns.paste_chips, message, fn chip, msg ->
+        String.replace(msg, chip.placeholder, chip.full_text)
+      end)
+      |> String.trim()
+
+    socket = assign(socket, chat_input: "", chat_dropdown: nil, paste_chips: [])
 
     cond do
       message == "" ->
         {:noreply, socket}
 
-      message == "/continue" && socket.assigns.room_id ->
-        Egghead.chat_continue(socket.assigns.room_id)
-        {:noreply, socket}
-
-      message == "/save" && socket.assigns.room_id ->
-        Egghead.chat_save(socket.assigns.room_id)
-        {:noreply, assign(socket, chat_status: "Transcript saved.")}
+      String.starts_with?(message, "/") ->
+        {:noreply, dispatch_slash_command(message, socket)}
 
       socket.assigns.room_id ->
         Egghead.chat(socket.assigns.room_id, message)
@@ -152,6 +159,49 @@ defmodule Egghead.Web.AppLive do
 
       true ->
         {:noreply, assign(socket, chat_status: "No chat room available.")}
+    end
+  end
+
+  def handle_event("chat_input_change", %{"value" => value}, socket) do
+    {:noreply, socket |> assign(chat_input: value) |> detect_completion(value)}
+  end
+
+  def handle_event("chat_dropdown_up", _, socket) do
+    {:noreply, move_dropdown(socket, -1)}
+  end
+
+  def handle_event("chat_dropdown_down", _, socket) do
+    {:noreply, move_dropdown(socket, 1)}
+  end
+
+  def handle_event("chat_tab_complete", _, socket) do
+    {:noreply, accept_completion(socket)}
+  end
+
+  def handle_event("chat_escape", _, socket) do
+    {:noreply, assign(socket, chat_dropdown: nil)}
+  end
+
+  def handle_event("chat_paste", %{"text" => text}, socket) do
+    chip = build_paste_chip(text, socket.assigns.paste_chips)
+    chips = socket.assigns.paste_chips ++ [chip]
+    # The placeholder gets inserted into the textarea via the current input
+    {:noreply,
+     assign(socket, paste_chips: chips, chat_input: socket.assigns.chat_input <> chip.placeholder)}
+  end
+
+  def handle_event("toggle_agents", _, socket) do
+    {:noreply, assign(socket, show_agents: !socket.assigns.show_agents)}
+  end
+
+  def handle_event("select_dropdown", %{"index" => idx}, socket) do
+    case socket.assigns.chat_dropdown do
+      %{candidates: cands} = dd when is_list(cands) ->
+        i = String.to_integer(idx)
+        {:noreply, assign(socket, chat_dropdown: %{dd | selected: i}) |> accept_completion()}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -182,17 +232,31 @@ defmodule Egghead.Web.AppLive do
       socket
       |> finalize_stream(msg.sender.id)
       |> drop_stream(msg.sender.id)
+      |> set_agent_status(msg.sender.id, :idle)
+      |> update_agent_ctx(msg.sender.id, msg)
 
     {:noreply, socket}
   end
 
   def handle_info({:agent_streaming, _room_id, agent_id, delta}, socket) do
-    {:noreply, apply_stream_delta(socket, agent_id, delta)}
+    socket = socket |> apply_stream_delta(agent_id, delta) |> set_agent_status(agent_id, :active)
+    # Start the typing animation timer if not already running
+    socket = maybe_start_anim_timer(socket)
+    {:noreply, socket}
   end
 
-  def handle_info({:agent_tool_call, _room_id, agent_id, name, input}, socket) do
+  def handle_info(:tick_anim, socket) do
+    if map_size(socket.assigns.active_streams) > 0 do
+      Process.send_after(self(), :tick_anim, 400)
+      {:noreply, assign(socket, anim_frame: socket.assigns.anim_frame + 1)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:agent_tool_call, _room_id, agent_id, tool_name, input}, socket) do
     display = agent_display_name(agent_id)
-    text = "#{name}(#{inspect(input, pretty: true, limit: 3)})"
+    text = format_tool_call(tool_name, input)
     entry = Egghead.TUI.Chat.Entry.action(agent_id, display, text)
     {:noreply, append_entry(socket, entry)}
   end
@@ -372,25 +436,88 @@ defmodule Egghead.Web.AppLive do
               []
           end
 
-        assign(socket, transcript: transcript)
+        agents =
+          try do
+            Egghead.list_agents()
+            |> Enum.map(
+              &%{
+                id: &1.id,
+                name: &1.name,
+                status: :idle,
+                ctx_pct: 0.0,
+                ctx_window: 0,
+                session_tokens: 0
+              }
+            )
+          catch
+            _, _ -> []
+          end
+
+        assign(socket, transcript: transcript, agents: agents)
     end
   end
 
+  # Buffer streaming deltas and commit on \n\n (paragraph break).
+  # Each committed paragraph becomes its own chat bubble.
+  # Single \n within a paragraph renders as a line break inside the bubble.
   defp apply_stream_delta(socket, agent_id, delta) do
     current = socket.assigns.active_streams
     name = agent_display_name(agent_id)
-    s = Map.get(current, agent_id, Egghead.TUI.Chat.Stream.new(agent_id, name))
-    {s, committed} = Egghead.TUI.Chat.Stream.append(s, delta)
 
-    socket
-    |> assign(active_streams: Map.put(current, agent_id, s))
-    |> append_entries(committed)
+    buf =
+      case Map.get(current, agent_id) do
+        nil ->
+          %{
+            agent_id: agent_id,
+            name: name,
+            text: "",
+            started_at: System.monotonic_time(:millisecond)
+          }
+
+        existing ->
+          existing
+      end
+
+    new_text = buf.text <> delta
+
+    case String.split(new_text, "\n\n") do
+      [single] ->
+        # No paragraph break yet — just buffer
+        buf = %{buf | text: single}
+
+        socket
+        |> assign(active_streams: Map.put(current, agent_id, buf))
+
+      parts ->
+        # Last element is the trailing incomplete paragraph
+        {commits, [tail]} = Enum.split(parts, -1)
+
+        entries =
+          commits
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.map(&Egghead.TUI.Chat.Entry.agent(agent_id, name, String.trim(&1)))
+
+        buf = %{buf | text: tail}
+
+        socket
+        |> assign(active_streams: Map.put(current, agent_id, buf))
+        |> append_entries(entries)
+    end
   end
 
   defp finalize_stream(socket, agent_id) do
     case Map.get(socket.assigns.active_streams, agent_id) do
-      nil -> socket
-      stream -> append_entries(socket, Egghead.TUI.Chat.Stream.finalize(stream))
+      nil ->
+        socket
+
+      buf ->
+        text = String.trim(buf.text)
+
+        if text == "" do
+          socket
+        else
+          append_entry(socket, Egghead.TUI.Chat.Entry.agent(agent_id, buf.name, text))
+        end
     end
   end
 
@@ -412,14 +539,354 @@ defmodule Egghead.Web.AppLive do
     agent_id |> String.split("/") |> List.last() |> String.capitalize()
   end
 
-  defp ghost_entries(streams) do
+  defp maybe_start_anim_timer(socket) do
+    # Only start if we don't already have active streams (first stream arrival)
+    if map_size(socket.assigns.active_streams) <= 1 do
+      Process.send_after(self(), :tick_anim, 400)
+    end
+
+    socket
+  end
+
+  defp typing_indicator(anim_frame) do
+    String.duplicate("\u00B7", rem(anim_frame, 3) + 1)
+  end
+
+  defp typing_agents(streams) do
     streams
-    |> Enum.filter(fn {_id, s} -> Egghead.TUI.Chat.Stream.has_text?(s) end)
-    |> Enum.map(fn {_id, s} -> {s.name, s.current} end)
+    |> Enum.filter(fn {_id, s} -> s.text != "" end)
+    |> Enum.sort_by(fn {_id, s} -> s.started_at end)
+    |> Enum.map(fn {_id, s} -> {s.name, s.agent_id} end)
   end
 
   defp render_entry_html(%Egghead.TUI.Chat.Entry{text: text}) do
     MarkdownHTML.render(text)
+  end
+
+  # --- Slash commands ---
+
+  @chat_commands %{
+    "save" => :cmd_save,
+    "continue" => :cmd_continue,
+    "handoff" => :cmd_handoff,
+    "help" => :cmd_help
+  }
+
+  @chat_command_list [
+    %{name: "save", description: "Save transcript as a record"},
+    %{name: "continue", description: "Grant agents more turns"},
+    %{name: "handoff", description: "Handoff an agent's context"},
+    %{name: "help", description: "Show keybindings & commands"}
+  ]
+
+  defp dispatch_slash_command(text, socket) do
+    [raw_cmd | args] =
+      text
+      |> String.trim_leading("/")
+      |> String.split(" ", parts: 2)
+
+    cmd_name = String.downcase(raw_cmd)
+    arg = List.first(args, "")
+
+    case Map.get(@chat_commands, cmd_name) do
+      nil ->
+        append_entry(socket, Egghead.TUI.Chat.Entry.system("Unknown command: /#{cmd_name}"))
+
+      :cmd_save ->
+        if socket.assigns.room_id do
+          case Egghead.chat_save(socket.assigns.room_id) do
+            {:ok, record_id} ->
+              append_entry(
+                socket,
+                Egghead.TUI.Chat.Entry.system("Transcript saved \u2192 [[#{record_id}]]")
+              )
+
+            _ ->
+              append_entry(socket, Egghead.TUI.Chat.Entry.system("Save failed"))
+          end
+        else
+          socket
+        end
+
+      :cmd_continue ->
+        if socket.assigns.room_id do
+          Egghead.chat_continue(socket.assigns.room_id)
+
+          append_entry(
+            socket,
+            Egghead.TUI.Chat.Entry.system("Budget renewed \u2014 agents may continue")
+          )
+        else
+          socket
+        end
+
+      :cmd_handoff ->
+        target = String.trim(arg)
+
+        if target == "" do
+          append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /handoff <agent>"))
+        else
+          if socket.assigns.room_id do
+            try do
+              Egghead.handoff(target)
+            catch
+              _, _ -> :ok
+            end
+
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("Handoff initiated for #{target}"))
+          else
+            socket
+          end
+        end
+
+      :cmd_help ->
+        socket
+        |> append_entry(
+          Egghead.TUI.Chat.Entry.system("Commands: /save /continue /handoff <agent> /help")
+        )
+        |> append_entry(
+          Egghead.TUI.Chat.Entry.system(
+            "Enter send | Shift+Enter newline | @agent mention | \\[\\[record\\]\\] link"
+          )
+        )
+    end
+  end
+
+  # --- Completion detection ---
+
+  defp detect_completion(socket, value) do
+    cond do
+      # Slash commands
+      String.starts_with?(value, "/") and not String.contains?(value, "\n") ->
+        prefix = value |> String.trim_leading("/") |> String.downcase()
+
+        candidates =
+          @chat_command_list
+          |> Enum.filter(&String.starts_with?(&1.name, prefix))
+
+        assign(socket,
+          chat_dropdown: %{kind: :command, prefix: prefix, candidates: candidates, selected: 0}
+        )
+
+      # @agent mention
+      String.match?(value, ~r/(^|\s)@([a-zA-Z0-9\/_\-]*)$/) ->
+        [_, _, prefix] = Regex.run(~r/(^|\s)@([a-zA-Z0-9\/_\-]*)$/, value)
+
+        agents =
+          try do
+            Egghead.list_agents()
+          catch
+            _, _ -> []
+          end
+
+        candidates =
+          agents
+          |> Enum.filter(fn a ->
+            basename = a.id |> String.split("/") |> List.last() |> String.downcase()
+            String.starts_with?(basename, String.downcase(prefix))
+          end)
+          |> Enum.take(8)
+          |> Enum.map(&%{id: &1.id, name: &1.name})
+
+        if candidates != [] do
+          ghost =
+            case Enum.at(candidates, 0) do
+              %{id: id} ->
+                basename = id |> String.split("/") |> List.last()
+
+                if String.starts_with?(String.downcase(basename), String.downcase(prefix)),
+                  do: String.slice(basename, String.length(prefix)..-1//1),
+                  else: ""
+
+              _ ->
+                ""
+            end
+
+          assign(socket,
+            chat_dropdown: %{
+              kind: :agent,
+              prefix: prefix,
+              candidates: candidates,
+              selected: 0,
+              ghost: ghost
+            }
+          )
+        else
+          assign(socket, chat_dropdown: nil)
+        end
+
+      # [[record]] wikilink
+      String.match?(value, ~r/\[\[([a-zA-Z0-9\/_\-]*)$/) ->
+        [_, prefix] = Regex.run(~r/\[\[([a-zA-Z0-9\/_\-]*)$/, value)
+
+        candidates =
+          Egghead.recent(limit: 50)
+          |> Enum.filter(fn r ->
+            String.starts_with?(String.downcase(r.id || ""), String.downcase(prefix))
+          end)
+          |> Enum.take(8)
+          |> Enum.map(&%{id: &1.id, title: &1.title})
+
+        if candidates != [] do
+          assign(socket,
+            chat_dropdown: %{
+              kind: :record,
+              prefix: prefix,
+              candidates: candidates,
+              selected: 0,
+              ghost: ""
+            }
+          )
+        else
+          assign(socket, chat_dropdown: nil)
+        end
+
+      true ->
+        assign(socket, chat_dropdown: nil)
+    end
+  end
+
+  defp move_dropdown(socket, dir) do
+    case socket.assigns.chat_dropdown do
+      %{candidates: cands, selected: sel} = dd when cands != [] ->
+        n = length(cands)
+        new_sel = rem(sel + dir + n, n)
+        assign(socket, chat_dropdown: %{dd | selected: new_sel})
+
+      _ ->
+        socket
+    end
+  end
+
+  defp accept_completion(socket) do
+    new_value =
+      case socket.assigns.chat_dropdown do
+        %{kind: :command, candidates: [_ | _] = cands, selected: sel} ->
+          "/#{Enum.at(cands, sel).name} "
+
+        %{kind: :agent, candidates: [_ | _] = cands, selected: sel} ->
+          Regex.replace(
+            ~r/@[a-zA-Z0-9\/_\-]*$/,
+            socket.assigns.chat_input,
+            "@#{Enum.at(cands, sel).id} "
+          )
+
+        %{kind: :record, candidates: [_ | _] = cands, selected: sel} ->
+          Regex.replace(
+            ~r/\[\[[a-zA-Z0-9\/_\-]*$/,
+            socket.assigns.chat_input,
+            "[[#{Enum.at(cands, sel).id}]] "
+          )
+
+        _ ->
+          nil
+      end
+
+    if new_value do
+      socket
+      |> assign(chat_input: new_value, chat_dropdown: nil)
+      |> push_event("update_input", %{value: new_value})
+    else
+      socket
+    end
+  end
+
+  # --- Paste chips ---
+
+  defp build_paste_chip(text, existing) do
+    id = length(existing) + 1
+    lines = text |> String.split("\n") |> length()
+
+    first_line =
+      text |> String.split("\n") |> Enum.find("", &(String.trim(&1) != "")) |> String.trim()
+
+    head =
+      if String.length(first_line) > 25 do
+        String.slice(first_line, 0, 25) <> "\u2026"
+      else
+        first_line
+      end
+
+    extra = lines - 1
+    placeholder = "\u{1F4CB}[paste-#{id}]"
+
+    %{
+      id: id,
+      head: head,
+      extra_lines: extra,
+      full_text: text,
+      placeholder: placeholder
+    }
+  end
+
+  # --- Transcript rendering helpers ---
+
+  # Collapse consecutive nicks: don't repeat sender name when
+  # same sender + same kind in sequence
+  defp collapse_nicks(entries) do
+    entries
+    |> Enum.reduce({{nil, nil}, []}, fn entry, {{prev_id, prev_kind}, acc} ->
+      same? = entry.sender_id == prev_id and entry.sender_id != nil and entry.kind == prev_kind
+      {{entry.sender_id || prev_id, entry.kind}, [{entry, !same?} | acc]}
+    end)
+    |> elem(1)
+    |> Enum.reverse()
+  end
+
+  # Group consecutive agent entries from the same sender into runs
+  # for unified markdown rendering
+
+  defp set_agent_status(socket, agent_id, status) do
+    agents =
+      Enum.map(socket.assigns.agents, fn
+        %{id: ^agent_id} = a -> %{a | status: status}
+        a -> a
+      end)
+
+    assign(socket, agents: agents)
+  end
+
+  defp update_agent_ctx(socket, agent_id, msg) do
+    case Map.get(msg, :usage) do
+      %{context_window: cw, session_tokens: st} when is_integer(cw) and cw > 0 ->
+        pct = Float.round(st / cw * 100, 1)
+
+        agents =
+          Enum.map(socket.assigns.agents, fn
+            %{id: ^agent_id} = a ->
+              %{a | ctx_pct: pct, ctx_window: cw, session_tokens: st}
+
+            a ->
+              a
+          end)
+
+        assign(socket, agents: agents)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp format_tool_call(name, input) when is_map(input) do
+    summary =
+      input
+      |> Enum.map(fn {k, v} -> "#{k}=#{inspect(v, limit: 3, printable_limit: 40)}" end)
+      |> Enum.join(" ")
+
+    "uses #{name} #{summary}" |> String.trim()
+  end
+
+  defp format_tool_call(name, _), do: "uses #{name}"
+
+  defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
+  defp format_tokens(n), do: "#{n}"
+
+  # Deterministic color for agent nicks
+  defp agent_nick_color(sender_id) do
+    colors = ["#800000", "#008000", "#000080", "#808000", "#800080", "#008080", "#804000"]
+    idx = :erlang.phash2(sender_id || "", length(colors))
+    Enum.at(colors, idx)
   end
 
   # --- Render ---
@@ -651,39 +1118,139 @@ defmodule Egghead.Web.AppLive do
           <div class="chat-inner">
             <div class="chat-header">
               <span class="chat-title">Chat</span>
-              <span :if={@room_id} class="room-id">{@room_id}</span>
+              <button class="toolbar-btn" phx-click="toggle_agents" title="Agent roster">
+                <span class="toolbar-label">{length(@agents)} agents</span>
+              </button>
             </div>
+
+            <%!-- Agent roster panel --%>
+            <div :if={@show_agents} class="agent-roster">
+              <div :for={agent <- @agents} class="agent-card-wrap">
+                <div class="agent-card">
+                  <span class={["agent-status-dot", agent.status == :active && "active"]}>
+                    {if agent.status == :active, do: "\u25CF", else: "\u25CB"}
+                  </span>
+                  <span class="agent-name">{agent.name}</span>
+                  <span :if={agent.ctx_window > 0} class="agent-ctx">
+                    {format_tokens(agent.session_tokens)}/{format_tokens(agent.ctx_window)}
+                  </span>
+                </div>
+                <div :if={agent.ctx_window > 0} class="agent-bar">
+                  <div class="agent-bar-track">
+                    <div class="agent-bar-fill" style={"width: #{min(agent.ctx_pct, 100)}%"}></div>
+                  </div>
+                  <span class="agent-bar-label">{:erlang.float_to_binary(agent.ctx_pct, decimals: 1)}%</span>
+                </div>
+              </div>
+            </div>
+
             <div class="chat-transcript" id="chat-transcript" phx-hook="ScrollBottom">
+              <%= for {entry, show_nick?} <- collapse_nicks(@transcript) do %>
+                <%= case entry.kind do %>
+                  <% :agent -> %>
+                    <div class="bubble-row agent-row">
+                      <div class="bubble agent-bubble">
+                        <div class="bubble-header">
+                          <span class="bubble-name" style={"color: #{agent_nick_color(entry.sender_id)}"}>{entry.sender_name}</span>
+                          <span :if={entry.timestamp} class="bubble-time">{Calendar.strftime(entry.timestamp, "%H:%M")}</span>
+                        </div>
+                        <div class="bubble-body markdown-body">
+                          {Phoenix.HTML.raw(render_entry_html(entry))}
+                        </div>
+                      </div>
+                    </div>
+                  <% :user -> %>
+                    <div class="bubble-row user-row">
+                      <div class="bubble user-bubble">
+                        <div class="bubble-header">
+                          <span class="bubble-name user-name">{entry.sender_name}</span>
+                          <span :if={entry.timestamp} class="bubble-time">{Calendar.strftime(entry.timestamp, "%H:%M")}</span>
+                        </div>
+                        <div class="bubble-body markdown-body">
+                          {Phoenix.HTML.raw(render_entry_html(entry))}
+                        </div>
+                      </div>
+                    </div>
+                  <% :action -> %>
+                    <div class="meta-line action">
+                      <span class="meta-text">{entry.sender_name} {entry.text}</span>
+                    </div>
+                  <% :system -> %>
+                    <div class="meta-line">
+                      <span class="meta-sym">&mdash;</span>
+                      <span class="meta-text">{Phoenix.HTML.raw(render_entry_html(entry))}</span>
+                    </div>
+                  <% :handoff -> %>
+                    <div class="meta-line">
+                      <span class="meta-sym">&raquo;</span>
+                      <span class="meta-text">{Phoenix.HTML.raw(render_entry_html(entry))}</span>
+                    </div>
+                  <% _ -> %>
+                    <div class="meta-line">
+                      <span class="meta-text">{Phoenix.HTML.raw(render_entry_html(entry))}</span>
+                    </div>
+                <% end %>
+              <% end %>
+
+              <%!-- Typing indicators for agents with active streams --%>
               <div
-                :for={entry <- @transcript}
-                class={["chat-entry", "entry-#{entry.kind}"]}
+                :for={{name, agent_id} <- typing_agents(@active_streams)}
+                class="bubble-row agent-row"
               >
-                <span :if={entry.sender_name} class="nick">{entry.sender_name}</span>
-                <span :if={entry.timestamp} class="time">
-                  {Calendar.strftime(entry.timestamp, "%H:%M")}
-                </span>
-                <span class="entry-body">{Phoenix.HTML.raw(render_entry_html(entry))}</span>
-              </div>
-              <div
-                :for={{name, text} <- ghost_entries(@active_streams)}
-                class="chat-entry entry-agent ghost"
-              >
-                <span class="nick">{name}</span>
-                <span class="entry-body">{text}</span>
+                <div class="bubble agent-bubble typing-bubble">
+                  <span class="bubble-name" style={"color: #{agent_nick_color(agent_id)}"}>{name}</span>
+                  <span class="typing-dots">{typing_indicator(@anim_frame)}</span>
+                </div>
               </div>
             </div>
+
             <div :if={@chat_status} class="chat-status">{@chat_status}</div>
-            <form phx-submit="send_chat" class="chat-input">
-              <textarea
-                id="chat-textarea"
-                name="message"
-                placeholder={if @room_id, do: "Type a message...", else: "No room"}
-                autocomplete="off"
-                disabled={is_nil(@room_id)}
-                rows="1"
-                phx-hook="ChatInput"
-              ></textarea>
-            </form>
+
+            <%!-- Dropdown (commands / mentions) --%>
+            <div :if={@chat_dropdown && @chat_dropdown.candidates != []} class="chat-dropdown">
+              <div
+                :for={{cand, idx} <- Enum.with_index(@chat_dropdown.candidates)}
+                class={["dropdown-item", idx == @chat_dropdown.selected && "selected"]}
+                phx-click="select_dropdown"
+                phx-value-index={idx}
+              >
+                <%= case @chat_dropdown.kind do %>
+                  <% :command -> %>
+                    <span class="dd-name">/{cand.name}</span>
+                    <span class="dd-desc">{cand.description}</span>
+                  <% :agent -> %>
+                    <span class="dd-name">@{cand.id}</span>
+                    <span class="dd-desc">{cand.name}</span>
+                  <% :record -> %>
+                    <span class="dd-name">[[{cand.id}]]</span>
+                    <span class="dd-desc">{cand.title}</span>
+                <% end %>
+              </div>
+            </div>
+
+            <%!-- Paste chip display --%>
+            <div :if={@paste_chips != []} class="paste-chips">
+              <div :for={chip <- @paste_chips} class="paste-chip">
+                <span class="paste-icon">📋</span>
+                <span class="paste-head">{chip.head}</span>
+                <span :if={chip.extra_lines > 0} class="paste-tail">+{chip.extra_lines} lines</span>
+              </div>
+            </div>
+
+            <div class="chat-input-wrap">
+              <div class="chat-drag-handle" id="chat-drag-handle" phx-hook="DragHandle"></div>
+              <form phx-submit="send_chat" class="chat-input" id="chat-input-form" phx-update="ignore">
+                <textarea
+                  id="chat-textarea"
+                  name="message"
+                  placeholder={if @room_id, do: "Type a message...", else: "No room"}
+                  autocomplete="off"
+                  disabled={is_nil(@room_id)}
+                  rows="2"
+                  phx-hook="ChatInput"
+                ></textarea>
+              </form>
+            </div>
           </div>
         </aside>
       </div>

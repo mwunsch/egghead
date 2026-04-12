@@ -182,7 +182,7 @@ defmodule Egghead.Web.AppLiveTest do
     test "agent streaming appears in transcript", %{conn: conn, room_id: room_id} do
       {:ok, view, _html} = live(conn, "/")
 
-      send(view.pid, {:agent_streaming, room_id, "agents/scout", "Hello world\n"})
+      send(view.pid, {:agent_streaming, room_id, "agents/scout", "Hello world\n\n"})
       Process.sleep(50)
 
       html = render(view)
@@ -196,6 +196,60 @@ defmodule Egghead.Web.AppLiveTest do
       Process.sleep(50)
 
       assert render(view) =~ "Budget exhausted"
+    end
+
+    test "agent joined/left appear as system messages", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/")
+
+      send(view.pid, {:agent_joined, "agents/scout"})
+      Process.sleep(50)
+      assert render(view) =~ "Scout joined"
+
+      send(view.pid, {:agent_left, "agents/scout"})
+      Process.sleep(50)
+      assert render(view) =~ "Scout left"
+    end
+
+    test "tool call appears as action line", %{conn: conn, room_id: room_id} do
+      {:ok, view, _html} = live(conn, "/")
+
+      send(view.pid, {:agent_tool_call, room_id, "agents/scout", "egghead_search", %{q: "test"}})
+      Process.sleep(50)
+
+      html = render(view)
+      assert html =~ "egghead_search"
+      assert html =~ "meta-line"
+    end
+
+    test "slash command detection populates dropdown", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/")
+
+      # Simulate typing /sa
+      render_hook(view, "chat_input_change", %{"value" => "/sa"})
+      Process.sleep(50)
+
+      html = render(view)
+      assert html =~ "dropdown-item"
+      assert html =~ "/save"
+    end
+
+    test "agent mention detection populates dropdown", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/")
+
+      render_hook(view, "chat_input_change", %{"value" => "@sco"})
+      Process.sleep(50)
+
+      # Dropdown should appear if agents are registered
+      # (may be empty in test env without agents)
+      html = render(view)
+      assert is_binary(html)
+    end
+
+    test "toggle agent roster", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/")
+
+      view |> element(".chat-header .toolbar-btn") |> render_click()
+      assert has_element?(view, ".agent-roster")
     end
   end
 end

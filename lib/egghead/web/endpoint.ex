@@ -10,12 +10,22 @@ defmodule Egghead.Web.Endpoint do
 
   socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
 
+  if code_reloading? do
+    socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
+    plug(Phoenix.LiveReloader)
+    plug(Phoenix.CodeReloader)
+  end
+
   plug(Plug.Static,
     at: "/",
     from: {:egghead, "priv/static"},
-    gzip: false,
+    gzip: Mix.env() == :prod,
     only: Egghead.Web.static_paths()
   )
+
+  plug(Plug.RequestId)
+  plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
+  plug(Plug.Logger)
 
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],

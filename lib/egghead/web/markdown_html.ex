@@ -37,7 +37,7 @@ defmodule Egghead.Web.MarkdownHTML do
     _ -> "<pre>#{escape(markdown)}</pre>"
   end
 
-  defp default_link(target), do: "/?id=#{target}"
+  defp default_link(target), do: "/records/#{target}"
 
   # --- block nodes ---
 

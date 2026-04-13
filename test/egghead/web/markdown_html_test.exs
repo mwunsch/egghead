@@ -147,7 +147,7 @@ defmodule Egghead.Web.MarkdownHTMLTest do
       html = MarkdownHTML.render("See [[design/overview]]")
       assert html =~ "data-wikilink=\"design/overview\""
       assert html =~ "class=\"wikilink\""
-      assert html =~ "href=\"/?id=design/overview\""
+      assert html =~ "href=\"/records/design/overview\""
     end
 
     test "marks missing wikilinks" do

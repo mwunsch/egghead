@@ -62,6 +62,13 @@ Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_do
 mix docs
 ```
 
+## Acknowledgements
+
+The web interface uses icons from the [Haiku](https://www.haiku-os.org/)
+project, licensed under the MIT license. Haiku's icons are free to re-use
+and modify. See [haiku-inc.org/trademarks/haiku_icons](https://www.haiku-inc.org/trademarks/haiku_icons/)
+for details.
+
 ## License
 
 Egghead is licensed under the [GNU Affero General Public License v3.0 or

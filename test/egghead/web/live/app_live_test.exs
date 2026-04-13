@@ -54,11 +54,11 @@ defmodule Egghead.Web.AppLiveTest do
       assert has_element?(view, ".nav-sidebar:not(.collapsed)")
 
       # Toggle it closed
-      view |> element(".header-left .header-btn") |> render_click()
+      view |> element("button[phx-click=\"toggle_nav\"]") |> render_click()
       assert has_element?(view, ".nav-sidebar.collapsed")
 
       # Toggle it back open
-      view |> element(".header-left .header-btn") |> render_click()
+      view |> element("button[phx-click=\"toggle_nav\"]") |> render_click()
       assert has_element?(view, ".nav-sidebar:not(.collapsed)")
     end
 
@@ -67,7 +67,7 @@ defmodule Egghead.Web.AppLiveTest do
 
       assert has_element?(view, ".chat-sidebar:not(.collapsed)")
 
-      view |> element(".header-right .header-btn") |> render_click()
+      view |> element("button[phx-click=\"toggle_chat\"]") |> render_click()
       assert has_element?(view, ".chat-sidebar.collapsed")
     end
   end
@@ -100,28 +100,28 @@ defmodule Egghead.Web.AppLiveTest do
     end
 
     test "mounting with id param shows record", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/?id=hello-world")
+      {:ok, _view, html} = live(conn, "/records/hello-world")
 
       assert html =~ "Hello World"
       assert html =~ "test record"
     end
 
     test "properties block shows tags", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/?id=hello-world")
+      {:ok, _view, html} = live(conn, "/records/hello-world")
 
       assert html =~ "greeting"
       assert html =~ "tag-pill"
     end
 
     test "wikilinks render with brackets", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/?id=hello-world")
+      {:ok, _view, html} = live(conn, "/records/hello-world")
 
       assert html =~ "data-wikilink=\"link-target\""
       assert html =~ "wikilink"
     end
 
     test "wikilink click navigates via patch", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/?id=hello-world")
+      {:ok, view, _html} = live(conn, "/records/hello-world")
 
       view |> element("a[data-wikilink=\"link-target\"]") |> render_click()
 
@@ -156,7 +156,7 @@ defmodule Egghead.Web.AppLiveTest do
     end
 
     test "shows backlinks count and word count", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/?id=hello-world")
+      {:ok, _view, html} = live(conn, "/records/hello-world")
 
       assert html =~ "words"
       assert html =~ "backlinks"

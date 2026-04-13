@@ -11,7 +11,14 @@ defmodule Egghead.Web.AppLive do
     end
 
     all = Egghead.list_records() |> Enum.sort_by(&(&1.updated || ""), :desc)
-    selected_id = params["id"]
+
+    selected_id =
+      case params["id"] do
+        nil -> nil
+        segments when is_list(segments) -> Enum.join(segments, "/")
+        id when is_binary(id) -> id
+      end
+
     room_id = Egghead.default_room()
 
     socket =
@@ -27,6 +34,7 @@ defmodule Egghead.Web.AppLive do
         class_filter: MapSet.new([:durable, :inbox, :deliberation, :agent]),
         class_dropdown_open: false,
         nav_view: :search,
+        tree_open: MapSet.new(),
         # Record state
         selected_id: selected_id,
         selected_record: nil,
@@ -54,19 +62,24 @@ defmodule Egghead.Web.AppLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case params["id"] do
-      nil ->
-        {:noreply,
-         assign(socket,
-           selected_id: nil,
-           selected_record: nil,
-           selected_body_html: nil,
-           backlinks: [],
-           word_count: 0
-         )}
+    id =
+      case params["id"] do
+        nil -> nil
+        segments when is_list(segments) -> Enum.join(segments, "/")
+        id when is_binary(id) -> id
+      end
 
-      id ->
-        {:noreply, socket |> assign(selected_id: id) |> hydrate_selection()}
+    if id do
+      {:noreply, socket |> assign(selected_id: id) |> hydrate_selection()}
+    else
+      {:noreply,
+       assign(socket,
+         selected_id: nil,
+         selected_record: nil,
+         selected_body_html: nil,
+         backlinks: [],
+         word_count: 0
+       )}
     end
   end
 
@@ -86,7 +99,7 @@ defmodule Egghead.Web.AppLive do
   end
 
   def handle_event("select_record", %{"id" => id}, socket) do
-    {:noreply, push_patch(socket, to: "/?id=#{id}")}
+    {:noreply, push_patch(socket, to: "/records/#{id}")}
   end
 
   def handle_event("toggle_class_dropdown", _, socket) do
@@ -120,13 +133,24 @@ defmodule Egghead.Web.AppLive do
     {:noreply, assign(socket, nav_view: String.to_existing_atom(view))}
   end
 
+  def handle_event("toggle_folder", %{"dir" => dir}, socket) do
+    open = socket.assigns.tree_open
+
+    updated =
+      if MapSet.member?(open, dir),
+        do: MapSet.delete(open, dir),
+        else: MapSet.put(open, dir)
+
+    {:noreply, assign(socket, tree_open: updated)}
+  end
+
   def handle_event("create_record", %{"title" => title}, socket) do
     slug = Slug.slugify(title)
 
     if slug != "" do
       case Egghead.create_record(%{id: slug, class: :durable, title: title}) do
         {:ok, _record} ->
-          {:noreply, push_patch(socket, to: "/?id=#{slug}")}
+          {:noreply, push_patch(socket, to: "/records/#{slug}")}
 
         {:error, _reason} ->
           {:noreply, socket}
@@ -355,7 +379,7 @@ defmodule Egghead.Web.AppLive do
           {:ok, record} ->
             html =
               MarkdownHTML.render(record.body || "",
-                link_fn: &"/?id=#{&1}",
+                link_fn: &"/records/#{&1}",
                 exists_fn: &record_exists?/1
               )
 
@@ -904,33 +928,28 @@ defmodule Egghead.Web.AppLive do
     ~H"""
     <div class="app-shell">
       <header class="app-header">
-        <div class="header-left">
-          <button class="header-btn sidebar-toggle" phx-click="toggle_nav" title="Toggle navigation">
-            <svg width="20" height="18" viewBox="0 0 20 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="2" y="2" width="16" height="14" rx="2" />
-              <rect x="2" y="2" width="6" height="14" rx="2"
-                fill={if @nav_open, do: "currentColor", else: "none"}
-                stroke="currentColor"
-              />
-            </svg>
-          </button>
-          <span class="app-title">egghead</span>
-        </div>
         <div class="header-center">
-          <span :if={@selected_record} class="breadcrumb">{@selected_record.id}</span>
-        </div>
-        <div class="header-right">
-          <button class="header-btn sidebar-toggle" phx-click="toggle_chat" title="Toggle chat">
-            <svg width="20" height="18" viewBox="0 0 20 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="2" y="2" width="16" height="14" rx="2" />
-              <rect x="12" y="2" width="6" height="14" rx="2"
-                fill={if @chat_open, do: "currentColor", else: "none"}
-                stroke="currentColor"
-              />
-            </svg>
-          </button>
+          <span class="app-title">egghead</span>
+          <span :if={@selected_record} class="breadcrumb">&mdash; {@selected_record.id}</span>
         </div>
       </header>
+      <div class="app-toolbar">
+        <button
+          class={["toolbar-icon-btn", @nav_open && "depressed"]}
+          phx-click="toggle_nav"
+          title="Toggle records"
+        >
+          <img src="/assets/icon-search.png" alt="Records" class="toolbar-app-icon" />
+        </button>
+        <div class="toolbar-spacer"></div>
+        <button
+          class={["toolbar-icon-btn", @chat_open && "depressed"]}
+          phx-click="toggle_chat"
+          title="Toggle chat"
+        >
+          <img src="/assets/icon-chat.png" alt="Chat" class="toolbar-app-icon" />
+        </button>
+      </div>
 
       <div class="app-body">
         <%!-- Left nav sidebar --%>
@@ -942,9 +961,7 @@ defmodule Egghead.Web.AppLive do
                 phx-click="switch_nav_view"
                 phx-value-view={if @nav_view == :tree, do: "search", else: "tree"}
               >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M2 2h4v4H2zM8 3h6M8 7h4M2 10h4v4H2zM8 11h6" />
-                </svg>
+                <img src="/assets/icon-tree.png" alt="Tree" class="toolbar-icon" />
                 <span class="toolbar-label">Tree</span>
               </button>
               <div class="toolbar-spacer"></div>
@@ -953,9 +970,7 @@ defmodule Egghead.Web.AppLive do
                   class="toolbar-btn"
                   phx-click="toggle_class_dropdown"
                 >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 3h14M3 8h10M5 13h6" />
-                  </svg>
+                  <img src="/assets/icon-filter.png" alt="Filter" class="toolbar-icon" />
                   <span class="toolbar-label">Filter</span>
                 </button>
                 <div :if={@class_dropdown_open} class="class-dropdown">
@@ -1013,24 +1028,40 @@ defmodule Egghead.Web.AppLive do
                 </li>
               </ul>
 
-              <%!-- Tree view --%>
-              <ul :if={@nav_view == :tree} class="record-list file-tree">
-                <li :for={{dir, records} <- @file_tree} class="tree-group">
-                  <div :if={dir != ""} class="tree-dir">{dir}/</div>
-                  <ul>
-                    <li
+              <%!-- Tree view — like `tree` / Windows Explorer --%>
+              <div :if={@nav_view == :tree} class="record-list file-tree">
+                <%= for {dir, records} <- @file_tree do %>
+                  <%= if dir == "" do %>
+                    <%!-- Root-level files --%>
+                    <div
                       :for={record <- records}
-                      class={["record-item", record.id == @selected_id && "selected"]}
+                      class={["tree-file", record.id == @selected_id && "selected"]}
                       phx-click="select_record"
                       phx-value-id={record.id}
                     >
-                      <span class="record-title">
-                        {record.title || List.last(String.split(record.id, "/"))}
-                      </span>
-                    </li>
-                  </ul>
-                </li>
-              </ul>
+                      <img src="/assets/icon-file.png" alt="" class="tree-icon" />
+                      <span class="tree-name">{List.last(String.split(record.id, "/"))}</span>
+                    </div>
+                  <% else %>
+                    <%!-- Directory with toggle --%>
+                    <div class="tree-folder-header" phx-click="toggle_folder" phx-value-dir={dir}>
+                      <img src="/assets/icon-folder.png" alt="" class="tree-icon" />
+                      <span class="tree-name folder-name">{dir}/</span>
+                    </div>
+                    <div :if={MapSet.member?(@tree_open, dir)} class="tree-children">
+                      <div
+                        :for={record <- records}
+                        class={["tree-file", record.id == @selected_id && "selected"]}
+                        phx-click="select_record"
+                        phx-value-id={record.id}
+                      >
+                        <img src="/assets/icon-file.png" alt="" class="tree-icon" />
+                        <span class="tree-name">{List.last(String.split(record.id, "/"))}</span>
+                      </div>
+                    </div>
+                  <% end %>
+                <% end %>
+              </div>
             </div>
           </div>
         </aside>
@@ -1069,7 +1100,7 @@ defmodule Egghead.Web.AppLive do
                     <a
                       :for={link <- @selected_record.links}
                       class="prop-link"
-                      href={"/?id=#{link}"}
+                      href={"/records/#{link}"}
                       data-phx-link="patch"
                       data-phx-link-state="push"
                     >
@@ -1079,7 +1110,11 @@ defmodule Egghead.Web.AppLive do
                 </div>
                 <div class="prop-row">
                   <dt>class</dt>
-                  <dd><span class={"class-badge #{@selected_record.class}"}>{@selected_record.class}</span></dd>
+                  <dd>
+                    <span class={"class-badge #{@selected_record.class}"}>
+                      {@selected_record.class}
+                    </span>
+                  </dd>
                 </div>
               </dl>
               <div class="properties-actions">
@@ -1089,7 +1124,16 @@ defmodule Egghead.Web.AppLive do
                   phx-hook="CopyMarkdown"
                   data-markdown={@selected_record.body || ""}
                 >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <rect x="5" y="5" width="9" height="9" rx="1" />
                     <path d="M3 11V3a1 1 0 0 1 1-1h8" />
                   </svg>
@@ -1139,7 +1183,9 @@ defmodule Egghead.Web.AppLive do
                   <div class="agent-bar-track">
                     <div class="agent-bar-fill" style={"width: #{min(agent.ctx_pct, 100)}%"}></div>
                   </div>
-                  <span class="agent-bar-label">{:erlang.float_to_binary(agent.ctx_pct, decimals: 1)}%</span>
+                  <span class="agent-bar-label">
+                    {:erlang.float_to_binary(agent.ctx_pct, decimals: 1)}%
+                  </span>
                 </div>
               </div>
             </div>
@@ -1151,8 +1197,15 @@ defmodule Egghead.Web.AppLive do
                     <div class="bubble-row agent-row">
                       <div class="bubble agent-bubble">
                         <div class="bubble-header">
-                          <span class="bubble-name" style={"color: #{agent_nick_color(entry.sender_id)}"}>{entry.sender_name}</span>
-                          <span :if={entry.timestamp} class="bubble-time">{Calendar.strftime(entry.timestamp, "%H:%M")}</span>
+                          <span
+                            class="bubble-name"
+                            style={"color: #{agent_nick_color(entry.sender_id)}"}
+                          >
+                            {entry.sender_name}
+                          </span>
+                          <span :if={entry.timestamp} class="bubble-time">
+                            {Calendar.strftime(entry.timestamp, "%H:%M")}
+                          </span>
                         </div>
                         <div class="bubble-body markdown-body">
                           {Phoenix.HTML.raw(render_entry_html(entry))}
@@ -1164,7 +1217,9 @@ defmodule Egghead.Web.AppLive do
                       <div class="bubble user-bubble">
                         <div class="bubble-header">
                           <span class="bubble-name user-name">{entry.sender_name}</span>
-                          <span :if={entry.timestamp} class="bubble-time">{Calendar.strftime(entry.timestamp, "%H:%M")}</span>
+                          <span :if={entry.timestamp} class="bubble-time">
+                            {Calendar.strftime(entry.timestamp, "%H:%M")}
+                          </span>
                         </div>
                         <div class="bubble-body markdown-body">
                           {Phoenix.HTML.raw(render_entry_html(entry))}
@@ -1198,7 +1253,9 @@ defmodule Egghead.Web.AppLive do
                 class="bubble-row agent-row"
               >
                 <div class="bubble agent-bubble typing-bubble">
-                  <span class="bubble-name" style={"color: #{agent_nick_color(agent_id)}"}>{name}</span>
+                  <span class="bubble-name" style={"color: #{agent_nick_color(agent_id)}"}>
+                    {name}
+                  </span>
                   <span class="typing-dots">{typing_indicator(@anim_frame)}</span>
                 </div>
               </div>

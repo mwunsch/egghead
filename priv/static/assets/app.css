@@ -8,25 +8,26 @@
 :root {
   --bg:         #FFFFFF;
   --fg:         #000000;
-  --heading:    #000080;
-  --accent:     #000080;
-  --link:       #0000FF;
-  --wikilink:   #000080;
+  --heading:    #316AC5;
+  --accent:     #316AC5;
+  --link:       #316AC5;
+  --wikilink:   #316AC5;
   --muted:      #808080;
-  --chrome:     #C0C0C0;
-  --chrome-hi:  #FFFFFF;
-  --chrome-mid: #DFDFDF;
-  --chrome-lo:  #808080;
-  --chrome-dk:  #000000;
-  --titlebar:   #000080;
+  --chrome:     #D8D8D8;
+  --chrome-hi:  #F0F0F0;
+  --chrome-mid: #E4E4E4;
+  --chrome-lo:  #9E9E9E;
+  --chrome-dk:  #505050;
+  --titlebar:   #F0B030;
+  --titlebar-end: #C88A10;
   --code-bg:    #F0F0F0;
   --tag:        #006400;
   --danger:     #CC0000;
-  --chat-user:  #000080;
+  --chat-user:  #316AC5;
   --chat-agent: #800000;
   --syntax:     #A0A0A0;
 
-  --font-display: 'Fraunces', 'Georgia', serif;
+  --font-display: 'Source Serif 4', 'Charter', 'Georgia', serif;
   --font-body:    'Source Serif 4', 'Charter', 'Georgia', serif;
   --font-ui:      'Source Sans 3', 'Segoe UI', system-ui, sans-serif;
   --font-mono:    'Source Code Pro', 'Menlo', 'Consolas', monospace;
@@ -64,28 +65,28 @@ body { min-height: 100vh; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 28px;
-  padding: 0 4px;
-  background: var(--titlebar);
+  height: 24px;
+  padding: 0 6px;
+  background: linear-gradient(to bottom, var(--titlebar), var(--titlebar-end));
+  border-bottom: 1px solid var(--chrome-dk);
   font-family: var(--font-ui);
   font-size: 13px;
   flex-shrink: 0;
-  color: #FFFFFF;
+  color: #000000;
 }
 
-.header-left, .header-right { display: flex; align-items: center; gap: 4px; }
 .header-center { flex: 1; text-align: center; }
 
 .app-title {
-  font-family: var(--font-display);
-  font-weight: 300;
-  font-size: 16px;
-  color: #FFFFFF;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 13px;
+  color: #000000;
   margin-left: 4px;
 }
 
 .breadcrumb {
-  color: rgba(255,255,255,0.85);
+  color: rgba(0,0,0,0.55);
   font-size: 12px;
 }
 
@@ -93,14 +94,13 @@ body { min-height: 100vh; }
 .header-btn {
   background: var(--chrome);
   border: none;
-  padding: 2px;
+  padding: 3px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 22px;
-  /* Raised: white top-left, dark bottom-right */
+  width: 28px;
+  height: 24px;
   box-shadow:
     inset 1px 1px 0 var(--chrome-hi),
     inset -1px -1px 0 var(--chrome-dk),
@@ -108,31 +108,82 @@ body { min-height: 100vh; }
     inset -2px -2px 0 var(--chrome-lo);
 }
 
-.header-btn:hover {
-  background: var(--chrome-mid);
-}
+.header-btn:hover { background: var(--chrome-mid); }
 
-/* Pressed: swap edges — dark top-left, white bottom-right */
-.header-btn:active {
+.header-btn:active, .header-btn.depressed {
   box-shadow:
     inset 1px 1px 0 var(--chrome-dk),
     inset -1px -1px 0 var(--chrome-hi),
     inset 2px 2px 0 var(--chrome-lo),
     inset -2px -2px 0 var(--chrome-mid);
+  background: var(--chrome-mid);
 }
 
-.header-btn svg { display: block; width: 14px; height: 14px; }
+.header-btn svg, .header-btn img { display: block; }
+
+/* Win95 pixel icons — keep crisp at small sizes */
+.win95-icon {
+  width: 20px;
+  height: 20px;
+  image-rendering: pixelated;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 30px;
+  border-radius: 2px;
+}
+
+.toolbar-icon {
+  width: 16px;
+  height: 16px;
+  image-rendering: pixelated;
+}
 
 /* ---- Toolbar row beneath title bar ---- */
 
 .app-toolbar {
   display: flex;
   align-items: center;
-  padding: 2px 4px;
+  padding: 3px 6px;
   background: var(--chrome);
   border-bottom: 1px solid var(--chrome-lo);
   box-shadow: inset 0 1px 0 var(--chrome-hi);
-  gap: 2px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.toolbar-icon-btn {
+  background: var(--chrome);
+  border: none;
+  padding: 3px 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-dk),
+    inset 2px 2px 0 var(--chrome-mid),
+    inset -2px -2px 0 var(--chrome-lo);
+}
+
+.toolbar-icon-btn:hover { background: var(--chrome-mid); }
+
+.toolbar-icon-btn:active, .toolbar-icon-btn.depressed {
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-dk),
+    inset -1px -1px 0 var(--chrome-hi),
+    inset 2px 2px 0 var(--chrome-lo),
+    inset -2px -2px 0 var(--chrome-mid);
+  background: var(--chrome-mid);
+}
+
+.toolbar-app-icon {
+  width: 24px;
+  height: 24px;
+  image-rendering: pixelated;
 }
 
 /* ---- Three-pane body ---- */
@@ -344,7 +395,7 @@ body { min-height: 100vh; }
   font-family: var(--font-ui);
 }
 
-.class-option:hover { background: var(--titlebar); color: #FFFFFF; }
+.class-option:hover { background: #316AC5; color: #FFFFFF; }
 .class-option input { cursor: pointer; }
 
 .record-list-wrap {
@@ -379,7 +430,7 @@ body { min-height: 100vh; }
 
 /* Win95 list selection: navy background, white text */
 .record-item.selected {
-  background: var(--titlebar);
+  background: #316AC5;
   color: #FFFFFF;
 }
 
@@ -410,20 +461,51 @@ body { min-height: 100vh; }
 .record-item.phantom .record-title { color: var(--heading); font-style: italic; }
 .record-item.phantom .record-meta { font-family: var(--font-mono); }
 
-/* File tree */
-.file-tree { padding: 4px 0; }
-.tree-group { margin-bottom: 2px; }
-.tree-group ul { list-style: none; }
-
-.tree-dir {
-  padding: 2px 8px;
-  font-family: var(--font-mono);
+/* File tree — Windows Explorer style */
+.file-tree {
+  padding: 4px;
+  font-family: var(--font-ui);
   font-size: 12px;
-  color: var(--muted);
-  font-weight: 600;
 }
 
-.file-tree .record-item { padding-left: 20px; }
+.tree-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.tree-folder-header:hover { background: var(--chrome-mid); }
+
+.tree-children { padding-left: 16px; }
+
+.tree-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+.tree-file:hover { background: var(--chrome-mid); }
+
+.tree-file.selected {
+  background: #316AC5;
+  color: #FFFFFF;
+}
+
+.tree-icon { width: 16px; height: 16px; flex-shrink: 0; image-rendering: pixelated; }
+
+.tree-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-name { font-weight: 600; }
 
 /* Record status bar */
 .record-status-bar {
@@ -477,7 +559,7 @@ body { min-height: 100vh; }
 
 .record-heading {
   font-family: var(--font-display);
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 300;
   color: var(--heading);
   line-height: 1.2;
@@ -968,7 +1050,7 @@ body { min-height: 100vh; }
 
 .agent-bar-fill {
   height: 100%;
-  background: var(--titlebar);
+  background: #316AC5;
 }
 
 .agent-bar-label { flex-shrink: 0; }
@@ -997,7 +1079,7 @@ body { min-height: 100vh; }
 }
 
 .dropdown-item:hover, .dropdown-item.selected {
-  background: var(--titlebar);
+  background: #316AC5;
   color: #FFFFFF;
 }
 
@@ -1134,7 +1216,7 @@ body { min-height: 100vh; }
     width: 100% !important;
     max-width: none !important;
     min-width: 0;
-    max-height: 45vh;
+    max-height: 35vh;
     box-shadow: none;
   }
 
@@ -1146,7 +1228,7 @@ body { min-height: 100vh; }
 
   .chat-sidebar {
     position: fixed;
-    top: 28px;
+    top: 58px; /* title bar (24px) + toolbar (~34px) */
     right: 0;
     bottom: 0;
     z-index: 100;

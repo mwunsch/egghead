@@ -168,6 +168,7 @@ defmodule Egghead.MixProject do
       zig_extra_options: [
         opentui_dir: Egghead.OpenTUIPaths.lib_dir(@zig_target)
       ],
+      listeners: [Phoenix.CodeReloader],
       deps: deps(),
       package: package()
     ]
@@ -201,6 +202,7 @@ defmodule Egghead.MixProject do
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.1"},
+      {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end

@@ -228,7 +228,7 @@ chat mode to records mode.
 
 ## MCP
 
-14 tools exposed over MCP. Two transports, one handler (`Egghead.MCP.Handler`):
+15 tools exposed over MCP. Two transports, one handler (`Egghead.MCP.Handler`):
 
 - **Stdio** (`egghead mcp`): JSON-RPC over stdin/stdout. Configured in
   `.mcp.json` for editor integrations (Claude Code, etc.).
@@ -238,7 +238,7 @@ chat mode to records mode.
 Tool names are `egghead_*`-namespaced:
 
 - Records: `egghead_search`, `egghead_get`, `egghead_list`, `egghead_create`,
-  `egghead_find_links`, `egghead_backlinks`, `egghead_recent`
+  `egghead_update`, `egghead_find_links`, `egghead_backlinks`, `egghead_recent`
 - Agents: `egghead_agents`, `egghead_prompt`, `egghead_handoff`, `egghead_save`
 - Consultation: `egghead_consult`
 - Providers: `egghead_providers`, `egghead_models`

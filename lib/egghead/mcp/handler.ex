@@ -139,6 +139,30 @@ defmodule Egghead.MCP.Handler do
         }
       },
       %{
+        name: "egghead_update",
+        description:
+          "Update an existing record. Merges the given fields into the record. Omitted fields are left unchanged. To replace the body entirely, pass the full new body.",
+        inputSchema: %{
+          type: "object",
+          properties: %{
+            id: %{type: "string", description: "Record id to update"},
+            title: %{type: "string", description: "New title"},
+            tags: %{
+              type: "array",
+              items: %{type: "string"},
+              description: "New tags (replaces existing tags)"
+            },
+            links: %{
+              type: "array",
+              items: %{type: "string"},
+              description: "New linked record ids (replaces existing links)"
+            },
+            body: %{type: "string", description: "New body content (Markdown)"}
+          },
+          required: ["id"]
+        }
+      },
+      %{
         name: "egghead_find_links",
         description:
           "Find records that this record links TO. Traverses the link graph up to the specified depth.",
@@ -292,6 +316,20 @@ defmodule Egghead.MCP.Handler do
       {:ok, record} -> {:ok, "Created record: #{record.id}\n\n#{format_full_record(record)}"}
       {:error, :already_exists} -> {:error, "Record already exists: #{attrs["id"]}"}
       {:error, reason} -> {:error, "Failed to create record: #{inspect(reason)}"}
+    end
+  end
+
+  defp call_tool("egghead_update", %{"id" => id} = args) do
+    attrs =
+      args
+      |> Map.take(["title", "tags", "links", "body"])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    case Egghead.update_record(id, attrs) do
+      {:ok, record} -> {:ok, "Updated record: #{record.id}\n\n#{format_full_record(record)}"}
+      {:error, :not_found} -> {:error, "Record not found: #{id}"}
+      {:error, reason} -> {:error, "Failed to update record: #{inspect(reason)}"}
     end
   end
 

@@ -906,6 +906,23 @@ defmodule Egghead.Web.AppLive do
   defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
   defp format_tokens(n), do: "#{n}"
 
+  defp format_date(nil), do: nil
+
+  defp format_date(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _} ->
+        Calendar.strftime(dt, "%b %-d, %Y at %-I:%M %p")
+
+      _ ->
+        case Date.from_iso8601(iso) do
+          {:ok, d} -> Calendar.strftime(d, "%b %-d, %Y")
+          _ -> iso
+        end
+    end
+  end
+
+  defp format_date(other), do: inspect(other)
+
   # Deterministic color for agent nicks
   defp agent_nick_color(sender_id) do
     colors = ["#800000", "#008000", "#000080", "#808000", "#800080", "#008080", "#804000"]
@@ -941,6 +958,9 @@ defmodule Egghead.Web.AppLive do
         >
           <img src="/assets/icon-search.png" alt="Records" class="toolbar-app-icon" />
         </button>
+        <span :if={@selected_record} class="toolbar-title">
+          {@selected_record.title || @selected_record.id}
+        </span>
         <div class="toolbar-spacer"></div>
         <button
           class={["toolbar-icon-btn", @chat_open && "depressed"]}
@@ -1069,24 +1089,59 @@ defmodule Egghead.Web.AppLive do
         <%!-- Center: record body --%>
         <main class="record-pane">
           <div :if={@selected_record} class="record-content">
-            <div class="properties-block">
-              <h1 class="record-heading">{@selected_record.title || @selected_record.id}</h1>
+            <details class="properties-block" open>
+              <summary class="properties-summary">
+                <span class="properties-summary-label">Properties</span>
+                <button
+                  class="btn-chrome btn-copy"
+                  id="copy-md-btn"
+                  phx-hook="CopyMarkdown"
+                  data-markdown={@selected_record.body || ""}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <rect x="5" y="5" width="9" height="9" rx="1" />
+                    <path d="M3 11V3a1 1 0 0 1 1-1h8" />
+                  </svg>
+                  <span class="btn-label">Copy</span>
+                </button>
+              </summary>
               <dl class="properties">
                 <div class="prop-row">
                   <dt>id</dt>
                   <dd class="prop-id">{@selected_record.id}</dd>
                 </div>
-                <div :if={@selected_record.created} class="prop-row">
-                  <dt>created</dt>
-                  <dd>{@selected_record.created}</dd>
-                </div>
-                <div :if={@selected_record.updated} class="prop-row">
-                  <dt>updated</dt>
-                  <dd>{@selected_record.updated}</dd>
+                <div class="prop-row">
+                  <dt>class</dt>
+                  <dd>
+                    <span class={"class-badge #{@selected_record.class}"}>
+                      {@selected_record.class}
+                    </span>
+                  </dd>
                 </div>
                 <div :if={@selected_record.author} class="prop-row">
                   <dt>author</dt>
                   <dd>{@selected_record.author}</dd>
+                </div>
+                <div :if={@selected_record.created} class="prop-row">
+                  <dt>created</dt>
+                  <dd class="prop-date" title={@selected_record.created}>
+                    {format_date(@selected_record.created)}
+                  </dd>
+                </div>
+                <div :if={@selected_record.updated} class="prop-row">
+                  <dt>updated</dt>
+                  <dd class="prop-date" title={@selected_record.updated}>
+                    {format_date(@selected_record.updated)}
+                  </dd>
                 </div>
                 <div :if={@selected_record.tags != []} class="prop-row">
                   <dt>tags</dt>
@@ -1108,39 +1163,28 @@ defmodule Egghead.Web.AppLive do
                     </a>
                   </dd>
                 </div>
-                <div class="prop-row">
-                  <dt>class</dt>
+                <div :if={@backlinks != []} class="prop-row">
+                  <dt>backlinks</dt>
                   <dd>
-                    <span class={"class-badge #{@selected_record.class}"}>
-                      {@selected_record.class}
-                    </span>
+                    <a
+                      :for={bl <- @backlinks}
+                      class="prop-link"
+                      href={"/records/#{bl.id}"}
+                      data-phx-link="patch"
+                      data-phx-link-state="push"
+                    >
+                      {bl.id}
+                    </a>
                   </dd>
                 </div>
+                <%= for {key, val} <- @selected_record.meta do %>
+                  <div class="prop-row">
+                    <dt>{key}</dt>
+                    <dd>{inspect(val)}</dd>
+                  </div>
+                <% end %>
               </dl>
-              <div class="properties-actions">
-                <button
-                  class="btn-chrome"
-                  id="copy-md-btn"
-                  phx-hook="CopyMarkdown"
-                  data-markdown={@selected_record.body || ""}
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <rect x="5" y="5" width="9" height="9" rx="1" />
-                    <path d="M3 11V3a1 1 0 0 1 1-1h8" />
-                  </svg>
-                  <span class="btn-label">Copy</span>
-                </button>
-              </div>
-            </div>
+            </details>
             <article class="record-body markdown-body">
               {Phoenix.HTML.raw(@selected_body_html)}
             </article>

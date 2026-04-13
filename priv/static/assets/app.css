@@ -151,6 +151,7 @@ body { min-height: 100vh; }
   box-shadow: inset 0 1px 0 var(--chrome-hi);
   gap: 4px;
   flex-shrink: 0;
+  position: relative;
 }
 
 .toolbar-icon-btn {
@@ -184,6 +185,21 @@ body { min-height: 100vh; }
   width: 24px;
   height: 24px;
   image-rendering: pixelated;
+}
+
+.toolbar-title {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 /* ---- Three-pane body ---- */
@@ -550,20 +566,41 @@ body { min-height: 100vh; }
   margin: 0 auto;
 }
 
-/* Properties block — groupbox style with groove border */
+/* Properties block — collapsible groupbox */
 .properties-block {
   margin-bottom: 20px;
-  padding-bottom: 16px;
   border-bottom: 1px solid var(--chrome);
 }
 
-.record-heading {
-  font-family: var(--font-display);
-  font-size: 26px;
-  font-weight: 300;
-  color: var(--heading);
-  line-height: 1.2;
-  margin-bottom: 12px;
+.properties-summary {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  padding: 4px 0 8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+  list-style: none;
+}
+
+.properties-summary::-webkit-details-marker { display: none; }
+
+.properties-summary::before {
+  content: "▸";
+  margin-right: 4px;
+  font-size: 11px;
+  transition: transform 0.1s ease;
+}
+
+details[open] > .properties-summary::before {
+  content: "▾";
+}
+
+.properties-summary-label { flex: 1; }
+
+.properties-summary .btn-copy {
+  margin-left: auto;
 }
 
 .properties {
@@ -597,6 +634,7 @@ body { min-height: 100vh; }
 }
 
 .prop-id { font-family: var(--font-mono); font-size: 12px; }
+.prop-date { font-size: 12px; }
 
 .tag-pill {
   display: inline-block;
@@ -1150,6 +1188,7 @@ body { min-height: 100vh; }
 
 .chat-input {
   padding: 4px;
+  padding-bottom: 13px;
   background: var(--chrome);
 }
 

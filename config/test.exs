@@ -4,6 +4,9 @@ import Config
 config :egghead, :start_record_store, false
 config :egghead, :start_web, false
 
+# Quiet logs in tests — only warnings and errors
+config :logger, level: :warning
+
 config :egghead, Egghead.Web.Endpoint,
   server: false,
   secret_key_base:

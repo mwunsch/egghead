@@ -4,7 +4,7 @@ Record-store-first multi-agent system on Elixir/OTP. Plain markdown records
 under `records/` are the substrate; agents are participants in the graph,
 not owners of it. Design docs live in the store — start with
 [`records/design/egghead-overview.md`](records/design/egghead-overview.md)
-or browse via `mix egghead.tui`.
+or browse via `egghead` (TUI).
 
 ## Rules (read first)
 
@@ -21,18 +21,52 @@ or browse via `mix egghead.tui`.
 ## Commands
 
 ```bash
-ANTHROPIC_API_KEY=… iex -S mix      # Interactive (full system loaded)
-mix egghead.tui                      # TUI (or ./bin/egghead)
-mix test --exclude mcp_integration   # Test suite
+egghead                          # Launch the TUI
+egghead init                     # First-run setup wizard
+egghead serve                    # Web + MCP HTTP server (headless)
+egghead mcp                      # MCP stdio server (editor integration)
+egghead llm list|add|remove|test|models
+egghead agent list|new
+egghead config [set K V | path]
+egghead doctor                   # Diagnose setup problems
+egghead logs                     # Tail application logs
+ANTHROPIC_API_KEY=… iex -S mix   # Interactive (full system loaded)
+mix test                         # Test suite
 mix format
 ```
 
-Without any provider configured (no API keys, no `~/.egghead/providers.yml`),
-the app **gracefully degrades to a record-store-only interface**: the TUI
-records browser, MCP record tools, and `Egghead.search/get/list/...` all
-work. Anything that needs to actually call an LLM (`Egghead.chat`,
+All commands support `--help` (instant, via bash). Commands that touch
+configuration support `--config PATH` to override the config file.
+
+Without any provider configured (no API keys, no config file), the app
+**gracefully degrades to a record-store-only interface**: the TUI records
+browser, MCP record tools, and `Egghead.search/get/list/...` all work.
+Anything that needs to actually call an LLM (`Egghead.chat`,
 `Egghead.consult`, `Egghead.prompt`, agent activation in chat rooms)
 returns a clean error.
+
+## Configuration
+
+Config lives at `~/.config/egghead/config.yml` (respects `$XDG_CONFIG_HOME`).
+Override with `$EGGHEAD_CONFIG` env var or `--config PATH` flag.
+
+```yaml
+records_dir: ~/.egghead
+
+llm:
+  - provider: anthropic
+    api_key: "{env:ANTHROPIC_API_KEY}"
+
+default_model: anthropic/claude-haiku-4-5
+
+web:
+  port: 4000
+  host: localhost
+  bind: 127.0.0.1
+```
+
+Records default to `~/.egghead/`. Logs go to
+`~/.local/state/egghead/egghead.log` (respects `$XDG_STATE_HOME`).
 
 ## Architecture
 
@@ -46,13 +80,23 @@ Egghead.Supervisor (one_for_one)
     ├── LLM.Registry    — multi-provider, env-var detection
     ├── Chat.Coordinator — activation gating, [PASS] enforcement
     └── Agent.Supervisor (DynamicSupervisor)
-        ├── index       — built-in store agent (Haiku)
+        ├── index       — built-in store agent (model from config)
         └── agents/*    — defined as records with class: agent
 ```
 
 The record store is isolated from the agent layer. If LLM.Registry crashes
 and all agents restart, search/get/list/backlinks keep serving. The clean
 record store outlives any individual session.
+
+### Logging
+
+Centralized in `Egghead.Application.start/2` via `:log_mode` app env:
+
+- `:console` (default) — stdout, for `iex` and `egghead serve`
+- `:file` — redirect to XDG log file, for TUI
+- `:silent` — redirect to file, no console, for CLI commands
+
+Log routing happens before the supervision tree starts.
 
 ### Design principles
 
@@ -110,12 +154,33 @@ library embedding. Prefer reusing these over reinventing.
 |---|---|
 | `consult/2` | Ephemeral room: ask, get aggregated responses, auto-saved & stopped |
 
+## CLI
+
+`bin/egghead` is a Bash router that dispatches to Mix tasks. Help text
+lives in the Bash script for instant access (no compilation). See
+`records/design/cli.md` for the full CLI design document.
+
+### Interactive widgets (`Egghead.CLI.Widgets`)
+
+CLI commands use the OpenTUI Bridge NIF for interactive input:
+`Bridge.enter_raw_mode/0` + `Input.read_one_key/1` for keyboard,
+`Readline` for text editing, ANSI escape codes for rendering.
+
+- **Select**: Arrow-key `▸` navigation, type-to-filter
+- **Multiselect**: Arrow keys + space to toggle `[✓]`/`[ ]`
+- **Input**: Ghost text default (Tab to accept), full Readline bindings
+- **Secret**: Partial reveal (prefix cleartext, rest masked)
+- **Spinner**: Simple spawned process animation
+- **Confirm**: `IO.gets` y/n
+
+Falls back to `Egghead.CLI.Prompts` when the NIF is unavailable.
+
 ## TUI
 
-`mix egghead.tui` (or `./bin/egghead`). Built on OpenTUI (Zig NIF) with an
+`egghead` (or `mix egghead.tui`). Built on OpenTUI (Zig NIF) with an
 Elm-architecture runtime. See `lib/egghead/open_tui/README.md` for the
-framework documentation. Logs go to `/tmp/egghead.log` — never to stdout,
-which would corrupt the alt-screen rendering.
+framework documentation. Logs go to `~/.local/state/egghead/egghead.log`
+— never to stdout, which would corrupt the alt-screen rendering.
 
 ### Two modes
 
@@ -142,8 +207,6 @@ chat mode to records mode.
 
 - **Don't run the TUI from `iex`** — the NIF needs exclusive terminal
   ownership; the IEx group leader and raw mode fight.
-- **`mix egghead.tui` redirects logs** to `/tmp/egghead.log`. If you see
-  log spam in the alt screen during dev, something is bypassing this.
 - **`$EDITOR` uses `{:suspend, fn}`** — the runtime tears down the terminal,
   runs the function (editor gets a clean tty), then restores. If you see
   garbage after editor exit, `Bridge.drain_input` isn't catching something.
@@ -165,8 +228,14 @@ chat mode to records mode.
 
 ## MCP
 
-14 tools exposed over MCP. Stdio via `.mcp.json`, HTTP on
-`localhost:8642/mcp`. Tool names are `egghead_*`-namespaced:
+14 tools exposed over MCP. Two transports, one handler (`Egghead.MCP.Handler`):
+
+- **Stdio** (`egghead mcp`): JSON-RPC over stdin/stdout. Configured in
+  `.mcp.json` for editor integrations (Claude Code, etc.).
+- **HTTP** (`POST /mcp`): Mounted in Phoenix router. Available when
+  `egghead serve` is running on the same port as the web UI.
+
+Tool names are `egghead_*`-namespaced:
 
 - Records: `egghead_search`, `egghead_get`, `egghead_list`, `egghead_create`,
   `egghead_find_links`, `egghead_backlinks`, `egghead_recent`
@@ -179,15 +248,16 @@ want to ask the swarm a question without managing rooms themselves.
 
 ## Conventions
 
-- **Records**: `records/*.md` (Markdown or org-mode, frontmatter optional)
+- **Records**: `~/.egghead/*.md` (Markdown or org-mode, frontmatter optional)
 - **Agents**: records with `class: agent`, body = system prompt, frontmatter
   configures `model`, `capabilities`, `tags`, `disposition`
-- **Index**: `records/.egghead/index.db` (derived, rebuildable from sources)
-- **Providers**: `~/.egghead/providers.yml` or `*_API_KEY` env vars
+- **Index**: `~/.egghead/.egghead/index.db` (derived, rebuildable from sources)
+- **Config**: `~/.config/egghead/config.yml` (XDG), or `$EGGHEAD_CONFIG`
+- **Logs**: `~/.local/state/egghead/egghead.log` (XDG)
 - **Model IDs**: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`)
-- **MCP**: `.mcp.json` (stdio) or `localhost:8642/mcp` (HTTP)
+- **MCP**: `.mcp.json` (stdio) or `POST /mcp` on the web server (HTTP)
 - **Tests**: `:memory:` SQLite, temp dirs, `start_record_store: false` in
-  test config to prevent the file watcher from interfering
+  test config to prevent the file watcher from interfering. Just `mix test`.
 
 ## Key files (start here when picking up work)
 
@@ -195,21 +265,29 @@ want to ask the swarm a question without managing rooms themselves.
 |---|---|
 | `records/meta/session-log.md` | What's been done, commit hashes, what's next |
 | `records/design/egghead-overview.md` | The full design picture |
+| `records/design/cli.md` | CLI design and architecture |
 | `lib/egghead.ex` | Public API surface |
+| `lib/egghead/config.ex` | Config loading/saving (XDG paths) |
 | `lib/egghead/agent/agent.ex` | Agent GenServer, identity, session spawner |
 | `lib/egghead/agent/session.ex` | Per-room session, tool-use loop, handoff |
+| `lib/egghead/agent/wizard.ex` | Programmatic agent creation API |
 | `lib/egghead/chat/room.ex` | Shared transcript, turn budget, PubSub |
 | `lib/egghead/chat/coordinator.ex` | Activation gating, [PASS] enforcement |
 | `lib/egghead/agent/tools.ex` | Agent-facing tool implementations |
 | `lib/egghead/mcp/handler.ex` | MCP tool surface for external clients |
+| `lib/egghead/mcp/server.ex` | MCP stdio transport |
+| `lib/egghead/web/mcp_controller.ex` | MCP HTTP transport (Phoenix) |
 | `lib/egghead/llm/registry.ex` | Multi-provider, env detection, model resolve |
+| `lib/egghead/cli/widgets.ex` | Interactive CLI widgets (OpenTUI Bridge) |
+| `lib/egghead/cli/prompts.ex` | Fallback prompts for non-TTY |
 | `lib/egghead/open_tui/` | OpenTUI framework (see README.md inside) |
 | `lib/egghead/open_tui/runtime.ex` | Elm event loop, command execution |
 | `lib/egghead/open_tui/bridge.ex` | Zig NIF interface to libopentui |
 | `lib/egghead/tui/app.ex` | Root Elm component (records + chat modes) |
 | `lib/egghead/tui/records/` | Records screen (Model/Update/View) |
 | `lib/egghead/tui/chat/` | Chat screen (Model/Update/View) |
-| `lib/mix/tasks/egghead.tui.ex` | TUI mix task (logger redirect, cleanup) |
+| `bin/egghead` | CLI entry point (Bash router + help text) |
+| `lib/mix/tasks/egghead.*.ex` | Mix tasks for each CLI command |
 
 ## Quick `iex` recipes
 
@@ -230,6 +308,7 @@ Egghead.handoff("agents/scout")    # Manual context handoff
 In `records/design/`:
 
 - `egghead-overview.md` — full design picture (read first)
+- `cli.md` — CLI design and architecture
 - `chat-room.md` — collaborative chat architecture
 - `coordinator.md` — activation gating, addressing, [PASS]
 - `context-pressure.md` — handoffs, lean transcript diff

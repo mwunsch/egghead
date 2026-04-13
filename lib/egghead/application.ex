@@ -12,12 +12,22 @@ defmodule Egghead.Application do
       └── Egghead.Agent.LayerSupervisor (rest_for_one)
           ├── Egghead.LLM.Registry — provider config
           └── Egghead.Agent.Supervisor — DynamicSupervisor for agents
+
+  ## Log modes
+
+  Set `:log_mode` in application env before `app.start`:
+
+  - `:console` (default) — logs to stdout (for `iex`, `egghead serve`)
+  - `:file` — redirects to `Egghead.Config.log_path()` (for TUI)
+  - `:silent` — redirects to file, no console output (for CLI commands)
   """
 
   use Application
 
   @impl true
   def start(_type, _args) do
+    configure_logging()
+
     children =
       if Application.get_env(:egghead, :start_record_store, true) do
         records_dir =
@@ -58,5 +68,32 @@ defmodule Egghead.Application do
     else
       []
     end
+  end
+
+  defp configure_logging do
+    case Application.get_env(:egghead, :log_mode, :console) do
+      :file ->
+        redirect_to_file()
+
+      :silent ->
+        redirect_to_file()
+
+      :console ->
+        :ok
+    end
+  end
+
+  defp redirect_to_file do
+    log_path = Egghead.Config.log_path()
+    log_dir = Path.dirname(log_path)
+    File.mkdir_p!(log_dir)
+
+    for id <- :logger.get_handler_ids() do
+      :logger.remove_handler(id)
+    end
+
+    :logger.add_handler(:egghead_file, :logger_std_h, %{
+      config: %{file: String.to_charlist(log_path)}
+    })
   end
 end

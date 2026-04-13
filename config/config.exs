@@ -21,4 +21,7 @@ config :egghead, Egghead.Web.Endpoint,
 
 config :phoenix, :json_library, Jason
 
+# Logger — sane defaults, overridden per runtime mode in Application.start
+config :logger, level: :info
+
 import_config "#{config_env()}.exs"

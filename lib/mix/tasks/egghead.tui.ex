@@ -10,34 +10,37 @@ defmodule Mix.Tasks.Egghead.Tui do
 
       mix egghead.tui
 
-  Logs go to /tmp/egghead.log.
+  Logs go to ~/.local/state/egghead/egghead.log (see `egghead logs`).
   """
 
   use Mix.Task
 
   @shortdoc "Launch the Egghead terminal UI"
 
-  @log_file "/tmp/egghead.log"
-
   @impl true
-  def run(_args) do
+  def run(args) do
+    {opts, _, _} =
+      OptionParser.parse(args, switches: [config: :string])
+
+    if opts[:config], do: System.put_env("EGGHEAD_CONFIG", Path.expand(opts[:config]))
+
+    # First-run detection — if no config exists, run the setup wizard
+    unless Egghead.Config.exists?() do
+      Mix.Tasks.Egghead.Init.run([])
+    end
+
+    # TUI doesn't need the web server — use `egghead serve` for that
+    Application.put_env(:egghead, :start_web, false)
+    # Redirect logs to file — console output would corrupt the alt screen
+    Application.put_env(:egghead, :log_mode, :file)
+
     # Honor EGGHEAD_RECORDS_DIR override before app.start so the
     # RecordSupervisor picks up the override on boot.
     if records_dir = System.get_env("EGGHEAD_RECORDS_DIR") do
       Application.put_env(:egghead, :records_dir, records_dir)
     end
 
-    # Start the app FIRST — let it configure Logger however it wants
     Mix.Task.run("app.start")
-
-    # Remove all console handlers and redirect to file.
-    for id <- :logger.get_handler_ids() do
-      :logger.remove_handler(id)
-    end
-
-    :logger.add_handler(:egghead_file, :logger_std_h, %{
-      config: %{file: String.to_charlist(@log_file)}
-    })
 
     # Let OS signals kill the process cleanly (no zombie on terminal close)
     :os.set_signal(:sighup, :default)

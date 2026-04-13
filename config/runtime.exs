@@ -1,6 +1,9 @@
 import Config
 
-# Runtime configuration — read from environment variables.
+# Runtime configuration.
+#
+# Reads from ~/.config/egghead/config.yml (see Egghead.Config) with
+# environment variable overrides. Env vars always win.
 #
 # Egghead is a personal tool. The default config is safe for
 # running on your laptop (localhost, no auth, built-in secret).
@@ -14,9 +17,20 @@ import Config
 #   EGGHEAD_RECORDS   Path to records directory
 #   EGGHEAD_WEB       Set to "false" to disable the web server
 
-# Records directory
-if dir = System.get_env("EGGHEAD_RECORDS") do
-  config :egghead, :records_dir, Path.expand(dir)
+# Load config file (if it exists)
+file_config =
+  case Egghead.Config.load() do
+    {:ok, config} -> config
+    _ -> %Egghead.Config{}
+  end
+
+# Records directory: env var > config file > default
+records_dir =
+  System.get_env("EGGHEAD_RECORDS") ||
+    if file_config.records_dir, do: Path.expand(file_config.records_dir)
+
+if records_dir do
+  config :egghead, :records_dir, Path.expand(records_dir)
 end
 
 # Disable web server entirely
@@ -24,14 +38,28 @@ if System.get_env("EGGHEAD_WEB") == "false" do
   config :egghead, :start_web, false
 end
 
-# Web server configuration
-port = String.to_integer(System.get_env("PORT") || "4000")
-host = System.get_env("EGGHEAD_HOST") || "localhost"
+# Web server configuration: env vars override config file
+port =
+  case System.get_env("PORT") do
+    nil -> file_config.web.port
+    p -> String.to_integer(p)
+  end
+
+host = System.get_env("EGGHEAD_HOST") || file_config.web.host
 
 bind =
   case System.get_env("EGGHEAD_BIND") do
-    "0.0.0.0" -> {0, 0, 0, 0}
-    _ -> {127, 0, 0, 1}
+    "0.0.0.0" ->
+      {0, 0, 0, 0}
+
+    nil ->
+      case file_config.web.bind do
+        "0.0.0.0" -> {0, 0, 0, 0}
+        _ -> {127, 0, 0, 1}
+      end
+
+    _ ->
+      {127, 0, 0, 1}
   end
 
 # If a secret key is provided, use it. Otherwise keep the

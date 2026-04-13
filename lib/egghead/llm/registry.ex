@@ -7,9 +7,10 @@ defmodule Egghead.LLM.Registry do
 
   ## Configuration layers (in precedence order)
 
-  1. Project config: `records/.egghead/providers.yml`
-  2. User config: `~/.egghead/providers.yml`
-  3. Environment variables: auto-detects `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`
+  1. Egghead config file: `~/.config/egghead/config.yml` (llm section)
+  2. Legacy project config: `records/.egghead/providers.yml`
+  3. Legacy user config: `~/.egghead/providers.yml`
+  4. Environment variables: auto-detects `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`
 
   ## Provider/model format
 
@@ -108,6 +109,18 @@ defmodule Egghead.LLM.Registry do
     GenServer.call(server, {:get_model_info, model_str})
   end
 
+  @doc """
+  Blocks until model discovery completes. Returns `:ok` when all providers
+  have finished their initial model listing, or `{:error, :timeout}` if
+  the timeout expires.
+
+  Use this instead of `Process.sleep` when you need models to be available.
+  """
+  @spec await_discovery(GenServer.server(), timeout()) :: :ok
+  def await_discovery(server \\ __MODULE__, timeout \\ 10_000) do
+    GenServer.call(server, :await_discovery, timeout)
+  end
+
   # --- GenServer callbacks ---
 
   @impl true
@@ -129,7 +142,7 @@ defmodule Egghead.LLM.Registry do
     # Discover models asynchronously for auto-discovery providers
     send(self(), :discover_models)
 
-    {:ok, %{providers: providers}}
+    {:ok, %{providers: providers, discovery_ready: false, discovery_waiters: []}}
   end
 
   @impl true
@@ -184,6 +197,14 @@ defmodule Egghead.LLM.Registry do
     {:reply, default, state}
   end
 
+  def handle_call(:await_discovery, _from, %{discovery_ready: true} = state) do
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:await_discovery, from, state) do
+    {:noreply, %{state | discovery_waiters: [from | state.discovery_waiters]}}
+  end
+
   def handle_call({:get_model_info, model_str}, _from, state) do
     case do_resolve(state.providers, model_str, nil) do
       {:ok, {module, opts}} ->
@@ -236,31 +257,66 @@ defmodule Egghead.LLM.Registry do
       end)
       |> Map.new()
 
-    {:noreply, %{state | providers: providers}}
+    # Notify anyone waiting for discovery to complete
+    Enum.each(state.discovery_waiters, &GenServer.reply(&1, :ok))
+
+    {:noreply, %{state | providers: providers, discovery_ready: true, discovery_waiters: []}}
   end
 
   # --- Config loading ---
 
   defp load_config(records_dir) do
-    # Layer 1: User config
-    user_config = load_yaml_config(user_config_path())
+    # Layer 1: New config.yml (llm section)
+    new_config = load_egghead_config()
 
-    # Layer 2: Project config (overrides user)
-    project_config =
+    # Layer 2: Legacy user config (~/.egghead/providers.yml)
+    legacy_user = load_yaml_config(legacy_user_config_path())
+
+    # Layer 3: Legacy project config (records/.egghead/providers.yml)
+    legacy_project =
       if records_dir do
         load_yaml_config(Path.join(records_dir, ".egghead/providers.yml"))
       else
         %{}
       end
 
-    # Merge: project overrides user
-    file_config = Map.merge(user_config, project_config)
+    # Merge: new config > legacy project > legacy user
+    file_config =
+      legacy_user
+      |> Map.merge(legacy_project)
+      |> Map.merge(new_config)
 
-    # Layer 3: Env var auto-detection for providers not in file config
+    # Layer 4: Env var auto-detection for providers not in file config
     env_config = detect_env_providers(file_config)
 
     # Merge: file config takes precedence over env detection
     Map.merge(env_config, file_config)
+  end
+
+  defp load_egghead_config do
+    case Egghead.Config.load() do
+      {:ok, %Egghead.Config{llm: entries}} when entries != [] ->
+        entries
+        |> Enum.map(fn entry ->
+          name = entry.provider
+          api_key = Egghead.Config.resolve_value(entry.api_key)
+          module = determine_module(name, nil)
+
+          config = %ProviderConfig{
+            name: name,
+            module: module,
+            api_key: api_key,
+            base_url: entry[:base_url],
+            models: :auto
+          }
+
+          {name, config}
+        end)
+        |> Map.new()
+
+      _ ->
+        %{}
+    end
   end
 
   defp load_yaml_config(path) do
@@ -317,7 +373,8 @@ defmodule Egghead.LLM.Registry do
 
   defp parse_model_entry(id) when is_binary(id), do: %{id: id}
 
-  defp determine_module(name, api) do
+  @doc "Returns the LLM provider module for a given provider name."
+  def determine_module(name, api \\ nil) do
     cond do
       api == "openai_compatible" -> Egghead.LLM.OpenAI
       Map.has_key?(@known_providers, name) -> @known_providers[name]
@@ -361,16 +418,7 @@ defmodule Egghead.LLM.Registry do
     end)
   end
 
-  defp resolve_value(nil), do: nil
-
-  defp resolve_value(value) when is_binary(value) do
-    case Regex.run(~r/^\{env:(\w+)\}$/, value) do
-      [_, var_name] -> System.get_env(var_name)
-      _ -> value
-    end
-  end
-
-  defp resolve_value(value), do: value
+  defp resolve_value(value), do: Egghead.Config.resolve_value(value)
 
   # --- Model resolution ---
 
@@ -453,7 +501,7 @@ defmodule Egghead.LLM.Registry do
   defp maybe_opt(opts, _key, nil), do: opts
   defp maybe_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp user_config_path do
+  defp legacy_user_config_path do
     Path.join(System.user_home!(), ".egghead/providers.yml")
   end
 end

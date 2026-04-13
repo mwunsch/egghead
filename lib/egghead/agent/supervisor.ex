@@ -29,16 +29,30 @@ defmodule Egghead.Agent.Supervisor do
   no agent records exist in the store.
   """
   def default_agent do
+    # Read the configured default model, fall back to haiku if not set
+    {model, provider} =
+      case Egghead.Config.load() do
+        {:ok, %{default_model: dm}} when is_binary(dm) ->
+          case String.split(dm, "/", parts: 2) do
+            [p, m] -> {m, p}
+            _ -> {dm, nil}
+          end
+
+        _ ->
+          {"claude-haiku-4-5", "anthropic"}
+      end
+
     %Egghead.Record{
       id: "index",
       title: "Index",
       class: :agent,
       tags: ["agent", "meta", "graph", "backlinks", "store-ops"],
-      meta: %{
-        "model" => "claude-haiku-4-5",
-        "provider" => "anthropic",
-        "capabilities" => ["record_read", "record_append", "search"]
-      },
+      meta:
+        %{
+          "model" => model,
+          "capabilities" => ["record_read", "record_append", "search"]
+        }
+        |> then(fn m -> if provider, do: Map.put(m, "provider", provider), else: m end),
       body: """
       You are Index, the record store agent. Your domain is the store itself:
       searching records, navigating the link graph, answering questions about

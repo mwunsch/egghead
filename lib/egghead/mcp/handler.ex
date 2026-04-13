@@ -64,7 +64,8 @@ defmodule Egghead.MCP.Handler do
     %{jsonrpc: "2.0", id: id, result: res}
   end
 
-  defp error(id, code, message) do
+  @doc "Build a JSON-RPC error response."
+  def error(id, code, message) do
     %{jsonrpc: "2.0", id: id, error: %{code: code, message: message}}
   end
 

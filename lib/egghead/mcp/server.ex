@@ -21,7 +21,8 @@ defmodule Egghead.MCP.Server do
     loop()
   end
 
-  defp loop do
+  @doc "Run the stdio read loop. Blocks until EOF."
+  def loop do
     case IO.read(:stdio, :line) do
       :eof ->
         :ok

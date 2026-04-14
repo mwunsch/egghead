@@ -107,7 +107,13 @@ defmodule Egghead.OpenTUI.Terminal do
     do: {:reply, :ok, state}
 
   def handle_call(:suspend, _from, state) do
+    # Defensive reset ordering: turn off every mode we enabled before
+    # tearing down the renderer. If we don't, a child process like
+    # $EDITOR inherits a terminal with mouse-tracking / bracketed-paste
+    # still on, which corrupts its keybinding handling.
+    safe(fn -> Bridge.disable_mouse(state.handle) end)
     safe(fn -> disable_bracketed_paste() end)
+    safe(fn -> write_tty(mode_reset_escapes()) end)
     safe(fn -> Bridge.destroy_renderer(state.handle) end)
     safe(fn -> Bridge.leave_raw_mode() end)
     {:reply, :ok, %{state | handle: nil, suspended?: true}}
@@ -134,15 +140,24 @@ defmodule Egghead.OpenTUI.Terminal do
 
   @impl true
   def terminate(_reason, state) do
-    # OpenTUI restores alt screen + terminal modes inside destroyRenderer.
-    # We restore termios afterwards so raw mode is off even on crash.
+    # OpenTUI restores alt screen + terminal modes inside destroyRenderer,
+    # but we also emit our own mode-reset sequence to defensively undo
+    # anything the NIF might miss (mouse tracking, focus events, etc.)
+    # before shutdown so the user's shell prompt isn't corrupted.
+    safe(fn -> if state.handle, do: Bridge.disable_mouse(state.handle) end)
     safe(fn -> disable_bracketed_paste() end)
+    safe(fn -> write_tty(mode_reset_escapes()) end)
 
     if state.handle do
       safe(fn -> Bridge.destroy_renderer(state.handle) end)
     end
 
     safe(fn -> Bridge.leave_raw_mode() end)
+
+    # Consume any stray terminal response bytes (DSR, device attrs)
+    # that arrived too late. If we don't, they end up in the user's
+    # shell prompt as "zsh: command not found: 62;22;52c".
+    safe(fn -> Bridge.drain_input(100) end)
     :ok
   end
 
@@ -166,6 +181,15 @@ defmodule Egghead.OpenTUI.Terminal do
   # sequence isn't dependent on the BEAM's group leader plumbing.
   defp enable_bracketed_paste, do: write_tty("\e[?2004h")
   defp disable_bracketed_paste, do: write_tty("\e[?2004l")
+
+  # Defensive reset: disable every mouse tracking mode (1000, 1002, 1003),
+  # SGR mouse encoding (1006), focus events (1004), and bracketed paste
+  # (2004) in one sequence. Redundant with the NIF and specific calls
+  # above — but the cost is a few bytes, and the benefit is that a
+  # child process (editor, pager) never inherits these modes.
+  defp mode_reset_escapes do
+    "\e[?1000l\e[?1002l\e[?1003l\e[?1006l\e[?1004l\e[?2004l"
+  end
 
   defp write_tty(bytes) do
     case :file.open(~c"/dev/tty", [:write, :raw, :binary]) do

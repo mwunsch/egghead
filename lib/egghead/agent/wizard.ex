@@ -42,13 +42,20 @@ defmodule Egghead.Agent.Wizard do
   """
   @spec create(params()) :: {:ok, Egghead.Record.t()} | {:error, map()}
   def create(params) do
+    # Title keeps the raw user input ("Capability Test"); id uses the
+    # slug ("capability-test"). This way the display name stays
+    # readable while the path stays URL/shell-safe.
+    original_name = params[:name]
+    slug = slugify(original_name)
+    params = Map.put(params, :name, slug)
+
     with :ok <- validate(params) do
       attrs = %{
-        id: "agents/#{params.name}",
-        title: String.capitalize(params.name),
+        id: "agents/#{slug}",
+        title: title_case(original_name),
         class: :agent,
         tags: Enum.uniq(["agent" | params[:tags] || []]),
-        body: params.instructions || template(params.name),
+        body: params.instructions || template(slug),
         meta: %{
           "model" => params.model,
           "capabilities" => params[:capabilities] || []
@@ -57,6 +64,32 @@ defmodule Egghead.Agent.Wizard do
 
       Egghead.create_record(attrs)
     end
+  end
+
+  @doc """
+  Normalizes a user-entered name into an id-safe slug:
+  lowercase, spaces and punctuation → hyphens, strip leading/trailing
+  hyphens, collapse runs.
+
+  Returns `nil` for nil input so downstream validation can flag it.
+  """
+  @spec slugify(String.t() | nil) :: String.t() | nil
+  def slugify(nil), do: nil
+
+  def slugify(name) when is_binary(name) do
+    name
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9_-]+/, "-")
+    |> String.replace(~r/-+/, "-")
+    |> String.trim("-")
+  end
+
+  defp title_case(nil), do: nil
+
+  defp title_case(name) do
+    name
+    |> String.split(~r/[\s_-]+/, trim: true)
+    |> Enum.map_join(" ", &String.capitalize/1)
   end
 
   @doc """

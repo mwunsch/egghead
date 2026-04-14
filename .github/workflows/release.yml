@@ -35,17 +35,31 @@ jobs:
           - runner: macos-latest
             target: macos_arm64
             asset: egghead-aarch64-macos
-          - runner: macos-13
-            target: macos_x64
-            asset: egghead-x86_64-macos
           - runner: ubuntu-latest
             target: linux_x64
             asset: egghead-x86_64-linux
+          # macos_x64 dropped: GitHub deprecated free Intel macOS
+          # runners. Apple has shipped only ARM since 2020. Intel Mac
+          # users can build from source or run the arm64 binary under
+          # Rosetta. Re-add via macos-13-large (paid) if needed.
 
     runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
+
+      # Burrito's pre_check requires `zig` and `xz` on PATH. xz is for
+      # compressing the embedded payload; zig compiles the wrapper
+      # launcher per-target. macOS ships xz; Linux needs xz-utils.
+      - name: Install xz (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xz-utils
+
+      # Burrito 1.5.0 enforces an exact Zig version (see
+      # deps/burrito/lib/burrito.ex). Bump in lockstep with Burrito.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
 
       - uses: erlef/setup-beam@v1
         with:

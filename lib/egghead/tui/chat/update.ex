@@ -324,8 +324,27 @@ defmodule Egghead.TUI.Chat.Update do
 
   defp handle_room_event({:agent_tool_call, _room_id, agent_id, name, input}, model) do
     text = format_tool_call(name, input)
-    name = display_name(agent_id, model)
-    Model.append_entry(model, Entry.action(agent_id, name, text))
+    display = display_name(agent_id, model)
+
+    # Flush any in-progress streamed text first — otherwise the agent's
+    # pre-tool-call text would concatenate with its post-tool-call text
+    # when the next delta arrives, producing things like
+    # "Sure, calling:There it is..." with no separator.
+    model
+    |> Model.finalize_stream(agent_id)
+    |> Model.append_entry(Entry.action(agent_id, display, text))
+  end
+
+  defp handle_room_event(
+         {:agent_tool_denied, _room_id, agent_id, tool_name, input, denial},
+         model
+       ) do
+    display = display_name(agent_id, model)
+    text = format_denial(agent_id, tool_name, input, denial)
+
+    model
+    |> Model.finalize_stream(agent_id)
+    |> Model.append_entry(Entry.denial(agent_id, display, text, denial))
   end
 
   defp handle_room_event({:agents_activated, _count}, model) do
@@ -533,6 +552,33 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   defp format_tool_call(name, _), do: "uses #{name}"
+
+  defp format_denial(agent_id, tool_name, input, denial) do
+    input_summary =
+      case input do
+        %{} = m ->
+          m
+          |> Enum.map(fn {k, v} -> "#{k}=#{inspect_compact(v)}" end)
+          |> Enum.join(" ")
+
+        _ ->
+          ""
+      end
+
+    tried = String.trim("tried #{tool_name} #{input_summary}")
+    reason = "denied (#{denial.code}): #{denial.message}"
+
+    grant_line =
+      if denial.suggested_grant do
+        "→ egghead agent grant #{agent_id} '#{denial.suggested_grant}'"
+      else
+        nil
+      end
+
+    [tried, reason, grant_line]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
 
   defp inspect_compact(v) when is_binary(v) do
     if String.length(v) > 40, do: String.slice(v, 0, 37) <> "...", else: v

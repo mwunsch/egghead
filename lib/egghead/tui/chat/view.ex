@@ -291,6 +291,12 @@ defmodule Egghead.TUI.Chat.View do
     wrap_body(nick, "#{e.sender_name} #{e.text}", body_w, full_w, Colors.muted(), nil)
   end
 
+  defp entry_to_rows(%Entry{kind: :denial} = e, _show_nick?, body_w, full_w, _active_target) do
+    nick = gutter_symbol("⚠")
+    body = "#{e.sender_name} #{e.text}"
+    wrap_body(nick, body, body_w, full_w, Colors.yellow(), nil)
+  end
+
   defp entry_to_rows(%Entry{kind: :system} = e, _show_nick?, body_w, full_w, active_target) do
     nick = gutter_symbol("—")
     md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()

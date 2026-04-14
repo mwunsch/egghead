@@ -299,4 +299,31 @@ defmodule Egghead.ChatTest do
       assert_receive :continued, 1000
     end
   end
+
+  describe "Coordinator denial event handling" do
+    test "does not crash on :agent_tool_denied" do
+      # Regression: the coordinator previously had no handle_info clause
+      # for denial events, so the first denial crashed the GenServer and
+      # hung every session in every room it was watching.
+      coord = start_coordinator()
+
+      denial = %Egghead.Capability.Denial{
+        code: :self_modification,
+        agent_id: "agents/scout",
+        tool: "update_record",
+        message: "test denial",
+        suggested_grant: nil
+      }
+
+      send(
+        coord,
+        {:agent_tool_denied, "test-room", "agents/scout", "update_record",
+         %{"id" => "agents/scout"}, denial}
+      )
+
+      # Give it a moment to process
+      Process.sleep(50)
+      assert Process.alive?(coord)
+    end
+  end
 end

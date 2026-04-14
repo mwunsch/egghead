@@ -15,7 +15,7 @@ defmodule Egghead.TUI.Chat.Entry do
   buffer lives in `Egghead.TUI.Chat.Stream`.
   """
 
-  @type kind :: :user | :agent | :system | :action | :handoff
+  @type kind :: :user | :agent | :system | :action | :handoff | :denial
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -71,6 +71,23 @@ defmodule Egghead.TUI.Chat.Entry do
       kind: :system,
       text: text,
       timestamp: DateTime.utc_now()
+    }
+  end
+
+  @doc """
+  A capability denial — an agent attempted a tool call outside its
+  grants. The full `%Egghead.Capability.Denial{}` lives in metadata
+  so views can expand it. `text` is the pre-rendered display string.
+  """
+  @spec denial(String.t(), String.t(), String.t(), map()) :: t()
+  def denial(agent_id, agent_name, text, denial) do
+    %__MODULE__{
+      kind: :denial,
+      sender_id: agent_id,
+      sender_name: agent_name,
+      text: text,
+      timestamp: DateTime.utc_now(),
+      metadata: %{denial: denial}
     }
   end
 end

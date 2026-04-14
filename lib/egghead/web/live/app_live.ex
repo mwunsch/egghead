@@ -282,6 +282,21 @@ defmodule Egghead.Web.AppLive do
     display = agent_display_name(agent_id)
     text = format_tool_call(tool_name, input)
     entry = Egghead.TUI.Chat.Entry.action(agent_id, display, text)
+
+    # Flush any in-progress streamed text before the action line so that
+    # post-tool text doesn't concatenate onto pre-tool text.
+    socket = finalize_stream(socket, agent_id)
+    {:noreply, append_entry(socket, entry)}
+  end
+
+  def handle_info(
+        {:agent_tool_denied, _room_id, agent_id, tool_name, input, denial},
+        socket
+      ) do
+    display = agent_display_name(agent_id)
+    text = format_denial(agent_id, tool_name, input, denial)
+    entry = Egghead.TUI.Chat.Entry.denial(agent_id, display, text, denial)
+    socket = finalize_stream(socket, agent_id)
     {:noreply, append_entry(socket, entry)}
   end
 
@@ -902,6 +917,33 @@ defmodule Egghead.Web.AppLive do
 
   defp format_tool_call(name, _), do: "uses #{name}"
 
+  defp format_denial(agent_id, tool_name, input, denial) do
+    input_summary =
+      case input do
+        %{} = m ->
+          m
+          |> Enum.map(fn {k, v} -> "#{k}=#{inspect(v, limit: 3, printable_limit: 40)}" end)
+          |> Enum.join(" ")
+
+        _ ->
+          ""
+      end
+
+    tried = String.trim("tried #{tool_name} #{input_summary}")
+    reason = "denied (#{denial.code}): #{denial.message}"
+
+    grant_line =
+      if denial.suggested_grant do
+        "→ egghead agent grant #{agent_id} '#{denial.suggested_grant}'"
+      else
+        nil
+      end
+
+    [tried, reason, grant_line]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
   defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
   defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
   defp format_tokens(n), do: "#{n}"
@@ -1273,6 +1315,16 @@ defmodule Egghead.Web.AppLive do
                   <% :action -> %>
                     <div class="meta-line action">
                       <span class="meta-text">{entry.sender_name} {entry.text}</span>
+                    </div>
+                  <% :denial -> %>
+                    <div class="meta-line denial">
+                      <span class="meta-sym">&#9888;</span>
+                      <span class="meta-text">
+                        <strong>{entry.sender_name}</strong>
+                        <span :for={line <- String.split(entry.text, "\n")} class="denial-line">
+                          {line}
+                        </span>
+                      </span>
                     </div>
                   <% :system -> %>
                     <div class="meta-line">

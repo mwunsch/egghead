@@ -72,6 +72,12 @@ defmodule Egghead.Chat.RoomLogger do
         Logger.debug("#{name} → #{tool_name}(#{summary})")
         loop(room_id, buffers)
 
+      {:agent_tool_denied, _room_id, agent_id, tool_name, _input, denial} ->
+        buffers = flush_agent(buffers, agent_id)
+        name = agent_id |> String.split("/") |> List.last()
+        Logger.info("⚠ #{name} denied on #{tool_name}: #{denial.message}")
+        loop(room_id, buffers)
+
       {:agent_joined, agent_id} ->
         Logger.debug("#{agent_id} joined")
         loop(room_id, buffers)

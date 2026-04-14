@@ -83,6 +83,71 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert m.streams == %{}
     end
 
+    test "agent_tool_call flushes the in-progress stream before the action line" do
+      # Regression: agent streams "Sure, calling:" (no newline), a tool
+      # call fires, then post-tool text appends onto the same buffer
+      # giving "Sure, calling:There it is..." with no separator.
+      # The tool_call handler must finalize the stream first.
+      m = model()
+
+      {m, :none} =
+        Update.update(
+          {:room_event,
+           {:agent_streaming, "default", "agents/scout", "Sure, attempting the update now:"}},
+          m
+        )
+
+      # Mid-sentence — no commit yet
+      assert m.transcript == []
+      assert m.streams["agents/scout"].current == "Sure, attempting the update now:"
+
+      {m, :none} =
+        Update.update(
+          {:room_event,
+           {:agent_tool_call, "default", "agents/scout", "update_record", %{"id" => "x"}}},
+          m
+        )
+
+      # Stream flushed into an :agent entry; action line appended after it
+      assert [
+               %Entry{kind: :agent, text: "Sure, attempting the update now:"},
+               %Entry{kind: :action, text: "uses update_record " <> _}
+             ] = m.transcript
+
+      refute Map.has_key?(m.streams, "agents/scout")
+    end
+
+    test "agent_tool_denied also flushes the in-progress stream first" do
+      m = model()
+
+      {m, :none} =
+        Update.update(
+          {:room_event, {:agent_streaming, "default", "agents/scout", "trying now:"}},
+          m
+        )
+
+      denial = %Egghead.Capability.Denial{
+        code: :self_modification,
+        agent_id: "agents/scout",
+        tool: "update_record",
+        message: "cannot self-grant",
+        suggested_grant: nil
+      }
+
+      {m, :none} =
+        Update.update(
+          {:room_event,
+           {:agent_tool_denied, "default", "agents/scout", "update_record", %{"id" => "x"},
+            denial}},
+          m
+        )
+
+      assert [
+               %Entry{kind: :agent, text: "trying now:"},
+               %Entry{kind: :denial, metadata: %{denial: ^denial}}
+             ] = m.transcript
+    end
+
     test "agent_passed clears the stream without committing partial text" do
       m = model()
 

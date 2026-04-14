@@ -42,21 +42,36 @@ defmodule Egghead.OpenTUIPaths do
   def opentui_asset(triple) when is_binary(triple), do: opentui_asset_for_triple(triple)
 
   defp opentui_asset_for_triple(triple) do
+    # Triples vary across platforms — Linux runners report
+    # `x86_64-pc-linux-gnu`, macOS reports `aarch64-apple-darwin23.6.0`,
+    # Zig uses `aarch64-macos`. Match arch + OS independently.
+    arch = arch_of(triple)
+    os = os_of(triple)
+
+    case {arch, os} do
+      {:aarch64, :darwin} -> "opentui-native-#{@opentui_version}-darwin-arm64.zip"
+      {:x86_64, :darwin} -> "opentui-native-#{@opentui_version}-darwin-x64.zip"
+      {:x86_64, :linux} -> "opentui-native-#{@opentui_version}-linux-x64.zip"
+      {:aarch64, :linux} -> "opentui-native-#{@opentui_version}-linux-arm64.zip"
+      _ -> raise "OpentuiFetch: no OpenTUI asset mapped for target #{inspect(triple)}"
+    end
+  end
+
+  defp arch_of(triple) do
     cond do
-      matches?(triple, ["aarch64-macos", "aarch64-apple-darwin"]) ->
-        "opentui-native-#{@opentui_version}-darwin-arm64.zip"
+      String.contains?(triple, "aarch64") -> :aarch64
+      String.contains?(triple, "arm64") -> :aarch64
+      String.contains?(triple, "x86_64") -> :x86_64
+      true -> :unknown
+    end
+  end
 
-      matches?(triple, ["x86_64-macos", "x86_64-apple-darwin"]) ->
-        "opentui-native-#{@opentui_version}-darwin-x64.zip"
-
-      matches?(triple, ["x86_64-linux"]) ->
-        "opentui-native-#{@opentui_version}-linux-x64.zip"
-
-      matches?(triple, ["aarch64-linux"]) ->
-        "opentui-native-#{@opentui_version}-linux-arm64.zip"
-
-      true ->
-        raise "OpentuiFetch: no OpenTUI asset mapped for target #{inspect(triple)}"
+  defp os_of(triple) do
+    cond do
+      String.contains?(triple, "darwin") -> :darwin
+      String.contains?(triple, "macos") -> :darwin
+      String.contains?(triple, "linux") -> :linux
+      true -> :unknown
     end
   end
 

@@ -4,9 +4,10 @@
 # For users without BEAM installed, the Burrito binary provides
 # the same interface without this script.
 #
-# +Bd disables the BEAM break handler so Ctrl+C exits cleanly,
-# matching the Burrito binary's -noshell behavior.
+# We deliberately leave the break handler enabled — see
+# rel/vm.args.eex for the full explanation. TUI is unaffected
+# (NIF owns the terminal); `serve` gets the standard BEAM menu
+# (Ctrl+C → 'a' to abort, or `kill <pid>` for clean SIGTERM).
 
 cd "$(dirname "$0")/.." || exit 1
-export ERL_FLAGS="+Bd"
 exec mix egghead "$@"

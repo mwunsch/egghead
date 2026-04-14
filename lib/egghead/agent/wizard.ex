@@ -12,12 +12,12 @@ defmodule Egghead.Agent.Wizard do
         name: "scout",
         model: "anthropic/claude-sonnet-4-6",
         tags: ["research", "exploration"],
-        capabilities: ["search", "record_read"],
+        capabilities: ["records.read", "records.create"],
         instructions: "You are Scout..."
       })
   """
 
-  @valid_capabilities ~w(record_read record_append record_modify search)
+  alias Egghead.Capability.Catalog
 
   @type params :: %{
           name: String.t(),
@@ -27,9 +27,11 @@ defmodule Egghead.Agent.Wizard do
           instructions: String.t()
         }
 
-  @doc "Returns the list of valid capability strings."
+  @doc "Returns the list of known capability strings (resource.verb)."
   @spec valid_capabilities() :: [String.t()]
-  def valid_capabilities, do: @valid_capabilities
+  def valid_capabilities do
+    Enum.map(Catalog.all(), fn {r, v, _} -> "#{r}.#{v}" end)
+  end
 
   @doc """
   Creates an agent record from the given params.
@@ -84,15 +86,15 @@ defmodule Egghead.Agent.Wizard do
     """
   end
 
-  @doc "Capability labels for interactive display."
+  @doc "Capability labels for interactive display, sorted by risk (low → high)."
   @spec capability_labels() :: [{String.t(), String.t()}]
   def capability_labels do
-    [
-      {"Search the record store", "search"},
-      {"Read full records", "record_read"},
-      {"Create new records", "record_append"},
-      {"Modify existing records", "record_modify"}
-    ]
+    Catalog.all()
+    |> Enum.sort_by(fn {r, v, %{risk: risk}} ->
+      risk_order = %{low: 0, medium: 1, high: 2}
+      {Map.get(risk_order, risk, 1), "#{r}.#{v}"}
+    end)
+    |> Enum.map(fn {r, v, %{short: short}} -> {short, "#{r}.#{v}"} end)
   end
 
   # --- Validation ---
@@ -134,7 +136,12 @@ defmodule Egghead.Agent.Wizard do
   defp validate_capabilities(errors, []), do: errors
 
   defp validate_capabilities(errors, caps) when is_list(caps) do
-    invalid = Enum.reject(caps, &(&1 in @valid_capabilities))
+    known = MapSet.new(valid_capabilities())
+
+    invalid =
+      caps
+      |> Enum.map(&capability_key/1)
+      |> Enum.reject(&(&1 == nil or MapSet.member?(known, &1)))
 
     if invalid == [] do
       errors
@@ -144,6 +151,16 @@ defmodule Egghead.Agent.Wizard do
   end
 
   defp validate_capabilities(errors, _), do: Map.put(errors, :capabilities, ["must be a list"])
+
+  # Accept either a bare string ("net.get") or a scoped map (%{"net.get" => %{...}}).
+  defp capability_key(str) when is_binary(str), do: str
+
+  defp capability_key(%{} = map) when map_size(map) == 1 do
+    [k] = Map.keys(map)
+    to_string(k)
+  end
+
+  defp capability_key(_), do: nil
 
   defp validate_instructions(errors, nil), do: errors
   defp validate_instructions(errors, ""), do: Map.put(errors, :instructions, ["cannot be empty"])

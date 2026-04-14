@@ -25,8 +25,15 @@ defmodule Egghead.Agent.Supervisor do
   end
 
   @doc """
-  Returns the default built-in agent record. Always available even when
-  no agent records exist in the store.
+  Returns the default built-in agent record.
+
+  Used as a fallback when no `class: agent` record with id `"index"`
+  exists in the store. Users who want to widen Index's capabilities or
+  edit its disposition drop an `index.md` file anywhere in their record
+  store with `class: agent` in frontmatter (path is convention, not
+  requirement — any agent-class record whose derived id is `"index"`
+  will shadow). See `design/capability-model` for the override
+  rationale.
   """
   def default_agent do
     # Read the configured default model, fall back to haiku if not set
@@ -50,7 +57,7 @@ defmodule Egghead.Agent.Supervisor do
       meta:
         %{
           "model" => model,
-          "capabilities" => ["record_read", "record_append", "search"]
+          "capabilities" => ["records.read", "records.create"]
         }
         |> then(fn m -> if provider, do: Map.put(m, "provider", provider), else: m end),
       body: """
@@ -89,11 +96,16 @@ defmodule Egghead.Agent.Supervisor do
     store = Keyword.get(opts, :store, Egghead.RecordStore)
     agent_records = Egghead.RecordStore.search_by_class(store, :agent)
 
-    # Always ensure the default agent is running
+    # Index override: if any `class: agent` record with id `"index"`
+    # exists in the store, it shadows the built-in default. (The class
+    # filter is implicit — `agent_records` is already class-filtered
+    # above.) Otherwise the built-in runs as fallback so there's always
+    # at least one agent available.
     default = default_agent()
     default_name = Egghead.Agent.agent_name(default.id)
+    user_provided_index? = Enum.any?(agent_records, &(&1.id == default.id))
 
-    if GenServer.whereis(default_name) == nil do
+    if not user_provided_index? and GenServer.whereis(default_name) == nil do
       start_agent(supervisor, default, store: store)
     end
 

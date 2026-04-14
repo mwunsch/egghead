@@ -177,12 +177,12 @@ defmodule Egghead.ChatTest do
 
       Coordinator.register_agent(coord, "agents/scout", %{
         name: "Scout",
-        capabilities: ["record_read", "search"]
+        capabilities: ["records.read"]
       })
 
       Coordinator.register_agent(coord, "agents/archivist", %{
         name: "Archivist",
-        capabilities: ["record_read", "search"]
+        capabilities: ["records.read"]
       })
 
       agents = Coordinator.list_registered(coord)

@@ -110,7 +110,7 @@ defmodule Egghead.CLI.AgentCmd do
       Widgets.multiselect(
         Wizard.capability_labels(),
         label: "Capabilities:",
-        defaults: ["search", "record_read"]
+        defaults: ["records.read"]
       )
 
     instructions = edit_instructions(name)

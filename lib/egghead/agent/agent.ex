@@ -15,7 +15,7 @@ defmodule Egghead.Agent do
   class: agent
   model: claude-sonnet-4-6
   provider: anthropic
-  capabilities: [record_read, record_append, search]
+  capabilities: [records.read, records.create]
   thinking: enabled
   context_threshold: 0.70
   max_tokens: 4096

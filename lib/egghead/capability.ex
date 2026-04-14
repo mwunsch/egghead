@@ -36,11 +36,9 @@ defmodule Egghead.Capability do
   Parses a frontmatter `capabilities:` value into a list of grants.
 
   Accepts:
-  - A list of strings: `["records.read", "search"]`
+  - A list of strings: `["records.read", "agent.create"]`
   - A list mixing strings and maps (scoped): `["records.read", %{"net.get" => %{"hosts" => [...]}}]`
-  - A comma/space-separated string: `"record_read record_append search"`
-  - Legacy strings (`record_read`, `record_append`, `record_modify`) are
-    mapped to their structured equivalents
+  - A comma/space-separated string: `"records.read agent.create"`
 
   Unknown strings are logged and dropped (forward-compat for skills
   referencing future capability names).

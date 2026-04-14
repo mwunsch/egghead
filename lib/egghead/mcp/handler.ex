@@ -222,7 +222,7 @@ defmodule Egghead.MCP.Handler do
       %{
         name: "egghead_prompt",
         description:
-          "Send a prompt to a named Egghead agent. The agent gathers relevant records, reasons through its disposition (personality/expertise), and responds. Agents with record_append capability may create new records.",
+          "Send a prompt to a named Egghead agent. The agent gathers relevant records, reasons through its disposition (personality/expertise), and responds. Agents with records.create capability may create new records.",
         inputSchema: %{
           type: "object",
           properties: %{

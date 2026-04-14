@@ -2,35 +2,92 @@ defmodule Egghead.Agent.Tools do
   @moduledoc """
   Tool definitions and execution for Egghead agents.
 
-  Agents are given tools based on their declared capabilities. The agent
-  decides when to call them — we don't force-search on every prompt.
+  Tools are gated by capabilities at two points:
 
-  Tools are defined in Anthropic's tool-use format and executed locally
-  against the Egghead API.
+  1. **Offering time** — tools are sent to the LLM only if the agent holds
+     at least one verb the tool might invoke (`offers_on`).
+  2. **Dispatch time** — before running, the tool's input is resolved into
+     one or more concrete `%Request{}`s and every one must pass
+     `Capability.check/3`.
+
+  Record-store tools route by target class: a call touching a `class: agent`
+  record produces requests against the `agent` resource, never `records`.
+  The two resource families are disjoint at dispatch.
   """
 
   require Logger
 
+  alias Egghead.Capability
+  alias Egghead.Capability.Denial
+  alias Egghead.Capability.Grant
+  alias Egghead.Capability.Request
+
   @doc """
-  Returns tool definitions for the given capabilities, in Anthropic tool format.
+  Returns tool definitions for the given grants, in Anthropic tool format.
+
+  A tool is offered if the agent holds any of the tool's `offers_on` verbs.
+  Call-time `Capability.check/3` handles scope and multi-request tools.
   """
-  @spec definitions_for(capabilities :: [String.t()]) :: [map()]
-  def definitions_for(capabilities) do
+  @spec definitions_for([Grant.t()]) :: [map()]
+  def definitions_for(grants) do
+    held = Capability.verbs_held(grants)
+
     all_tools()
-    |> Enum.filter(fn tool -> tool.capability in capabilities end)
+    |> Enum.filter(fn tool ->
+      Enum.any?(tool.offers_on, fn {r, v} -> "#{r}.#{v}" in held end)
+    end)
     |> Enum.map(&tool_definition/1)
   end
 
   @doc """
-  Executes a tool call and returns the result as a string.
+  Executes a tool call, gated by the agent's capabilities.
 
-  The optional `agent_context` map provides the calling agent's id for
-  safety checks (e.g. preventing self-modification).
+  `agent_context` must include `:capabilities` (a list of `%Grant{}`) and
+  `:agent_id`. Returns `{:ok, text}`, `{:error, reason}`, or
+  `{:denied, %Denial{}}`.
   """
-  @spec execute(String.t(), map(), map()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec execute(String.t(), map(), map()) ::
+          {:ok, String.t()} | {:error, String.t()} | {:denied, Denial.t()}
   def execute(tool_name, input, agent_context \\ %{}) do
     room_id = agent_context[:room_id]
+    grants = Map.get(agent_context, :capabilities, [])
 
+    case resolve_requests(tool_name, input, agent_context) do
+      {:error, :unknown_tool} ->
+        {:error, "Unknown tool: #{tool_name}"}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, requests} ->
+        case check_all(grants, requests, agent_context, tool_name) do
+          :ok -> run_tool(tool_name, input, agent_context, room_id)
+          {:denied, denial} -> handle_denial(denial)
+        end
+    end
+  end
+
+  defp check_all(grants, requests, ctx, tool_name) do
+    Enum.reduce_while(requests, :ok, fn req, _ ->
+      req = %{req | tool: tool_name}
+
+      case Capability.check(grants, req, ctx) do
+        :ok -> {:cont, :ok}
+        {:denied, denial} -> {:halt, {:denied, denial}}
+      end
+    end)
+  end
+
+  defp handle_denial(%Denial{} = denial) do
+    Logger.warning(
+      "Capability denied: #{denial.message}",
+      Denial.to_log_metadata(denial)
+    )
+
+    {:denied, denial}
+  end
+
+  defp run_tool(tool_name, input, agent_context, room_id) do
     Egghead.Chat.ToolCache.get_or_execute(room_id, tool_name, input, fn ->
       case do_execute(tool_name, input, agent_context) do
         {:ok, result} -> {:ok, result}
@@ -41,13 +98,30 @@ defmodule Egghead.Agent.Tools do
     e -> {:error, "Tool error: #{Exception.message(e)}"}
   end
 
+  @doc """
+  Resolves a tool call into the list of capability requests it would make.
+  Returns `{:ok, [%Request{}]}` or `{:error, reason}`.
+
+  Tools that touch the record store branch on target class here, producing
+  requests against `:records` or `:agent` accordingly.
+  """
+  @spec resolve_requests(String.t(), map(), map()) ::
+          {:ok, [Request.t()]} | {:error, term()}
+  def resolve_requests(tool_name, input, _ctx) do
+    case Enum.find(all_tools(), &(&1.name == tool_name)) do
+      nil -> {:error, :unknown_tool}
+      tool -> tool.resolve.(input)
+    end
+  end
+
   # --- Tool registry ---
 
   defp all_tools do
     [
       %{
         name: "search_records",
-        capability: "search",
+        offers_on: [{:records, :read}],
+        resolve: &req_records_read/1,
         description:
           "Full-text search across record titles and bodies. Uses porter stemming. Returns ranked results with id, title, tags, and class.",
         input_schema: %{
@@ -64,7 +138,8 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "get_record",
-        capability: "record_read",
+        offers_on: [{:records, :read}],
+        resolve: &req_records_read/1,
         description:
           "Read a record's metadata and a preview of its body. Returns id, title, tags, links, backlinks, and a body preview. Use get_record_body to read the full content if needed.",
         input_schema: %{
@@ -77,7 +152,8 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "get_record_body",
-        capability: "record_read",
+        offers_on: [{:records, :read}],
+        resolve: &req_records_read/1,
         description:
           "Read the full body of a record. Only use this when you need the complete content — check get_record preview first. Be mindful of your context window.",
         input_schema: %{
@@ -90,7 +166,8 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "list_records",
-        capability: "record_read",
+        offers_on: [{:records, :read}],
+        resolve: &req_records_read/1,
         description:
           "List records in the store. Optionally filter by tag. Returns id, title, tags, and class.",
         input_schema: %{
@@ -102,7 +179,8 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "find_backlinks",
-        capability: "record_read",
+        offers_on: [{:records, :read}],
+        resolve: &req_records_read/1,
         description: "Find records that link TO a given record. The reverse graph.",
         input_schema: %{
           type: "object",
@@ -114,7 +192,8 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "find_links",
-        capability: "record_read",
+        offers_on: [{:records, :read}],
+        resolve: &req_records_read/1,
         description: "Find records that a given record links TO. Forward graph traversal.",
         input_schema: %{
           type: "object",
@@ -127,7 +206,8 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "recent_records",
-        capability: "record_read",
+        offers_on: [{:records, :read}],
+        resolve: &req_records_read/1,
         description: "List recently updated or created records.",
         input_schema: %{
           type: "object",
@@ -144,9 +224,10 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "create_record",
-        capability: "record_append",
+        offers_on: [{:records, :create}, {:agent, :create}],
+        resolve: &req_create_record/1,
         description:
-          "Create a new record in the store. Returns the created record's id. Use this to persist knowledge, insights, and connections you discover.",
+          "Create a new record in the store. Returns the created record's id. For agent records (class: agent) with a `capabilities:` list, the caller must hold `agent.grant` AND the proposed capabilities must be a subset of the caller's own.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -169,9 +250,10 @@ defmodule Egghead.Agent.Tools do
       },
       %{
         name: "update_record",
-        capability: "record_modify",
+        offers_on: [{:records, :update}, {:agent, :update}, {:agent, :grant}],
+        resolve: &req_update_record/1,
         description:
-          "Update an existing record by merging new values. Only fields you provide change — everything else is preserved. For agent records, you can set model, provider, capabilities, and any other frontmatter fields.",
+          "Update an existing record by merging new values. Only fields you provide change. Modifying an agent's `capabilities:` field requires the `agent.grant` capability and is subject to attenuation (grants cannot exceed your own). You cannot grant capabilities to yourself.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -183,21 +265,16 @@ defmodule Egghead.Agent.Tools do
               items: %{type: "string"},
               description: "New linked record ids"
             },
-            class: %{
-              type: "string",
-              enum: ["durable", "inbox", "deliberation", "agent"],
-              description: "Record class"
-            },
             body: %{type: "string", description: "New body (Markdown)"},
             model: %{
               type: "string",
-              description: "LLM model id (for agent records, e.g. claude-haiku-4-5)"
+              description: "LLM model id (for agent records)"
             },
             provider: %{type: "string", description: "LLM provider (for agent records)"},
             capabilities: %{
               type: "array",
-              items: %{type: "string"},
-              description: "Agent capabilities list (for agent records)"
+              items: %{},
+              description: "Agent capabilities (only for agent records; requires agent.grant)"
             }
           },
           additionalProperties: true,
@@ -205,6 +282,94 @@ defmodule Egghead.Agent.Tools do
         }
       }
     ]
+  end
+
+  # --- Request resolvers ---
+
+  defp req_records_read(_input) do
+    {:ok, [%Request{resource: :records, verb: :read, scope: %{}}]}
+  end
+
+  defp req_create_record(input) do
+    class = input["class"] || "durable"
+
+    cond do
+      class == "agent" ->
+        base = %Request{resource: :agent, verb: :create, scope: %{id: input["id"]}}
+
+        if Map.has_key?(input, "capabilities") do
+          proposed = Capability.parse(input["capabilities"])
+
+          grant_req = %Request{
+            resource: :agent,
+            verb: :grant,
+            scope: %{id: input["id"], granted: proposed}
+          }
+
+          {:ok, [base, grant_req]}
+        else
+          {:ok, [base]}
+        end
+
+      true ->
+        {:ok,
+         [%Request{resource: :records, verb: :create, scope: %{class: class, id: input["id"]}}]}
+    end
+  end
+
+  defp req_update_record(%{"id" => id} = input) do
+    target_class = lookup_class(id)
+
+    cond do
+      target_class == "agent" and Map.has_key?(input, "capabilities") ->
+        proposed = Capability.parse(input["capabilities"])
+        other_fields? = input |> Map.drop(["id", "capabilities"]) |> map_size() > 0
+
+        requests = [
+          %Request{
+            resource: :agent,
+            verb: :grant,
+            scope: %{id: id, granted: proposed}
+          }
+        ]
+
+        requests =
+          if other_fields? do
+            requests ++ [%Request{resource: :agent, verb: :update, scope: %{id: id}}]
+          else
+            requests
+          end
+
+        {:ok, requests}
+
+      target_class == "agent" ->
+        {:ok, [%Request{resource: :agent, verb: :update, scope: %{id: id}}]}
+
+      true ->
+        {:ok,
+         [
+           %Request{
+             resource: :records,
+             verb: :update,
+             scope: %{class: target_class, id: id}
+           }
+         ]}
+    end
+  end
+
+  defp req_update_record(_), do: {:error, "update_record requires an id"}
+
+  defp lookup_class(nil), do: nil
+
+  defp lookup_class(id) do
+    case Egghead.get_record(id) do
+      {:ok, record} -> to_string(record.class)
+      {:error, :not_found} -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
   end
 
   defp tool_definition(tool) do
@@ -215,7 +380,7 @@ defmodule Egghead.Agent.Tools do
     }
   end
 
-  # --- Tool execution ---
+  # --- Tool execution (side effects) ---
 
   defp do_execute("search_records", %{"query" => query} = input, _ctx) do
     limit = input["limit"] || 10
@@ -280,6 +445,13 @@ defmodule Egghead.Agent.Tools do
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
       |> Map.put_new("author", ctx[:agent_id])
+
+    attrs =
+      if Map.has_key?(input, "capabilities") do
+        Map.put(attrs, "capabilities", input["capabilities"])
+      else
+        attrs
+      end
 
     case Egghead.create_record(attrs) do
       {:ok, record} -> {:ok, "Created record: #{record.id}"}

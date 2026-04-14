@@ -3,9 +3,14 @@ defmodule Egghead.AgentTest do
 
   alias Egghead.Agent
   alias Egghead.Agent.Supervisor, as: AgentSup
+  alias Egghead.Capability.Grant
   alias Egghead.Index
   alias Egghead.Record
   alias Egghead.RecordStore
+
+  defp has_grant?(grants, resource, verb) do
+    Enum.any?(grants, fn %Grant{resource: r, verb: v} -> r == resource and v == verb end)
+  end
 
   defp tmp_dir do
     dir =
@@ -71,7 +76,10 @@ defmodule Egghead.AgentTest do
         title: "Test Agent",
         class: :agent,
         tags: ["agent"],
-        meta: %{"capabilities" => ["record_read", "search"], "model" => "claude-sonnet-4-6"},
+        meta: %{
+          "capabilities" => ["records.read", "records.create"],
+          "model" => "claude-sonnet-4-6"
+        },
         body: "You are a test agent.",
         source_path: "/tmp/test-agent.md"
       }
@@ -83,13 +91,13 @@ defmodule Egghead.AgentTest do
       assert state.id == "test-agent"
       assert state.name == "Test Agent"
       assert state.disposition == "You are a test agent."
-      assert "record_read" in state.capabilities
-      assert "search" in state.capabilities
+      assert has_grant?(state.capabilities, :records, :read)
+      assert has_grant?(state.capabilities, :records, :create)
 
       GenServer.stop(pid)
     end
 
-    test "defaults to record_read and search when no capabilities specified" do
+    test "defaults to records.read when no capabilities specified" do
       record = %Record{
         id: "default-caps",
         title: "Default Agent",
@@ -102,28 +110,26 @@ defmodule Egghead.AgentTest do
 
       {:ok, pid} = Agent.start_link(record)
       state = :sys.get_state(pid)
-      assert "record_read" in state.capabilities
-      assert "search" in state.capabilities
+      assert has_grant?(state.capabilities, :records, :read)
 
       GenServer.stop(pid)
     end
 
-    test "filters out invalid capabilities" do
+    test "filters out unknown capabilities" do
       record = %Record{
         id: "bad-caps",
         title: "Bad Caps Agent",
         class: :agent,
         tags: ["agent"],
-        meta: %{"capabilities" => ["record_read", "nuclear_launch", "search"]},
+        meta: %{"capabilities" => ["records.read", "nuclear.launch"]},
         body: "You are an agent with invalid caps.",
         source_path: "/tmp/bad-caps.md"
       }
 
       {:ok, pid} = Agent.start_link(record)
       state = :sys.get_state(pid)
-      assert "record_read" in state.capabilities
-      assert "search" in state.capabilities
-      refute "nuclear_launch" in state.capabilities
+      assert has_grant?(state.capabilities, :records, :read)
+      refute Enum.any?(state.capabilities, fn g -> g.resource == :nuclear end)
 
       GenServer.stop(pid)
     end
@@ -140,7 +146,7 @@ defmodule Egghead.AgentTest do
 
       write_agent(dir, "test-agent.md", %{
         id: "test-agent",
-        meta: %{"capabilities" => ["record_read"]},
+        meta: %{"capabilities" => ["records.read"]},
         body: "# Test Agent\n\nYou are a test agent."
       })
 
@@ -164,7 +170,7 @@ defmodule Egghead.AgentTest do
 
       write_agent(dir, "ephemeral.md", %{
         id: "ephemeral",
-        meta: %{"capabilities" => ["record_read"]},
+        meta: %{"capabilities" => ["records.read"]},
         body: "# Ephemeral\n\nTemporary agent."
       })
 
@@ -188,7 +194,7 @@ defmodule Egghead.AgentTest do
 
       write_agent(dir, "restartable.md", %{
         id: "restartable",
-        meta: %{"capabilities" => ["record_read"]},
+        meta: %{"capabilities" => ["records.read"]},
         body: "# V1\n\nFirst version."
       })
 
@@ -203,7 +209,7 @@ defmodule Egghead.AgentTest do
       # Update the file
       write_agent(dir, "restartable.md", %{
         id: "restartable",
-        meta: %{"capabilities" => ["record_read", "search"]},
+        meta: %{"capabilities" => ["records.read"]},
         body: "# V2\n\nUpdated version."
       })
 
@@ -228,7 +234,7 @@ defmodule Egghead.AgentTest do
 
       write_agent(dir, "listed.md", %{
         id: "listed",
-        meta: %{"capabilities" => ["record_read", "search"]},
+        meta: %{"capabilities" => ["records.read"]},
         body: "# Listed Agent\n\nI exist to be listed."
       })
 

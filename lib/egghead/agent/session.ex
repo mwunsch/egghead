@@ -337,10 +337,18 @@ defmodule Egghead.Agent.Session do
               {status, result_text} =
                 case Egghead.Agent.Tools.execute(tool_use["name"], tool_use["input"], %{
                        agent_id: state.agent_id,
-                       room_id: room_id
+                       room_id: room_id,
+                       capabilities: state.identity[:capabilities] || []
                      }) do
-                  {:ok, text} -> {:ok, text}
-                  {:error, text} -> {:error, text}
+                  {:ok, text} ->
+                    {:ok, text}
+
+                  {:error, text} ->
+                    {:error, text}
+
+                  {:denied, %Egghead.Capability.Denial{} = denial} ->
+                    broadcast_denial(room_id, state.agent_id, tool_use, denial)
+                    {:error, Egghead.Capability.Denial.to_tool_result(denial)}
                 end
 
               tool_result = %{
@@ -810,6 +818,16 @@ defmodule Egghead.Agent.Session do
       Egghead.PubSub,
       Egghead.Chat.Room.topic(room_id),
       {:agent_handoff, room_id, agent_id, delib_id}
+    )
+  end
+
+  defp broadcast_denial(nil, _agent_id, _tool_use, _denial), do: :ok
+
+  defp broadcast_denial(room_id, agent_id, tool_use, denial) do
+    Phoenix.PubSub.broadcast(
+      Egghead.PubSub,
+      Egghead.Chat.Room.topic(room_id),
+      {:agent_tool_denied, room_id, agent_id, tool_use["name"], tool_use["input"], denial}
     )
   end
 

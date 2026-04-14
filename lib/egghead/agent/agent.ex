@@ -32,8 +32,8 @@ defmodule Egghead.Agent do
 
   alias Egghead.LLM.Registry
   alias Egghead.Agent.Session
+  alias Egghead.Capability
 
-  @valid_capabilities ~w(record_read record_append record_modify search)
   @default_context_threshold 0.70
 
   defmodule State do
@@ -432,14 +432,10 @@ defmodule Egghead.Agent do
   # --- Helpers ---
 
   defp parse_capabilities(record) do
-    raw =
-      case record.meta["capabilities"] do
-        list when is_list(list) -> Enum.map(list, &to_string/1)
-        str when is_binary(str) -> String.split(str, ~r/[,\s]+/, trim: true)
-        _ -> ["record_read", "search"]
-      end
-
-    Enum.filter(raw, &(&1 in @valid_capabilities))
+    case record.meta["capabilities"] do
+      nil -> Capability.parse(["records.read"])
+      value -> Capability.parse(value)
+    end
   end
 
   defp get_meta_string(record, key, default) do

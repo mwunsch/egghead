@@ -1,0 +1,88 @@
+.TH EGGHEAD 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead \- a personal knowledge base with AI agents that live inside it
+.SH SYNOPSIS
+.B egghead
+.RI [ command ]
+.RI [ flags ]
+.SH DESCRIPTION
+.B egghead
+is a personal knowledge base with AI agents that live inside it.
+Plain markdown records are the knowledge graph; agents read, write,
+and collaborate within it.
+.PP
+Running
+.B egghead
+with no arguments launches the terminal UI (TUI).
+.SH COMMANDS
+.TP
+.B init
+First-run setup wizard. Configures records directory, LLM providers,
+and the built-in agent model.
+.TP
+.B serve
+Start the web server and MCP HTTP endpoint. Logs to stdout.
+.TP
+.B mcp
+Start the MCP stdio server for editor integration (e.g. Claude Code).
+.TP
+.B llm \fIsubcommand\fR
+Manage LLM providers. Subcommands: list, add, remove, test, models.
+.TP
+.B agent \fIsubcommand\fR
+Manage agents. Subcommands: list, new.
+.TP
+.B config \fIsubcommand\fR
+View or edit configuration. Subcommands: set, path.
+.TP
+.B doctor
+Run diagnostic checks on the installation.
+.TP
+.B logs
+Tail the application log file.
+.SH FLAGS
+.TP
+.B \-\-config \fIPATH\fR
+Override the config file location.
+.TP
+.B \-h, \-\-help
+Show help text.
+.TP
+.B \-\-version
+Show version.
+.SH EXAMPLES
+.nf
+egghead                           # Launch the TUI
+egghead init                      # First-run setup
+egghead llm add                   # Add an LLM provider
+egghead agent new                 # Create a new agent
+egghead serve \-\-port 8080        # Run servers on port 8080
+.fi
+.SH ENVIRONMENT
+.TP
+.B EGGHEAD_CONFIG
+Override the config file path (same as \-\-config).
+.TP
+.B ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY
+LLM provider API keys (auto-detected if set).
+.SH FILES
+.TP
+.I ~/.config/egghead/config.yml
+Configuration file. See
+.BR egghead (5).
+.TP
+.I ~/.egghead/
+Default records directory.
+.TP
+.I ~/.local/state/egghead/egghead.log
+Application log file.
+.SH SEE ALSO
+.BR egghead-init (1),
+.BR egghead-serve (1),
+.BR egghead-mcp (1),
+.BR egghead-llm (1),
+.BR egghead-agent (1),
+.BR egghead-config (1),
+.BR egghead-doctor (1),
+.BR egghead (5),
+.BR egghead (7)

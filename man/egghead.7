@@ -1,0 +1,115 @@
+.TH EGGHEAD 7 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead \- concepts and architecture
+.SH DESCRIPTION
+Egghead is a personal knowledge base with AI agents that live inside it.
+.PP
+Under the hood: a record-store-first, graph-topology multi-agent system
+with sparse activation and graduated mutation control, built on
+actor-model supervision primitives.
+.SH RECORDS
+Records are markdown files with optional YAML frontmatter. Each
+record has an id derived from its filename (e.g.
+.I design/overview.md
+becomes
+.IR design/overview ).
+.PP
+Records can have tags, explicit links to other records, and
+wikilinks in the body text (e.g.
+.BR [[other-record]] ).
+An SQLite index provides full-text search, link traversal, and
+backlink discovery. The index is derived and rebuildable from
+the source files.
+.PP
+Record classes:
+.TP
+.B durable
+Long-lived knowledge (default).
+.TP
+.B inbox
+Incoming, unprocessed.
+.TP
+.B deliberation
+Agent conversation transcripts.
+.TP
+.B agent
+Agent definition (body is system prompt).
+.SH AGENTS
+Agents are records with
+.BR "class: agent" .
+The record body serves as the agent's system prompt (disposition).
+Frontmatter configures model, capabilities, and tags.
+.PP
+Example agent frontmatter:
+.nf
+
+---
+class: agent
+model: anthropic/claude-sonnet-4-6
+capabilities: [search, record_read, record_append]
+tags: [research, patterns]
+---
+
+.fi
+.PP
+Available capabilities:
+.TP
+.B search
+Full-text search of the record store.
+.TP
+.B record_read
+Read full record contents.
+.TP
+.B record_append
+Create new records.
+.TP
+.B record_modify
+Modify existing records.
+.PP
+A built-in agent called
+.B Index
+is always available. It helps navigate the record store and
+uses the model configured as
+.B default_model
+in the config file.
+.SH CHAT ROOMS
+Agents collaborate in chat rooms with a shared transcript.
+Agents self-select via @-mentions and relevance gating.
+The coordinator manages activation order using TF-IDF
+scoring against agent dispositions.
+.PP
+Agents that have nothing to add respond with [PASS]. Staggered
+activation ensures each agent sees prior responses before
+composing its own.
+.SH MCP
+Egghead exposes 15 tools via the Model Context Protocol (MCP).
+Two transports are available:
+.TP
+.B Stdio
+JSON-RPC over stdin/stdout. Start with
+.BR "egghead mcp" .
+Configure in
+.I .mcp.json
+for editor integration.
+.TP
+.B HTTP
+POST to
+.I /mcp
+on the web server. Available when running
+.BR "egghead serve" .
+.SH DESIGN PRINCIPLES
+.TP
+.B Knowledge graph as institution
+Records survive agents. Agents are staff, not the organization.
+.TP
+.B Plain files are the universal interface
+Markdown on a filesystem, not a database.
+.TP
+.B Graph topology, sparse activation
+Agents collaborate through shared transcripts with self-selection.
+.TP
+.B Capability-based mutation control
+Reads are free; writes follow a graduated spectrum.
+.SH SEE ALSO
+.BR egghead (1),
+.BR egghead (5)

@@ -1,42 +1,49 @@
-defmodule Mix.Tasks.Egghead.Agent do
-  @moduledoc """
-  Manage Egghead agents.
-
-      mix egghead.agent new
-      mix egghead.agent new --name scout --model anthropic/claude-sonnet-4-6
-      mix egghead.agent new --dry-run
-  """
-
-  use Mix.Task
+defmodule Egghead.CLI.AgentCmd do
+  @moduledoc "Agent management commands."
 
   alias Egghead.CLI.Widgets
   alias Egghead.Agent.Wizard
 
-  @shortdoc "Manage agents"
-
-  @impl true
   def run(args) do
-    {opts, rest, _} =
-      OptionParser.parse(args,
-        switches: [
-          help: :boolean,
-          name: :string,
-          model: :string,
-          dry_run: :boolean,
-          config: :string
-        ],
-        aliases: [h: :help]
-      )
+    if "--help" in args or "-h" in args do
+      IO.puts("""
+      USAGE
+        egghead agent <command> [flags]
 
-    if opts[:config], do: System.put_env("EGGHEAD_CONFIG", Path.expand(opts[:config]))
+      DESCRIPTION
+        Manage Egghead agents. Agents are markdown records with class: agent
+        whose body serves as their system prompt.
 
-    if opts[:help] do
-      IO.puts("Usage: egghead agent <command> [flags]")
-      IO.puts("Commands: list, new")
+      COMMANDS
+        list              List running agents (default)
+        new               Create a new agent interactively
+
+      FLAGS
+        --name <name>     Agent name (skip prompt, for `new`)
+        --model <model>   Model string (skip picker, for `new`)
+        --dry-run         Preview without saving (for `new`)
+        --config PATH     Override config file location
+        -h, --help        Show this help
+
+      EXAMPLES
+        $ egghead agent list
+        $ egghead agent new
+        $ egghead agent new --name scout
+        $ egghead agent new --name scout --model anthropic/claude-haiku-4-5
+
+      SEE ALSO
+        egghead llm models, egghead config
+      """)
     else
+      {opts, rest, _} =
+        OptionParser.parse(args,
+          switches: [name: :string, model: :string, dry_run: :boolean],
+          aliases: []
+        )
+
       case rest do
-        ["list"] -> do_list()
-        ["new"] -> do_new(opts)
+        ["list" | _] -> do_list()
+        ["new" | _] -> do_new(opts)
         [] -> do_list()
         _ -> IO.puts("Usage: egghead agent <command>\nCommands: list, new")
       end
@@ -44,9 +51,7 @@ defmodule Mix.Tasks.Egghead.Agent do
   end
 
   defp do_list do
-    Widgets.start_app()
-
-    # sync_agents runs async on boot — ensure it's done before listing
+    Egghead.CLI.start_app(:silent, web: false)
     Egghead.Agent.Supervisor.sync_agents()
 
     agents = Egghead.list_agents()
@@ -56,11 +61,9 @@ defmodule Mix.Tasks.Egghead.Agent do
     else
       Widgets.header("Agents")
 
-      # Column widths
       name_w = agents |> Enum.map(&String.length(&1.name)) |> Enum.max(fn -> 0 end) |> max(4)
       id_w = agents |> Enum.map(&String.length(&1.id)) |> Enum.max(fn -> 0 end) |> max(2)
 
-      # Header
       IO.puts("  #{Widgets.pad("NAME", name_w)}  #{Widgets.pad("ID", id_w)}  MODEL")
 
       IO.puts(
@@ -85,11 +88,9 @@ defmodule Mix.Tasks.Egghead.Agent do
     IO.puts("\e[1mCreate a New Agent\e[0m")
     IO.puts("")
 
-    # 1. Name
     name = opts[:name] || Widgets.input("Agent name")
 
-    # 2. Model — discover from Registry
-    Widgets.start_app()
+    Egghead.CLI.start_app(:silent, web: false)
 
     model =
       opts[:model] ||
@@ -98,7 +99,6 @@ defmodule Mix.Tasks.Egghead.Agent do
           pick_model()
         end)
 
-    # 3. Tags
     tags_input = Widgets.input("Tags (comma-separated)", default: "")
 
     tags =
@@ -106,7 +106,6 @@ defmodule Mix.Tasks.Egghead.Agent do
       |> String.split(~r/[,\s]+/, trim: true)
       |> Enum.map(&String.trim/1)
 
-    # 4. Capabilities
     capabilities =
       Widgets.multiselect(
         Wizard.capability_labels(),
@@ -114,7 +113,6 @@ defmodule Mix.Tasks.Egghead.Agent do
         defaults: ["search", "record_read"]
       )
 
-    # 5. Instructions via $EDITOR
     instructions = edit_instructions(name)
 
     params = %{

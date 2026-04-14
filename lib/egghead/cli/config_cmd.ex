@@ -1,55 +1,47 @@
-defmodule Mix.Tasks.Egghead.Config do
-  @moduledoc """
-  View and edit Egghead configuration.
-
-      mix egghead.config              Show current configuration
-      mix egghead.config set KEY VAL  Set a value (dot-path, e.g. web.port)
-      mix egghead.config path         Print config file path
-  """
-
-  use Mix.Task
+defmodule Egghead.CLI.ConfigCmd do
+  @moduledoc "Configuration viewing and editing."
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config
 
-  @shortdoc "View/edit configuration"
-
-  @help """
-  Usage: egghead config [command] [options]
-
-  View and modify Egghead configuration.
-
-  Commands:
-    (default)        Show current configuration
-    set <key> <val>  Set a config value using dot-path notation
-    path             Print the config file path
-
-  Examples:
-    egghead config
-    egghead config set web.port 8080
-    egghead config set default_model anthropic/claude-opus-4-6
-    egghead config path
-
-  Options:
-    --help, -h       Show this help
-  """
-
-  @impl true
   def run(args) do
-    {opts, rest, _} =
-      OptionParser.parse(args, switches: [help: :boolean, config: :string], aliases: [h: :help])
+    if "--help" in args or "-h" in args do
+      IO.puts("""
+      USAGE
+        egghead config [command] [flags]
 
-    if opts[:config], do: System.put_env("EGGHEAD_CONFIG", Path.expand(opts[:config]))
+      DESCRIPTION
+        View and modify Egghead configuration. Config is stored in YAML at
+        ~/.config/egghead/config.yml (respects $XDG_CONFIG_HOME).
 
-    if opts[:help] do
-      IO.puts(@help)
+      COMMANDS
+        (default)         Show current configuration
+        set <key> <val>   Set a config value using dot-path notation
+        path              Print the config file path
+
+      FLAGS
+        -h, --help        Show this help
+
+      EXAMPLES
+        $ egghead config
+        $ egghead config path
+        $ egghead config set web.port 8080
+        $ egghead config set default_model anthropic/claude-opus-4-6
+
+      SEE ALSO
+        egghead init, egghead doctor
+      """)
     else
-      case rest do
-        ["path"] -> IO.puts(Config.config_path())
-        ["set", key, value] -> do_set(key, value)
-        [] -> show_config()
-        _ -> IO.puts(@help)
-      end
+      dispatch(args)
+    end
+  end
+
+  defp dispatch(args) do
+    case args do
+      ["path" | _] -> IO.puts(Config.config_path())
+      ["set", key, value | _] -> do_set(key, value)
+      [] -> show_config()
+      _ -> IO.puts("Usage: egghead config [set <key> <val> | path]")
     end
   end
 

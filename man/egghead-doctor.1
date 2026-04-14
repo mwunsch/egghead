@@ -1,0 +1,43 @@
+.TH EGGHEAD-DOCTOR 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead-doctor \- diagnose setup problems
+.SH SYNOPSIS
+.B egghead doctor
+.RB [ \-\-config
+.IR PATH ]
+.SH DESCRIPTION
+Run diagnostic checks on the Egghead installation. Reports pass/fail
+status for each component.
+.SH CHECKS
+.TP
+.B Config
+Config file exists and is valid YAML.
+.TP
+.B Records
+Records directory is accessible.
+.TP
+.B Index
+SQLite index is present and readable.
+.TP
+.B NIF
+OpenTUI NIF binary exists for this platform.
+.TP
+.B Port
+Web port is available (not bound by another process).
+.TP
+.B Logs
+Log file path is writable.
+.TP
+.B Providers
+Each configured LLM provider is reachable.
+.SH FLAGS
+.TP
+.B \-\-config \fIPATH\fR
+Override config file location.
+.TP
+.B \-h, \-\-help
+Show help text.
+.SH SEE ALSO
+.BR egghead-config (1),
+.BR egghead-llm (1),
+.BR egghead (1)

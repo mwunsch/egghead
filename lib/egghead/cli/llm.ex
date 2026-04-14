@@ -1,57 +1,74 @@
-defmodule Mix.Tasks.Egghead.Llm do
-  @moduledoc """
-  Manage LLM providers.
-
-      mix egghead.llm              Show configured providers
-      mix egghead.llm list         Show configured providers
-      mix egghead.llm add          Add a provider
-      mix egghead.llm remove NAME  Remove a provider
-      mix egghead.llm test         Verify providers work
-      mix egghead.llm models       List all discovered models
-  """
-
-  use Mix.Task
+defmodule Egghead.CLI.LLM do
+  @moduledoc "LLM provider management commands."
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config
 
-  @shortdoc "Manage LLM providers"
-
-  @impl true
   def run(args) do
-    {opts, rest, _} =
-      OptionParser.parse(args, switches: [help: :boolean, config: :string], aliases: [h: :help])
+    if "--help" in args or "-h" in args do
+      IO.puts("""
+      USAGE
+        egghead llm <command> [flags]
 
-    if opts[:config], do: System.put_env("EGGHEAD_CONFIG", Path.expand(opts[:config]))
+      DESCRIPTION
+        Manage LLM provider configuration. Egghead supports multiple providers
+        simultaneously. Each provider needs an API key and gives access to its
+        models. Supported: Anthropic, OpenAI, Google, OpenAI-compatible APIs.
 
-    if opts[:help] do
-      IO.puts("Usage: egghead llm <command> [--help]")
-      IO.puts("Commands: list, add, remove <name>, test, models")
+      COMMANDS
+        list              Show configured providers and key status (default)
+        add               Add a provider interactively
+        remove <name>     Remove a provider by name
+        test              Verify all providers can connect
+        models            List all available models with context windows
+
+      FLAGS
+        -h, --help        Show this help
+
+      EXAMPLES
+        $ egghead llm add
+        $ egghead llm models
+        $ egghead llm remove openai
+        $ egghead llm test
+
+      CONFIGURATION
+        Provider config lives in ~/.config/egghead/config.yml under 'llm:'.
+        API keys can reference environment variables:
+
+          llm:
+            - provider: anthropic
+              api_key: "{env:ANTHROPIC_API_KEY}"
+
+      SEE ALSO
+        egghead init, egghead config, egghead doctor
+      """)
     else
-      case rest do
-        ["list"] ->
-          do_list()
+      dispatch(args)
+    end
+  end
 
-        ["add"] ->
-          do_add()
+  defp dispatch(args) do
+    case args do
+      ["list" | _] ->
+        do_list()
 
-        ["remove", name] ->
-          do_remove(name)
+      ["add" | _] ->
+        do_add()
 
-        ["test"] ->
-          do_test()
+      ["remove", name | _] ->
+        do_remove(name)
 
-        ["models"] ->
-          do_models()
+      ["test" | _] ->
+        do_test()
 
-        [] ->
-          do_list()
+      ["models" | _] ->
+        do_models()
 
-        _ ->
-          IO.puts(
-            "Usage: egghead llm <command>\nCommands: list, add, remove <name>, test, models"
-          )
-      end
+      [] ->
+        do_list()
+
+      _ ->
+        IO.puts("Usage: egghead llm <command>\nCommands: list, add, remove <name>, test, models")
     end
   end
 
@@ -103,7 +120,7 @@ defmodule Mix.Tasks.Egghead.Llm do
         _ -> %Config{}
       end
 
-    {updated, _models} = Mix.Tasks.Egghead.Init.add_provider(config)
+    {updated, _models} = Egghead.CLI.Init.add_provider(config)
 
     case Config.save(updated) do
       :ok -> Widgets.success("Configuration saved.")
@@ -141,7 +158,7 @@ defmodule Mix.Tasks.Egghead.Llm do
   end
 
   defp do_test do
-    Widgets.start_app()
+    Egghead.CLI.start_app(:silent, web: false)
 
     providers = Egghead.LLM.Registry.list_providers()
 
@@ -169,7 +186,7 @@ defmodule Mix.Tasks.Egghead.Llm do
   end
 
   defp do_models do
-    Widgets.start_app()
+    Egghead.CLI.start_app(:silent, web: false)
 
     models =
       Widgets.spinner("Discovering models...", fn ->

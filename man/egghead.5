@@ -1,0 +1,91 @@
+.TH EGGHEAD 5 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead \- configuration file format
+.SH SYNOPSIS
+.I ~/.config/egghead/config.yml
+.SH DESCRIPTION
+The egghead configuration file is a YAML document that controls
+records location, LLM provider credentials, default model, and
+web server settings.
+.PP
+The file location follows the XDG Base Directory specification,
+defaulting to
+.IR ~/.config/egghead/config.yml .
+Override with the
+.B EGGHEAD_CONFIG
+environment variable or the
+.B \-\-config
+flag.
+.SH FORMAT
+.nf
+records_dir: ~/.egghead
+
+llm:
+  - provider: anthropic
+    api_key: sk-ant-...
+  - provider: openai
+    api_key: "{env:OPENAI_API_KEY}"
+  - provider: custom
+    name: local-llama
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+
+default_model: anthropic/claude-haiku-4-5
+
+web:
+  port: 4000
+  host: localhost
+  bind: 127.0.0.1
+.fi
+.SH KEYS
+.TP
+.B records_dir
+Path to the records directory. Tilde expansion is supported.
+Default: ~/.egghead
+.TP
+.B llm
+List of LLM provider configurations. Each entry has:
+.RS
+.TP
+.B provider
+Provider name: anthropic, openai, google, or custom.
+.TP
+.B api_key
+API key string, or an environment variable reference using
+the \fB{env:VAR_NAME}\fR syntax.
+.TP
+.B base_url
+(Optional) Base URL for custom OpenAI-compatible endpoints.
+.TP
+.B name
+(Optional) Display name for custom providers.
+.RE
+.TP
+.B default_model
+Model ID in \fIprovider/model\fR format (e.g. anthropic/claude-haiku-4-5).
+Used by the built-in Index agent. Other agents specify their own model
+in their record frontmatter.
+.TP
+.B web.port
+HTTP port for the web server. Default: 4000.
+.TP
+.B web.host
+Hostname for URL generation. Default: localhost.
+.TP
+.B web.bind
+Bind address. Use 0.0.0.0 for network access. Default: 127.0.0.1.
+.SH ENVIRONMENT VARIABLE REFERENCES
+API keys can reference environment variables instead of storing
+secrets in plaintext:
+.PP
+.nf
+api_key: "{env:ANTHROPIC_API_KEY}"
+.fi
+.PP
+The variable is resolved at runtime. If the variable is not set,
+the key is treated as nil.
+.SH SEE ALSO
+.BR egghead (1),
+.BR egghead-init (1),
+.BR egghead-config (1),
+.BR egghead (7)

@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-test-${{ hashFiles('**/mix.lock') }}
+      - run: mix deps.get
+      - run: mix test
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: macos_arm64
+            asset: egghead-aarch64-macos
+          - runner: macos-13
+            target: macos_x64
+            asset: egghead-x86_64-macos
+          - runner: ubuntu-latest
+            target: linux_x64
+            asset: egghead-x86_64-linux
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-prod-${{ hashFiles('**/mix.lock') }}
+
+      - run: mix deps.get
+
+      - name: Build release
+        run: BURRITO_TARGET=${{ matrix.target }} mix release
+
+      - name: Package
+        run: |
+          mkdir -p staging/${{ matrix.asset }}
+          cp burrito_out/* staging/${{ matrix.asset }}/egghead
+          chmod +x staging/${{ matrix.asset }}/egghead
+          if [ -d man ]; then
+            cp -r man staging/${{ matrix.asset }}/
+          fi
+          tar czf ${{ matrix.asset }}.tar.gz -C staging ${{ matrix.asset }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          generate_release_notes: true

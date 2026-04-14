@@ -472,7 +472,7 @@ defmodule Egghead.MCP.Handler do
 
     if providers == [] do
       {:ok,
-       "No providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY, or create ~/.egghead/providers.yml"}
+       "No providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY, or run `egghead init`"}
     else
       lines =
         Enum.map(providers, fn p ->

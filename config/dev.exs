@@ -8,7 +8,7 @@ config :egghead, Egghead.Web.Endpoint,
   code_reloader: true,
   live_reload: [
     patterns: [
-      ~r"priv/static/.*(js|css)$",
-      ~r"lib/egghead/web/.*(ex|heex)$"
+      ~r"priv/static/.*(js|css)$"E,
+      ~r"lib/egghead/web/.*(ex|heex)$"E
     ]
   ]

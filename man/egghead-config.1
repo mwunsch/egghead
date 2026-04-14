@@ -1,0 +1,42 @@
+.TH EGGHEAD-CONFIG 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead-config \- view and edit configuration
+.SH SYNOPSIS
+.B egghead config
+.RI [ subcommand ]
+.RB [ \-\-config
+.IR PATH ]
+.SH DESCRIPTION
+View and modify Egghead configuration. Config is stored in YAML at
+.I ~/.config/egghead/config.yml
+(respects
+.BR $XDG_CONFIG_HOME ).
+.SH SUBCOMMANDS
+.TP
+.B (default)
+Show current configuration.
+.TP
+.B set \fIkey\fR \fIvalue\fR
+Set a config value using dot-path notation.
+.TP
+.B path
+Print the config file path.
+.SH FLAGS
+.TP
+.B \-\-config \fIPATH\fR
+Override config file location.
+.TP
+.B \-h, \-\-help
+Show help text.
+.SH EXAMPLES
+.nf
+egghead config
+egghead config path
+egghead config set web.port 8080
+egghead config set default_model anthropic/claude\-opus\-4\-6
+.fi
+.SH SEE ALSO
+.BR egghead-init (1),
+.BR egghead-doctor (1),
+.BR egghead (5),
+.BR egghead (1)

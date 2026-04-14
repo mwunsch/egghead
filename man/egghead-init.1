@@ -1,0 +1,41 @@
+.TH EGGHEAD-INIT 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead-init \- first-run setup wizard
+.SH SYNOPSIS
+.B egghead init
+.RB [ \-\-config
+.IR PATH ]
+.RB [ \-\-dry\-run ]
+.SH DESCRIPTION
+Walks through initial Egghead setup: records directory location, LLM
+provider configuration (API key entry and verification), and built-in
+agent model selection. Saves results to
+.IR ~/.config/egghead/config.yml .
+.PP
+Safe to re-run. Existing values are shown as defaults and preserved
+unless changed.
+.SH FLAGS
+.TP
+.B \-\-config \fIPATH\fR
+Save config to a custom path instead of the default.
+.TP
+.B \-\-dry\-run
+Show what would be written without saving anything.
+.TP
+.B \-h, \-\-help
+Show help text.
+.SH ENVIRONMENT
+.TP
+.B EGGHEAD_CONFIG
+Override the config file path (same as \-\-config).
+.SH EXAMPLES
+.nf
+egghead init
+egghead init \-\-config ~/projects/my\-kb/egghead.yml
+egghead init \-\-dry\-run
+.fi
+.SH SEE ALSO
+.BR egghead-config (1),
+.BR egghead-llm (1),
+.BR egghead-doctor (1),
+.BR egghead (1)

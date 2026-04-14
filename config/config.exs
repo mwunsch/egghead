@@ -1,16 +1,11 @@
 import Config
 
-# Path to the directory where record files live.
-# Markdown (.md) and org-mode (.org) files in this directory
-# are automatically loaded into the RecordStore index.
-# Override with EGGHEAD_RECORDS_DIR env var (see runtime.exs).
-config :egghead, :records_dir, Path.expand("../records", __DIR__)
-
-# Phoenix endpoint — safe defaults for localhost.
-# runtime.exs overrides these from env vars when present.
+# Phoenix endpoint — compile-time defaults only.
+# Runtime config (port, host, bind, records_dir) is applied in
+# Egghead.Application.start/2 from ~/.config/egghead/config.yml
+# and environment variables. No runtime.exs.
 config :egghead, Egghead.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,
-  http: [ip: {127, 0, 0, 1}, port: 4000],
   server: true,
   pubsub_server: Egghead.PubSub,
   live_view: [signing_salt: "egghead_lv"],
@@ -20,8 +15,6 @@ config :egghead, Egghead.Web.Endpoint,
   render_errors: [formats: [html: Egghead.Web.ErrorHTML], layout: false]
 
 config :phoenix, :json_library, Jason
-
-# Logger — sane defaults, overridden per runtime mode in Application.start
 config :logger, level: :info
 
 import_config "#{config_env()}.exs"

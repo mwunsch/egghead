@@ -1,32 +1,42 @@
-defmodule Mix.Tasks.Egghead.Doctor do
-  @moduledoc """
-  Diagnose Egghead setup problems.
-
-      mix egghead.doctor
-  """
-
-  use Mix.Task
+defmodule Egghead.CLI.Doctor do
+  @moduledoc "Diagnostic checks."
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config
 
-  @shortdoc "Diagnose setup problems"
-
-  @impl true
   def run(args) do
-    {opts, _, _} =
-      OptionParser.parse(args, switches: [help: :boolean, config: :string], aliases: [h: :help])
+    if "--help" in args or "-h" in args do
+      IO.puts("""
+      USAGE
+        egghead doctor [flags]
 
-    if opts[:config], do: System.put_env("EGGHEAD_CONFIG", Path.expand(opts[:config]))
+      DESCRIPTION
+        Run diagnostic checks on your Egghead installation. Verifies that
+        configuration, records directory, database index, NIF binaries,
+        network ports, and LLM providers are all working correctly.
 
-    if opts[:help] do
-      IO.puts("Usage: egghead doctor [--config PATH] [--help]")
+      CHECKS
+        - Config file exists and is valid YAML
+        - Records directory is accessible
+        - SQLite index is present
+        - NIF/OpenTUI binary exists for this platform
+        - Web port is available
+        - Log file is writable
+        - Each LLM provider is reachable
+
+      FLAGS
+        --config PATH   Override config file location
+        -h, --help      Show this help
+
+      SEE ALSO
+        egghead config, egghead llm test
+      """)
     else
-      do_doctor()
+      do_run()
     end
   end
 
-  defp do_doctor do
+  defp do_run do
     IO.puts("")
     IO.puts("\e[1mEgghead Doctor\e[0m")
     IO.puts("")
@@ -105,17 +115,15 @@ defmodule Mix.Tasks.Egghead.Doctor do
   end
 
   defp check_nif do
-    target = Mix.target() || :host
     priv_dir = :code.priv_dir(:egghead) |> to_string()
-    lib_dir = Path.join([priv_dir, to_string(target), "lib"])
 
-    dylib = Path.join(lib_dir, "libopentui.dylib")
-    so = Path.join(lib_dir, "libopentui.so")
+    # Check all possible target subdirectories
+    matches = Path.wildcard(Path.join(priv_dir, "*/lib/libopentui.*"))
 
-    cond do
-      File.exists?(dylib) -> :ok
-      File.exists?(so) -> :ok
-      true -> {:error, "OpenTUI library not found in #{lib_dir}"}
+    if matches != [] do
+      :ok
+    else
+      {:error, "OpenTUI library not found in #{priv_dir}"}
     end
   rescue
     _ -> {:warn, "could not locate priv directory"}
@@ -177,7 +185,6 @@ defmodule Mix.Tasks.Egghead.Doctor do
           result =
             if api_key do
               module = Egghead.LLM.Registry.determine_module(entry.provider)
-
               Code.ensure_loaded(module)
 
               if function_exported?(module, :list_models, 1) do

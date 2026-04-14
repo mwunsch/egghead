@@ -785,18 +785,18 @@ defmodule Egghead.Agent.Session do
       {:error, {:provider_not_configured, provider}} ->
         {:error,
          "Provider '#{provider}' is not configured. " <>
-           "Set the appropriate API key or add it to ~/.egghead/providers.yml. " <>
+           "Set the appropriate API key or run `egghead init`. " <>
            "Check the model field in the agent record."}
 
       {:error, :registry_unavailable} ->
         {:error,
          "No LLM provider available. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or " <>
-           "GOOGLE_API_KEY, or create ~/.egghead/providers.yml"}
+           "GOOGLE_API_KEY, or run `egghead init`"}
 
       {:error, :missing_api_key} ->
         {:error,
          "API key not set for this provider. Set the appropriate environment variable " <>
-           "or add it to ~/.egghead/providers.yml"}
+           "or run `egghead llm add`"}
 
       {:error, reason} ->
         {:error, {:provider_error, reason}}

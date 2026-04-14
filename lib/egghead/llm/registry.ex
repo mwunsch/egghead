@@ -132,7 +132,7 @@ defmodule Egghead.LLM.Registry do
     if providers == %{} do
       Logger.warning(
         "No LLM providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY, " <>
-          "or create ~/.egghead/providers.yml"
+          "or run `egghead init`"
       )
     else
       names = providers |> Map.keys() |> Enum.join(", ")

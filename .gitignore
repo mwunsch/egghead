@@ -33,3 +33,6 @@ egghead-*.tar
 !/priv/static/
 /zig-out/
 /.zig-cache/
+
+# Burrito builds self-contained binaries here.
+/burrito_out/

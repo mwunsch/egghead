@@ -1,0 +1,44 @@
+.TH EGGHEAD-SERVE 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead-serve \- web and MCP HTTP server
+.SH SYNOPSIS
+.B egghead serve
+.RB [ \-\-port
+.IR N ]
+.RB [ \-i | \-\-interactive ]
+.RB [ \-\-config
+.IR PATH ]
+.SH DESCRIPTION
+Start the web server and MCP HTTP endpoint. The MCP endpoint is
+available at
+.B /mcp
+on the same port. Logs go to stdout.
+.PP
+For the MCP stdio transport (editor integration), use
+.BR egghead-mcp (1)
+instead.
+.SH FLAGS
+.TP
+.B \-\-port \fIN\fR
+Override the HTTP port. Default: 4000.
+.TP
+.B \-i, \-\-interactive
+Keep the BEAM break menu available (Ctrl+C to inspect). Without this
+flag, Ctrl+C exits cleanly.
+.TP
+.B \-\-config \fIPATH\fR
+Override config file location.
+.TP
+.B \-h, \-\-help
+Show help text.
+.SH EXAMPLES
+.nf
+egghead serve
+egghead serve \-\-port 8080
+egghead serve \-\-interactive
+.fi
+.SH SEE ALSO
+.BR egghead-mcp (1),
+.BR egghead-config (1),
+.BR egghead-doctor (1),
+.BR egghead (1)

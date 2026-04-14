@@ -2,36 +2,48 @@ defmodule Egghead.Application do
   @moduledoc """
   OTP Application for Egghead.
 
-  Supervision tree:
+  All runtime configuration is loaded here in `apply_config/0`.
+  No runtime.exs. Sources in precedence order:
 
-      Egghead.Supervisor (one_for_one)
-      ├── Egghead.PubSub — event broadcasting
-      ├── Egghead.RecordSupervisor (rest_for_one)
-      │   ├── Egghead.Index — SQLite graph index
-      │   └── Egghead.RecordStore — file watcher, queries
-      └── Egghead.Agent.LayerSupervisor (rest_for_one)
-          ├── Egghead.LLM.Registry — provider config
-          └── Egghead.Agent.Supervisor — DynamicSupervisor for agents
+  1. Environment variables (EGGHEAD_RECORDS, PORT, etc.)
+  2. Config file (~/.config/egghead/config.yml)
+  3. Compile-time defaults (config/config.exs)
 
-  ## Log modes
+  In release mode (Burrito binary), `configure_for_command/1` parses
+  argv BEFORE the supervision tree to determine what to start:
 
-  Set `:log_mode` in application env before `app.start`:
-
-  - `:console` (default) — logs to stdout (for `iex`, `egghead serve`)
-  - `:file` — redirects to `Egghead.Config.log_path()` (for TUI)
-  - `:silent` — redirects to file, no console output (for CLI commands)
+  | Command | Record store | Web | Log mode |
+  |---------|-------------|-----|----------|
+  | (none) / tui | yes | no | :file |
+  | serve | yes | yes | :console |
+  | mcp | yes | no | :silent |
+  | agent list, llm models, doctor, init | yes | no | :silent |
+  | --help, --version, config, llm list, logs | no | no | :silent |
   """
 
   use Application
 
+  # Commands that need the record store + agent layer running
+  @app_commands ~w(serve mcp tui init doctor)
+  @app_subcommands %{
+    "agent" => ~w(list new),
+    "llm" => ~w(test models)
+  }
+
   @impl true
   def start(_type, _args) do
+    if release_mode?() do
+      argv = burrito_args()
+      configure_for_command(argv)
+    end
+
+    apply_config()
     configure_logging()
 
     children =
       if Application.get_env(:egghead, :start_record_store, true) do
         records_dir =
-          Application.get_env(:egghead, :records_dir, Path.join(File.cwd!(), "records"))
+          Application.get_env(:egghead, :records_dir, Path.expand("~/.egghead"))
 
         db_path = Path.join(records_dir, ".egghead/index.db")
 
@@ -51,7 +63,6 @@ defmodule Egghead.Application do
       Task.start(fn ->
         Egghead.Agent.Supervisor.sync_agents()
 
-        # Create the default chat room once agents are synced
         room_id =
           "chat-#{Date.to_iso8601(Date.utc_today())}-#{:erlang.unique_integer([:positive])}"
 
@@ -59,27 +70,185 @@ defmodule Egghead.Application do
       end)
     end
 
+    if release_mode?() do
+      Task.start(fn ->
+        Egghead.CLI.main(burrito_args())
+        System.halt(0)
+      end)
+    end
+
     result
   end
 
-  defp web_children do
-    if Application.get_env(:egghead, :start_web, true) do
-      [Egghead.Web.Endpoint]
-    else
-      []
+  # --- Command mode detection (release only) ---
+
+  defp configure_for_command(argv) do
+    # Handle --config before anything reads the config file
+    case Enum.find_index(argv, &(&1 == "--config")) do
+      nil ->
+        :ok
+
+      idx ->
+        if val = Enum.at(argv, idx + 1), do: System.put_env("EGGHEAD_CONFIG", Path.expand(val))
+    end
+
+    # Find the command (first non-flag arg)
+    command =
+      argv
+      |> Enum.reject(&String.starts_with?(&1, "-"))
+      |> List.first()
+
+    subcommand =
+      argv
+      |> Enum.reject(&String.starts_with?(&1, "-"))
+      |> Enum.at(1)
+
+    needs_app = needs_app?(command, subcommand)
+
+    # Set flags BEFORE apply_config and supervision tree
+    unless needs_app do
+      Application.put_env(:egghead, :start_record_store, false)
+    end
+
+    case command do
+      "serve" ->
+        Application.put_env(:egghead, :log_mode, :console)
+
+      nil ->
+        # Default = TUI
+        Application.put_env(:egghead, :start_web, false)
+        Application.put_env(:egghead, :log_mode, :file)
+
+      "tui" ->
+        Application.put_env(:egghead, :start_web, false)
+        Application.put_env(:egghead, :log_mode, :file)
+
+      _ ->
+        Application.put_env(:egghead, :start_web, false)
+        Application.put_env(:egghead, :log_mode, :silent)
     end
   end
 
+  # default = TUI
+  defp needs_app?(nil, _), do: true
+  defp needs_app?(cmd, _) when cmd in @app_commands, do: true
+
+  defp needs_app?(cmd, sub) do
+    case Map.get(@app_subcommands, cmd) do
+      # config, logs, help, llm list, llm remove
+      nil -> false
+      subs -> sub in subs
+    end
+  end
+
+  # --- Config loading (single source of truth) ---
+
+  defp apply_config do
+    case Egghead.Config.load() do
+      {:ok, config} ->
+        Application.put_env(:egghead, :records_dir, Egghead.Config.records_dir(config))
+
+        bind =
+          case config.web.bind do
+            "0.0.0.0" -> {0, 0, 0, 0}
+            _ -> {127, 0, 0, 1}
+          end
+
+        current = Application.get_env(:egghead, Egghead.Web.Endpoint, [])
+
+        secret_overrides =
+          case System.get_env("SECRET_KEY_BASE") do
+            nil ->
+              if bind == {0, 0, 0, 0} do
+                IO.warn("""
+                WARNING: Binding to 0.0.0.0 without SECRET_KEY_BASE set.
+                Set SECRET_KEY_BASE for any network-exposed deployment:
+
+                    export SECRET_KEY_BASE=$(openssl rand -base64 48)
+                """)
+              end
+
+              []
+
+            key ->
+              [secret_key_base: key]
+          end
+
+        endpoint_config =
+          Keyword.merge(
+            current,
+            [
+              {:url, [host: config.web.host, port: config.web.port]},
+              {:http, [ip: bind, port: config.web.port]}
+            ] ++ secret_overrides
+          )
+
+        Application.put_env(:egghead, Egghead.Web.Endpoint, endpoint_config)
+
+      {:error, _} ->
+        Application.put_env(:egghead, :records_dir, Path.expand("~/.egghead"))
+
+        current = Application.get_env(:egghead, Egghead.Web.Endpoint, [])
+
+        endpoint_config =
+          Keyword.merge(current,
+            url: [host: "localhost", port: 4000],
+            http: [ip: {127, 0, 0, 1}, port: 4000]
+          )
+
+        Application.put_env(:egghead, Egghead.Web.Endpoint, endpoint_config)
+    end
+
+    # Environment variable overrides
+    if dir = System.get_env("EGGHEAD_RECORDS") do
+      Application.put_env(:egghead, :records_dir, Path.expand(dir))
+    end
+
+    if System.get_env("EGGHEAD_WEB") == "false" do
+      Application.put_env(:egghead, :start_web, false)
+    end
+
+    if port_str = System.get_env("PORT") do
+      port = String.to_integer(port_str)
+      current = Application.get_env(:egghead, Egghead.Web.Endpoint, [])
+      http = Keyword.get(current, :http, [])
+
+      Application.put_env(
+        :egghead,
+        Egghead.Web.Endpoint,
+        Keyword.put(current, :http, Keyword.put(http, :port, port))
+      )
+    end
+
+    if host = System.get_env("EGGHEAD_HOST") do
+      current = Application.get_env(:egghead, Egghead.Web.Endpoint, [])
+
+      Application.put_env(
+        :egghead,
+        Egghead.Web.Endpoint,
+        Keyword.put(current, :url, host: host)
+      )
+    end
+
+    if System.get_env("EGGHEAD_BIND") == "0.0.0.0" do
+      current = Application.get_env(:egghead, Egghead.Web.Endpoint, [])
+      http = Keyword.get(current, :http, [])
+
+      Application.put_env(
+        :egghead,
+        Egghead.Web.Endpoint,
+        Keyword.put(current, :http, Keyword.put(http, :ip, {0, 0, 0, 0}))
+      )
+    end
+  end
+
+  # --- Logging ---
+
   defp configure_logging do
     case Application.get_env(:egghead, :log_mode, :console) do
-      :file ->
-        redirect_to_file()
-
-      :silent ->
-        redirect_to_file()
-
-      :console ->
-        :ok
+      :file -> redirect_to_file()
+      :silent -> redirect_to_file()
+      :console -> :ok
     end
   end
 
@@ -95,5 +264,23 @@ defmodule Egghead.Application do
     :logger.add_handler(:egghead_file, :logger_std_h, %{
       config: %{file: String.to_charlist(log_path)}
     })
+  end
+
+  # --- Helpers ---
+
+  defp web_children do
+    if Application.get_env(:egghead, :start_web, true) do
+      [Egghead.Web.Endpoint]
+    else
+      []
+    end
+  end
+
+  defp release_mode? do
+    Burrito.Util.running_standalone?()
+  end
+
+  defp burrito_args do
+    Burrito.Util.Args.argv()
   end
 end

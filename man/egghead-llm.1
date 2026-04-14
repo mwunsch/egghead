@@ -1,0 +1,62 @@
+.TH EGGHEAD-LLM 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead-llm \- manage LLM providers
+.SH SYNOPSIS
+.B egghead llm
+.RI [ subcommand ]
+.RB [ \-\-config
+.IR PATH ]
+.SH DESCRIPTION
+Manage LLM provider configuration. Egghead supports multiple providers
+simultaneously. Each provider needs an API key and gives access to its
+models. Supported providers: Anthropic, OpenAI, Google, and
+OpenAI-compatible APIs.
+.SH SUBCOMMANDS
+.TP
+.B list
+Show configured providers and key status. This is the default when no
+subcommand is given.
+.TP
+.B add
+Add a provider interactively.
+.TP
+.B remove \fIname\fR
+Remove a provider by name.
+.TP
+.B test
+Verify all configured providers can connect.
+.TP
+.B models
+List all available models with context window sizes.
+.SH FLAGS
+.TP
+.B \-\-config \fIPATH\fR
+Override config file location.
+.TP
+.B \-h, \-\-help
+Show help text.
+.SH CONFIGURATION
+Provider config lives in
+.I ~/.config/egghead/config.yml
+under
+.BR llm: .
+API keys can reference environment variables:
+.PP
+.nf
+llm:
+  \- provider: anthropic
+    api_key: "{env:ANTHROPIC_API_KEY}"
+.fi
+.SH EXAMPLES
+.nf
+egghead llm
+egghead llm add
+egghead llm models
+egghead llm remove openai
+egghead llm test
+.fi
+.SH SEE ALSO
+.BR egghead-init (1),
+.BR egghead-config (1),
+.BR egghead-doctor (1),
+.BR egghead (1)

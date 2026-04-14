@@ -1,0 +1,26 @@
+.TH EGGHEAD-MCP 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
+.SH NAME
+egghead-mcp \- MCP stdio server
+.SH SYNOPSIS
+.B egghead mcp
+.RB [ \-\-config
+.IR PATH ]
+.SH DESCRIPTION
+Start the MCP stdio server. Reads JSON-RPC messages from stdin and
+writes responses to stdout. Used by editor integrations like Claude
+Code via
+.IR .mcp.json .
+.PP
+For the HTTP MCP endpoint, use
+.BR egghead-serve (1)
+(available at /mcp on the web port).
+.SH FLAGS
+.TP
+.B \-\-config \fIPATH\fR
+Override config file location.
+.TP
+.B \-h, \-\-help
+Show help text.
+.SH SEE ALSO
+.BR egghead-serve (1),
+.BR egghead (1)

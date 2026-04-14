@@ -202,9 +202,7 @@ defmodule Egghead.CLI.Widgets do
   running but don't want log spam in the terminal.
   """
   def start_app do
-    Application.put_env(:egghead, :start_web, false)
-    Application.put_env(:egghead, :log_mode, :silent)
-    Mix.Task.run("app.start")
+    Egghead.CLI.start_app(:silent, web: false)
   end
 
   # ── Styled output (outside raw mode, IO.puts is fine) ──────
@@ -393,7 +391,7 @@ defmodule Egghead.CLI.Widgets do
     filter_line + item_lines + 1
   end
 
-  defp filter_items(_all, _render_as, ""), do: nil
+  defp filter_items(all, _render_as, ""), do: all
 
   defp filter_items(all, render_as, filter) do
     downcased = String.downcase(filter)

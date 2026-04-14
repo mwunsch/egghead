@@ -165,11 +165,16 @@ defmodule Egghead.MixProject do
       start_permanent: Mix.env() == :prod,
       compilers: [:opentui_fetch, :build_dot_zig] ++ Mix.compilers(),
       zig_target: @zig_target,
+      # Force :debug build mode to avoid build_dot_zig 0.7.0 passing
+      # -Doptimize=ReleaseSafe (broken with bundled Zig 0.15.1).
+      # Our build.zig defaults to ReleaseSafe via preferred_optimize_mode.
+      zig_build_mode: :debug,
       zig_extra_options: [
         opentui_dir: Egghead.OpenTUIPaths.lib_dir(@zig_target)
       ],
       listeners: [Phoenix.CodeReloader],
       deps: deps(),
+      releases: releases(),
       package: package()
     ]
   end
@@ -203,7 +208,24 @@ defmodule Egghead.MixProject do
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
-      {:lazy_html, ">= 0.1.0", only: :test}
+      {:lazy_html, ">= 0.1.0", only: :test},
+      {:burrito, "~> 1.5"}
+    ]
+  end
+
+  defp releases do
+    [
+      egghead: [
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            macos_arm64: [os: :darwin, cpu: :aarch64],
+            macos_x64: [os: :darwin, cpu: :x86_64],
+            linux_x64: [os: :linux, cpu: :x86_64],
+            linux_arm64: [os: :linux, cpu: :aarch64]
+          ]
+        ]
+      ]
     ]
   end
 

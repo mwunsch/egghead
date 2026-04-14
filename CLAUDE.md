@@ -156,9 +156,10 @@ library embedding. Prefer reusing these over reinventing.
 
 ## CLI
 
-`bin/egghead` is a Bash router that dispatches to Mix tasks. Help text
-lives in the Bash script for instant access (no compilation). See
-`records/design/cli.md` for the full CLI design document.
+`bin/egghead` is a thin wrapper that calls `mix egghead` (which bridges
+to `Egghead.CLI.main/1`). All CLI logic lives in `lib/egghead/cli/`
+as regular modules — no Mix tasks. See `records/design/cli.md` for
+the full CLI design document.
 
 ### Interactive widgets (`Egghead.CLI.Widgets`)
 
@@ -177,7 +178,7 @@ Falls back to `Egghead.CLI.Prompts` when the NIF is unavailable.
 
 ## TUI
 
-`egghead` (or `mix egghead.tui`). Built on OpenTUI (Zig NIF) with an
+`egghead` (or `egghead tui`). Built on OpenTUI (Zig NIF) with an
 Elm-architecture runtime. See `lib/egghead/open_tui/README.md` for the
 framework documentation. Logs go to `~/.local/state/egghead/egghead.log`
 — never to stdout, which would corrupt the alt-screen rendering.
@@ -286,8 +287,8 @@ want to ask the swarm a question without managing rooms themselves.
 | `lib/egghead/tui/app.ex` | Root Elm component (records + chat modes) |
 | `lib/egghead/tui/records/` | Records screen (Model/Update/View) |
 | `lib/egghead/tui/chat/` | Chat screen (Model/Update/View) |
-| `bin/egghead` | CLI entry point (Bash router + help text) |
-| `lib/mix/tasks/egghead.*.ex` | Mix tasks for each CLI command |
+| `bin/egghead` | CLI entry point (Bash wrapper for Mix) |
+| `lib/mix/tasks/egghead.ex` | One-line Mix task bridge to CLI.main |
 
 ## Quick `iex` recipes
 

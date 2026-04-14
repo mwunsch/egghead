@@ -1,17 +1,8 @@
-defmodule Mix.Tasks.Egghead.Init do
-  @moduledoc """
-  First-run setup wizard for Egghead.
-
-      mix egghead.init
-      mix egghead.init --dry-run
-  """
-
-  use Mix.Task
+defmodule Egghead.CLI.Init do
+  @moduledoc "First-run setup wizard."
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config
-
-  @shortdoc "First-run setup wizard"
 
   @known_providers [
     %{name: "Anthropic", id: "anthropic", hint: "Claude models"},
@@ -20,18 +11,37 @@ defmodule Mix.Tasks.Egghead.Init do
     %{name: "Custom", id: "custom", hint: "OpenAI-compatible endpoint"}
   ]
 
-  @impl true
   def run(args) do
-    {opts, _, _} =
-      OptionParser.parse(args,
-        switches: [help: :boolean, dry_run: :boolean, config: :string],
-        aliases: [h: :help]
-      )
+    if "--help" in args or "-h" in args do
+      IO.puts("""
+      USAGE
+        egghead init [flags]
 
-    if opts[:help] do
-      IO.puts("Usage: egghead init [--config PATH] [--dry-run] [--help]")
+      DESCRIPTION
+        First-run setup wizard. Walks through records directory location,
+        LLM provider configuration (API keys), and built-in agent model.
+        Saves configuration to ~/.config/egghead/config.yml.
+
+      FLAGS
+        --config PATH   Save config to a custom path instead of the default
+        --dry-run       Show what would be written without saving
+        -h, --help      Show this help
+
+      EXAMPLES
+        $ egghead init
+        $ egghead init --config ~/projects/my-kb/egghead.yml
+        $ egghead init --dry-run
+
+      SEE ALSO
+        egghead config, egghead llm, egghead doctor
+      """)
     else
-      if opts[:config], do: System.put_env("EGGHEAD_CONFIG", Path.expand(opts[:config]))
+      {opts, _, _} =
+        OptionParser.parse(args,
+          switches: [dry_run: :boolean],
+          aliases: []
+        )
+
       do_init(opts)
     end
   end
@@ -42,7 +52,7 @@ defmodule Mix.Tasks.Egghead.Init do
     if Config.exists?() and not dry_run do
       unless Widgets.confirm("Config already exists at #{Config.config_path()}. Overwrite?") do
         IO.puts("Aborted.")
-        exit(:normal)
+        return()
       end
     end
 
@@ -50,7 +60,6 @@ defmodule Mix.Tasks.Egghead.Init do
     IO.puts("\e[1mWelcome to Egghead.\e[0m")
     IO.puts("")
 
-    # Step 1: Records directory
     Widgets.header("Records directory")
     records_dir = Widgets.input("Where should records live?", default: "~/.egghead")
     expanded = Path.expand(records_dir)
@@ -60,11 +69,9 @@ defmodule Mix.Tasks.Egghead.Init do
       Widgets.success("Created #{expanded}")
     end
 
-    # Step 2: LLM providers (returns config with llm entries + discovered models)
     config = %Config{records_dir: records_dir, llm: []}
     {config, discovered_models} = add_providers_loop(config, [])
 
-    # Step 3: Pick the model for the built-in agent
     config =
       if discovered_models != [] do
         pick_initial_model(config, discovered_models)
@@ -90,7 +97,7 @@ defmodule Mix.Tasks.Egghead.Init do
 
   @doc """
   Runs the LLM add flow and returns `{updated_config, discovered_models}`.
-  Shared by `egghead init` and `egghead llm add`.
+  Shared by init and llm add.
   """
   def add_provider(config) do
     Widgets.header("Add LLM Provider")
@@ -127,7 +134,6 @@ defmodule Mix.Tasks.Egghead.Init do
         name: if(provider.id == "custom", do: "custom")
       }
 
-      # Verify — only add if verification succeeds
       if api_key do
         result =
           Widgets.spinner("Verifying #{provider.name}...", fn ->
@@ -137,7 +143,6 @@ defmodule Mix.Tasks.Egghead.Init do
         case result do
           {:ok, models} ->
             Widgets.success("#{provider.name} connected — #{length(models)} models available")
-            # Remove any existing entry for this provider, then add the new one
             cleaned = Enum.reject(config.llm, &(&1.provider == provider.id))
             {%{config | llm: cleaned ++ [entry]}, models}
 
@@ -179,11 +184,7 @@ defmodule Mix.Tasks.Egghead.Init do
         end
       )
 
-    if selected do
-      %{config | default_model: selected.full_id}
-    else
-      config
-    end
+    if selected, do: %{config | default_model: selected.full_id}, else: config
   end
 
   defp verify_provider(entry) do
@@ -212,4 +213,6 @@ defmodule Mix.Tasks.Egghead.Init do
       {:ok, []}
     end
   end
+
+  defp return, do: :ok
 end

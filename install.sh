@@ -90,6 +90,32 @@ case ":$PATH:" in
     ;;
 esac
 
+# --- Linux runtime dependency check ---
+#
+# Egghead watches the records directory for changes so the index stays
+# in sync with the files (edits from $EDITOR, writes from MCP-connected
+# agents, git pulls, Obsidian, etc). On Linux this needs `inotifywait`
+# from inotify-tools. macOS has FSEvents built in — nothing to install.
+
+if [ "$OS" = "linux" ] && ! command -v inotifywait >/dev/null 2>&1; then
+  echo ""
+  echo "Warning: \`inotifywait\` not found. Egghead watches your records"
+  echo "directory so it can re-index when files change. Without it, you'll"
+  echo "have to restart egghead to pick up edits made outside it."
+  echo ""
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "  sudo apt-get install inotify-tools"
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "  sudo dnf install inotify-tools"
+  elif command -v pacman >/dev/null 2>&1; then
+    echo "  sudo pacman -S inotify-tools"
+  elif command -v zypper >/dev/null 2>&1; then
+    echo "  sudo zypper install inotify-tools"
+  else
+    echo "  Install inotify-tools using your distro's package manager."
+  fi
+fi
+
 echo ""
 echo "Get started:"
 echo "  egghead init    # First-time setup"

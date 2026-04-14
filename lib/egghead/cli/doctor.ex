@@ -22,6 +22,7 @@ defmodule Egghead.CLI.Doctor do
         - NIF/OpenTUI binary exists for this platform
         - Web port is available
         - Log file is writable
+        - inotify-tools available (Linux only)
         - Each LLM provider is reachable
 
       FLAGS
@@ -41,14 +42,15 @@ defmodule Egghead.CLI.Doctor do
     IO.puts("\e[1mEgghead Doctor\e[0m")
     IO.puts("")
 
-    checks = [
-      {"Config file", &check_config/0},
-      {"Records directory", &check_records_dir/0},
-      {"SQLite index", &check_index/0},
-      {"NIF binary", &check_nif/0},
-      {"Web port", &check_port/0},
-      {"Log file", &check_log_file/0}
-    ]
+    checks =
+      [
+        {"Config file", &check_config/0},
+        {"Records directory", &check_records_dir/0},
+        {"SQLite index", &check_index/0},
+        {"NIF binary", &check_nif/0},
+        {"Web port", &check_port/0},
+        {"Log file", &check_log_file/0}
+      ] ++ linux_only([{"inotify-tools", &check_inotify/0}])
 
     results =
       Enum.map(checks, fn {name, check_fn} ->
@@ -146,6 +148,31 @@ defmodule Egghead.CLI.Doctor do
 
       {:error, reason} ->
         {:error, "port #{port}: #{inspect(reason)}"}
+    end
+  end
+
+  # Egghead's record store uses `file_system`, which on Linux shells out
+  # to `inotifywait` from inotify-tools. Without it, edits to records
+  # made outside egghead (editor saves, MCP writes, git pull, Obsidian)
+  # don't trigger reindex until the next process restart.
+  defp check_inotify do
+    case System.find_executable("inotifywait") do
+      nil ->
+        {:error,
+         "inotifywait not found — file watcher disabled. " <>
+           "Install: sudo apt-get install inotify-tools (Debian/Ubuntu) " <>
+           "| sudo dnf install inotify-tools (Fedora) " <>
+           "| sudo pacman -S inotify-tools (Arch)"}
+
+      _path ->
+        :ok
+    end
+  end
+
+  defp linux_only(checks) do
+    case :os.type() do
+      {:unix, :linux} -> checks
+      _ -> []
     end
   end
 

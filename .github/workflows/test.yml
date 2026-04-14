@@ -22,6 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `file_system` shells out to inotifywait on Linux. The Ubuntu
+      # GH runner doesn't include it by default.
+      - name: Install inotify-tools
+        run: sudo apt-get update && sudo apt-get install -y inotify-tools
+
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}

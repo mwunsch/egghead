@@ -29,11 +29,12 @@ defmodule Egghead.RecordStore do
 
     @type t :: %__MODULE__{
             records_dir: String.t(),
+            skills_dir: String.t() | nil,
             watcher_pid: pid() | nil,
             index: GenServer.server()
           }
 
-    defstruct records_dir: nil, watcher_pid: nil, index: Index
+    defstruct records_dir: nil, skills_dir: nil, watcher_pid: nil, index: Index
   end
 
   # --- Public API ---
@@ -157,12 +158,24 @@ defmodule Egghead.RecordStore do
     File.mkdir_p!(records_dir)
     # Resolve symlinks so file watcher paths match (e.g. /tmp -> /private/tmp on macOS)
     records_dir = records_dir |> Path.expand() |> resolve_symlinks()
+
+    skills_dir =
+      case Keyword.get(opts, :skills_dir) do
+        nil -> nil
+        dir -> dir |> Path.expand() |> resolve_symlinks()
+      end
+
     index = Keyword.get(opts, :index, Index)
     watch? = Keyword.get(opts, :watch, true)
 
+    watch_dirs =
+      [records_dir, skills_dir]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(&File.dir?/1)
+
     watcher_pid =
       if watch? do
-        case FileSystem.start_link(dirs: [records_dir]) do
+        case FileSystem.start_link(dirs: watch_dirs) do
           {:ok, pid} ->
             FileSystem.subscribe(pid)
             pid
@@ -174,12 +187,14 @@ defmodule Egghead.RecordStore do
 
     state = %State{
       records_dir: records_dir,
+      skills_dir: skills_dir,
       watcher_pid: watcher_pid,
       index: index
     }
 
     # Build the index from files
     Index.rebuild(index, records_dir)
+    if skills_dir, do: scan_skills_dir(state)
 
     {:ok, state}
   end
@@ -256,8 +271,22 @@ defmodule Egghead.RecordStore do
 
   def handle_call({:get_record, id}, _from, state) do
     case Index.get_record_meta(state.index, id) do
-      {:ok, meta} -> {:reply, hydrate(meta.source_path, state.records_dir), state}
-      {:error, :not_found} -> {:reply, {:error, :not_found}, state}
+      {:ok, meta} ->
+        # Preserve the id + class from the index rather than letting the
+        # parser re-derive. Skills have normalized ids (e.g. "skills/foo"
+        # from a SKILL.md at path `~/.agents/skills/foo/SKILL.md`) that
+        # the parser would otherwise re-derive incorrectly.
+        case hydrate(meta.source_path, state.records_dir) do
+          {:ok, record} ->
+            {:reply,
+             {:ok, %{record | id: meta.id, class: Egghead.Record.parse_class(meta.class)}}, state}
+
+          other ->
+            {:reply, other, state}
+        end
+
+      {:error, :not_found} ->
+        {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -296,8 +325,15 @@ defmodule Egghead.RecordStore do
 
   @impl true
   def handle_info({:file_event, _pid, {path, _events}}, state) do
-    if record_file?(path) do
-      handle_file_change(state, path)
+    cond do
+      in_dir?(path, state.skills_dir) and skill_manifest?(path) ->
+        handle_skill_change(state, path)
+
+      in_dir?(path, state.records_dir) and record_file?(path) ->
+        handle_file_change(state, path)
+
+      true ->
+        :ok
     end
 
     {:noreply, state}
@@ -315,6 +351,7 @@ defmodule Egghead.RecordStore do
         {:ok, content} ->
           case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
             {:ok, record} ->
+              record = maybe_promote_to_skill(record)
               Index.upsert_record(state.index, record)
               maybe_restart_agent(record)
               broadcast_record_change(record.id)
@@ -332,6 +369,84 @@ defmodule Egghead.RecordStore do
       sync_agents_async()
     end
   end
+
+  # Source 3 of the skill vocabulary: records in records_dir matching
+  # the `skills/<name>[/SKILL]` path convention are auto-classified to
+  # `class: skill` via `Egghead.Skill.auto_classify/1`. Same promotion
+  # is applied by `Egghead.Index.do_rebuild/2` so initial scans behave
+  # identically to live file events.
+  defp maybe_promote_to_skill(record), do: Egghead.Skill.auto_classify(record)
+
+  # Skills live outside the record store (SKILLS_DIR) but are exposed
+  # to agents as `class: skill` virtual records via the same index.
+  # Id is derived from the path relative to skills_dir, prefixed with
+  # `skills/` and stripped of the conventional `/SKILL` suffix.
+  defp handle_skill_change(state, path) do
+    if File.exists?(path) do
+      case File.read(path) do
+        {:ok, content} ->
+          case Parser.parse(content, source_path: path) do
+            {:ok, record} ->
+              skill_record = %{
+                record
+                | id: skill_id_for(path, state.skills_dir),
+                  class: :skill
+              }
+
+              Index.upsert_record(state.index, skill_record)
+              broadcast_record_change(skill_record.id)
+
+            {:error, _} ->
+              :skip
+          end
+
+        {:error, _} ->
+          :skip
+      end
+    else
+      Index.delete_by_path(state.index, path)
+      broadcast_record_change(nil)
+    end
+  end
+
+  defp in_dir?(_path, nil), do: false
+
+  defp in_dir?(path, dir) do
+    expanded_path = Path.expand(path)
+    expanded_dir = Path.expand(dir)
+    String.starts_with?(expanded_path, expanded_dir <> "/") or expanded_path == expanded_dir
+  end
+
+  defp skill_id_for(path, skills_dir) do
+    rel =
+      path
+      |> Path.expand()
+      |> Path.relative_to(Path.expand(skills_dir))
+      |> Path.rootname()
+
+    name =
+      cond do
+        String.ends_with?(rel, "/SKILL") -> String.replace_suffix(rel, "/SKILL", "")
+        true -> rel
+      end
+
+    "skills/" <> name
+  end
+
+  defp scan_skills_dir(%State{skills_dir: dir} = state) when is_binary(dir) do
+    if File.dir?(dir) do
+      # Only pick up files that match the Agent Skills convention —
+      # `<skills_dir>/<name>/SKILL.md` (one skill per directory). Flat
+      # README.md / CLAUDE.md / other helper docs in a skill dir are
+      # ignored; they're reference material, not skill definitions.
+      dir
+      |> Path.join("*/SKILL.md")
+      |> Path.wildcard()
+      |> Enum.each(&handle_skill_change(state, &1))
+    end
+  end
+
+  defp scan_skills_dir(_), do: :ok
 
   @doc "PubSub topic for record change notifications."
   def records_topic, do: "records:changes"
@@ -359,6 +474,11 @@ defmodule Egghead.RecordStore do
       Task.start(fn -> Egghead.Agent.Supervisor.sync_agents() end)
     end
   end
+
+  # A skill manifest in SKILLS_DIR is specifically a `SKILL.md` file —
+  # `README.md`, `CLAUDE.md`, and other helper docs in a skill dir are
+  # reference material, not skill definitions.
+  defp skill_manifest?(path), do: Path.basename(path) == "SKILL.md"
 
   defp record_file?(path) do
     ext = Path.extname(path)

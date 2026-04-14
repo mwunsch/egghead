@@ -977,6 +977,56 @@ defmodule EggheadTest do
       assert RecordStore.search_by_class(name, :deliberation) == []
     end
 
+    test "skill discovery — three sources unified under class: skill", context do
+      records_dir = tmp_dir(context)
+      skills_dir = Path.join(records_dir, "_skills_dir_source")
+      File.mkdir_p!(skills_dir)
+
+      # Source 1: SKILLS_DIR drop-in
+      File.mkdir_p!(Path.join(skills_dir, "websearch"))
+
+      File.write!(Path.join([skills_dir, "websearch", "SKILL.md"]), """
+      ---
+      name: websearch
+      description: Search the web.
+      ---
+
+      Use the web_search tool.
+      """)
+
+      # Source 2: explicit class: skill in records_dir
+      write_file(records_dir, "notes.md", """
+      ---
+      id: my_explicit_skill
+      class: skill
+      description: An explicit skill.
+      ---
+
+      Do the explicit thing.
+      """)
+
+      # Source 3: path convention skills/<name>/SKILL.md in records_dir
+      File.mkdir_p!(Path.join([records_dir, "skills", "pdf"]))
+
+      File.write!(Path.join([records_dir, "skills", "pdf", "SKILL.md"]), """
+      ---
+      description: Process PDFs.
+      ---
+
+      PDF instructions.
+      """)
+
+      {_pid, name} = start_store(records_dir, skills_dir: skills_dir)
+
+      skills = RecordStore.search_by_class(name, :skill)
+      ids = Enum.map(skills, & &1.id) |> MapSet.new()
+
+      assert MapSet.member?(ids, "skills/websearch")
+      assert MapSet.member?(ids, "my_explicit_skill")
+      # Path-convention skills have the /SKILL suffix stripped from their id.
+      assert MapSet.member?(ids, "skills/pdf")
+    end
+
     test "find_links traverses one level", context do
       dir = tmp_dir(context)
 

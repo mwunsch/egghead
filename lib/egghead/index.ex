@@ -517,7 +517,7 @@ defmodule Egghead.Index do
       case File.read(path) do
         {:ok, content} ->
           case Parser.parse(content, source_path: path, records_dir: records_dir) do
-            {:ok, record} -> do_upsert(conn, record)
+            {:ok, record} -> do_upsert(conn, Egghead.Skill.auto_classify(record))
             {:error, _} -> :skip
           end
 

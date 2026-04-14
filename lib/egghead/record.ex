@@ -66,7 +66,7 @@ defmodule Egghead.Record do
     source_path: nil
   ]
 
-  @valid_classes ~w(durable inbox deliberation agent)a
+  @valid_classes ~w(durable inbox deliberation agent skill)a
 
   @doc """
   Returns the list of valid record classes.

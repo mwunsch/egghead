@@ -45,11 +45,15 @@ defmodule Egghead.Application do
         records_dir =
           Application.get_env(:egghead, :records_dir, Path.expand("~/.egghead"))
 
+        skills_dir =
+          Application.get_env(:egghead, :skills_dir, Path.expand("~/.agents/skills"))
+
         db_path = Path.join(records_dir, ".egghead/index.db")
 
         [
           {Phoenix.PubSub, name: Egghead.PubSub},
-          {Egghead.RecordSupervisor, records_dir: records_dir, db_path: db_path},
+          {Egghead.RecordSupervisor,
+           records_dir: records_dir, skills_dir: skills_dir, db_path: db_path},
           {Egghead.Agent.LayerSupervisor, records_dir: records_dir}
         ] ++ web_children()
       else
@@ -147,6 +151,7 @@ defmodule Egghead.Application do
     case Egghead.Config.load() do
       {:ok, config} ->
         Application.put_env(:egghead, :records_dir, Egghead.Config.records_dir(config))
+        Application.put_env(:egghead, :skills_dir, Egghead.Config.skills_dir(config))
 
         bind =
           case config.web.bind do

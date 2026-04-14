@@ -31,6 +31,7 @@ defmodule Egghead.Config do
   """
 
   defstruct records_dir: "~/.egghead",
+            skills_dir: "~/.agents/skills",
             llm: [],
             default_model: nil,
             web: %{port: 4000, host: "localhost", bind: "127.0.0.1"}
@@ -44,6 +45,7 @@ defmodule Egghead.Config do
 
   @type t :: %__MODULE__{
           records_dir: String.t(),
+          skills_dir: String.t(),
           llm: [llm_entry()],
           default_model: String.t() | nil,
           web: %{port: non_neg_integer(), host: String.t(), bind: String.t()}
@@ -173,6 +175,9 @@ defmodule Egghead.Config do
   @doc "Expanded records directory path."
   def records_dir(%__MODULE__{records_dir: dir}), do: Path.expand(dir)
 
+  @doc "Expanded skills directory path (the SKILLS_DIR drop zone)."
+  def skills_dir(%__MODULE__{skills_dir: dir}), do: Path.expand(dir)
+
   @doc "Web port."
   def port(%__MODULE__{web: %{port: port}}), do: port
 
@@ -236,6 +241,7 @@ defmodule Egghead.Config do
   defp from_map(data) do
     %__MODULE__{
       records_dir: data["records_dir"] || "~/.egghead",
+      skills_dir: data["skills_dir"] || "~/.agents/skills",
       llm: parse_llm(data["llm"]),
       default_model: data["default_model"],
       web: parse_web(data["web"])
@@ -287,6 +293,7 @@ defmodule Egghead.Config do
   defp to_yaml(%__MODULE__{} = config) do
     sections = [
       emit_field("records_dir", config.records_dir),
+      emit_field("skills_dir", config.skills_dir),
       emit_llm(config.llm),
       emit_field("default_model", config.default_model),
       emit_web(config.web)

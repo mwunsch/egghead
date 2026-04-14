@@ -54,6 +54,9 @@ defmodule Egghead.CLI.Serve do
     port = get_port()
     IO.puts("Egghead running on http://localhost:#{port}")
     IO.puts("MCP endpoint at http://localhost:#{port}/mcp")
+    IO.puts("")
+    IO.puts("Stop the server with Ctrl+C then 'a' (BEAM break menu),")
+    IO.puts("or send SIGTERM: kill #{System.pid()}")
     Process.sleep(:infinity)
   end
 

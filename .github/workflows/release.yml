@@ -57,10 +57,24 @@ jobs:
             _build
           key: ${{ runner.os }}-mix-prod-${{ hashFiles('**/mix.lock') }}
 
-      - run: mix deps.get
+      - env:
+          MIX_ENV: prod
+        run: mix deps.get
+
+      - env:
+          MIX_ENV: prod
+        run: mix deps.compile
+
+      - name: Fingerprint static assets
+        env:
+          MIX_ENV: prod
+        run: mix phx.digest
 
       - name: Build release
-        run: BURRITO_TARGET=${{ matrix.target }} mix release
+        env:
+          MIX_ENV: prod
+          BURRITO_TARGET: ${{ matrix.target }}
+        run: mix release
 
       - name: Package
         run: |

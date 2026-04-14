@@ -156,18 +156,46 @@ defmodule Egghead.MixProject do
   # decide which libopentui asset to download.
   @zig_target :host
 
+  # CalVer + short git SHA. Computed at compile time:
+  #   2026.4.14+61d171a  (release build from a commit)
+  #   2026.4.14+dirty    (release build from a dirty tree)
+  #   0.0.0+nogit        (no git available — shouldn't happen)
+  #
+  # Every commit produces a new version string, which is exactly what
+  # Burrito needs: it keys its on-disk unpack cache on the version,
+  # so a fresh version forces a clean unpack. Zero-padding is avoided
+  # (2026.4.14, not 2026.04.14) so Version.parse/1 still accepts it.
+  @version (case System.cmd("git", ["rev-parse", "--short=7", "HEAD"], stderr_to_stdout: true) do
+              {sha, 0} ->
+                {out, _} = System.cmd("git", ["status", "--porcelain"], stderr_to_stdout: true)
+                suffix = if String.trim(out) == "", do: String.trim(sha), else: "dirty"
+                today = Date.utc_today()
+                "#{today.year}.#{today.month}.#{today.day}+#{suffix}"
+
+              _ ->
+                "0.0.0+nogit"
+            end)
+
   def project do
     [
       app: :egghead,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       compilers: [:opentui_fetch, :build_dot_zig] ++ Mix.compilers(),
       zig_target: @zig_target,
-      # Force :debug build mode to avoid build_dot_zig 0.7.0 passing
-      # -Doptimize=ReleaseSafe (broken with bundled Zig 0.15.1).
-      # Our build.zig defaults to ReleaseSafe via preferred_optimize_mode.
+      # `:debug` here tells build_dot_zig *not* to pass -Doptimize at all.
+      # That's what we want: our build.zig sets
+      #   preferred_optimize_mode = .ReleaseSafe
+      # so the actual build mode is still ReleaseSafe.
+      #
+      # Why this dance: build_dot_zig 0.7.0 emits -Doptimize=ReleaseSafe
+      # (old Zig API), but Zig 0.15.1 with preferred_optimize_mode expects
+      # -Drelease as a boolean flag instead. Passing the old flag makes
+      # `zig build` reject it as "invalid option." Once build_dot_zig
+      # updates for Zig 0.15+, this whole workaround goes away and we
+      # can remove :zig_build_mode (or set it to :release_safe explicitly).
       zig_build_mode: :debug,
       zig_extra_options: [
         opentui_dir: Egghead.OpenTUIPaths.lib_dir(@zig_target)

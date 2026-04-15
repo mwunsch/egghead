@@ -532,9 +532,9 @@ defmodule Egghead.Chat.Room do
       attrs = %{
         "id" => record_id,
         "title" => "Chat: #{state.id}",
-        "tags" => ["chat", "deliberation"],
+        "tags" => ["chat", "transcript"],
         "links" => agent_ids,
-        "class" => "deliberation",
+        "class" => "transcript",
         "body" => body
       }
 

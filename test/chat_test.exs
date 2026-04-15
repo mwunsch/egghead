@@ -155,7 +155,7 @@ defmodule Egghead.ChatTest do
   # --- Room transcript persistence ---
 
   describe "Room transcript persistence" do
-    test "save_transcript creates a deliberation record" do
+    test "save_transcript creates a transcript record" do
       # Need the full store running for this
       if Process.whereis(Egghead.RecordStore) do
         room = start_room("persist-test-#{:erlang.unique_integer([:positive])}")
@@ -165,6 +165,11 @@ defmodule Egghead.ChatTest do
 
         assert {:ok, record_id} = Room.save_transcript(room)
         assert record_id =~ "chat/"
+
+        {:ok, record} = Egghead.get_record(record_id)
+        assert record.class == :transcript
+        assert "transcript" in record.tags
+        assert "chat" in record.tags
       end
     end
   end

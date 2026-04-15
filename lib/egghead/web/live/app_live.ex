@@ -32,7 +32,7 @@ defmodule Egghead.Web.AppLive do
         query: "",
         all: all,
         filtered: all,
-        class_filter: MapSet.new([:durable, :inbox, :deliberation, :agent]),
+        class_filter: MapSet.new([:durable, :inbox, :deliberation, :transcript, :agent]),
         class_dropdown_open: false,
         nav_view: :search,
         tree_open: MapSet.new(),
@@ -155,7 +155,7 @@ defmodule Egghead.Web.AppLive do
   def handle_event("class_select_all", _, socket) do
     {:noreply,
      socket
-     |> assign(class_filter: MapSet.new([:durable, :inbox, :deliberation, :agent]))
+     |> assign(class_filter: MapSet.new([:durable, :inbox, :deliberation, :transcript, :agent]))
      |> apply_filter()}
   end
 
@@ -1112,7 +1112,10 @@ defmodule Egghead.Web.AppLive do
                     <button class="dropdown-link" phx-click="class_select_all">All</button>
                     <button class="dropdown-link" phx-click="class_select_none">None</button>
                   </div>
-                  <label :for={c <- [:durable, :agent, :deliberation, :inbox]} class="class-option">
+                  <label
+                    :for={c <- [:durable, :agent, :deliberation, :transcript, :inbox]}
+                    class="class-option"
+                  >
                     <input
                       type="checkbox"
                       checked={MapSet.member?(@class_filter, c)}

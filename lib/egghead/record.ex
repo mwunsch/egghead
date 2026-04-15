@@ -13,7 +13,7 @@ defmodule Egghead.Record do
   - `:deliberation` — audit trails of agent deliberation. Append-only.
   """
 
-  @type class :: :durable | :inbox | :deliberation | :agent
+  @type class :: :durable | :inbox | :deliberation | :transcript | :agent | :skill
 
   @type wikilink :: %{
           target: String.t(),
@@ -66,7 +66,7 @@ defmodule Egghead.Record do
     source_path: nil
   ]
 
-  @valid_classes ~w(durable inbox deliberation agent skill)a
+  @valid_classes ~w(durable inbox deliberation transcript agent skill)a
 
   @doc """
   Returns the list of valid record classes.

@@ -301,7 +301,7 @@ defmodule Egghead.TUI.Chat.View do
   defp entry_to_rows(%Entry{kind: :system} = e, _show_nick?, body_w, full_w, active_target) do
     nick = gutter_symbol("—")
     md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
-    wrap_markdown(nick, md_rows, full_w, nil, active_target)
+    wrap_markdown(nick, md_rows, full_w, nil, active_target, Colors.dim())
   end
 
   defp entry_to_rows(%Entry{kind: :handoff} = e, _show_nick?, body_w, full_w, active_target) do
@@ -384,7 +384,14 @@ defmodule Egghead.TUI.Chat.View do
   # span row from `Markdown.render/2` becomes an hbox: gutter +
   # separator + styled span leaves. The first row gets the nick;
   # continuation rows get blank gutter.
-  defp wrap_markdown({nick_str, dot_color, has_nick?}, md_rows, full_w, bg, active_target) do
+  defp wrap_markdown(
+         {nick_str, dot_color, has_nick?},
+         md_rows,
+         full_w,
+         bg,
+         active_target,
+         fg_override \\ nil
+       ) do
     bg_opts = if(bg, do: [bg: bg], else: [])
     body_w = full_w - @nick_gutter - 1
 
@@ -402,7 +409,7 @@ defmodule Egghead.TUI.Chat.View do
 
       span_leaves =
         Enum.map(span_row, fn span ->
-          fg = span.fg || Colors.white()
+          fg = fg_override || span.fg || Colors.white()
           highlight? = active_target != nil and span_is_wikilink?(span, active_target)
 
           opts =

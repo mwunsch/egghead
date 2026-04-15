@@ -25,6 +25,7 @@ defmodule Egghead.TUI.Chat.Update do
   # are not shown in the dropdown but are accepted on dispatch.
   @chat_command_list [
     %{name: "save", description: "Save transcript as a record"},
+    %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
     %{name: "leave", description: "Return to records (F1)"},
@@ -38,6 +39,7 @@ defmodule Egghead.TUI.Chat.Update do
     "leave" => :cmd_leave,
     "part" => :cmd_leave,
     "save" => :cmd_save,
+    "copy" => :cmd_copy,
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
     "help" => :cmd_help
@@ -700,6 +702,27 @@ defmodule Egghead.TUI.Chat.Update do
     {Model.clear_input(model), cmd}
   end
 
+  defp apply_command(:cmd_copy, _arg, model) do
+    transcript = Egghead.Chat.Room.get_transcript(model.room_id)
+
+    {note, _} =
+      case transcript do
+        [] ->
+          {"Transcript is empty", :ok}
+
+        msgs ->
+          body = Egghead.Chat.Room.format_transcript(msgs)
+          {"Transcript copied to clipboard", Egghead.OpenTUI.Clipboard.copy(body)}
+      end
+
+    model =
+      model
+      |> Model.clear_input()
+      |> Model.append_entry(Entry.system(note))
+
+    {model, :none}
+  end
+
   defp apply_command(:cmd_continue, _arg, model) do
     room_id = model.room_id
 
@@ -754,7 +777,7 @@ defmodule Egghead.TUI.Chat.Update do
   defp apply_command(:cmd_help, _arg, model) do
     help_text = """
     Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
-    Commands: /save /continue /handoff <agent> /leave /help /quit
+    Commands: /save /copy /continue /handoff <agent> /leave /help /quit
     Navigation: F1 records │ F2 chat │ Esc dismiss
     Copy: hold Shift + drag to select text\
     """

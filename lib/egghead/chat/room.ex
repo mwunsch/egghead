@@ -425,26 +425,34 @@ defmodule Egghead.Chat.Room do
     end
   end
 
+  @doc """
+  Render a transcript (list of messages as returned by
+  `get_transcript/1`) as the canonical markdown body shared by
+  `/save` (persisted as a deliberation record) and `/copy`
+  (copied to the clipboard).
+  """
+  @spec format_transcript([map()]) :: String.t()
+  def format_transcript(transcript) when is_list(transcript) do
+    Enum.map_join(transcript, "\n\n", fn msg ->
+      sender_label =
+        case msg.sender do
+          %{type: :user, name: name} -> "**#{name}**"
+          %{type: :agent, name: name, id: id} -> "**#{name}** (`#{id}`)"
+          _ -> "**unknown**"
+        end
+
+      timestamp = DateTime.to_iso8601(msg.timestamp)
+      "#{sender_label} — #{timestamp}\n\n#{msg.content}"
+    end)
+  end
+
   defp persist_transcript(state) do
     if state.transcript == [] do
       {:error, :empty_transcript}
     else
       record_id = "chat/#{state.id}"
 
-      # Build markdown body from transcript
-      body =
-        state.transcript
-        |> Enum.map_join("\n\n", fn msg ->
-          sender_label =
-            case msg.sender do
-              %{type: :user, name: name} -> "**#{name}**"
-              %{type: :agent, name: name, id: id} -> "**#{name}** (`#{id}`)"
-              _ -> "**unknown**"
-            end
-
-          timestamp = DateTime.to_iso8601(msg.timestamp)
-          "#{sender_label} — #{timestamp}\n\n#{msg.content}"
-        end)
+      body = format_transcript(state.transcript)
 
       # Collect all agent ids and mentioned record ids
       agent_ids =

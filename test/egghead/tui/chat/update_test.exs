@@ -148,20 +148,32 @@ defmodule Egghead.TUI.Chat.UpdateTest do
              ] = m.transcript
     end
 
-    test "agent_passed clears the stream without committing partial text" do
+    test "agent_passed clears the stream and appends a /me action entry" do
       m = model()
 
       {m, :none} =
         Update.update(
-          {:room_event, {:agent_streaming, "default", "agents/scout", "[PA"}},
+          {:room_event, {:agent_streaming, "default", "agents/scout", "/pa"}},
           m
         )
 
       {m, :none} =
         Update.update({:room_event, {:agent_passed, "agents/scout"}}, m)
 
+      # Partial streamed text is dropped (never committed on /pass) ...
       assert m.streams == %{}
-      assert m.transcript == []
+
+      # ... and a single atmospheric action entry renders in its place,
+      # with flavor text drawn from PassActions.
+      assert [
+               %Egghead.TUI.Chat.Entry{
+                 kind: :action,
+                 sender_id: "agents/scout",
+                 text: flavor
+               }
+             ] = m.transcript
+
+      assert flavor in Egghead.Chat.PassActions.all()
     end
 
     test "budget_exhausted sets a status flash; continued clears it" do

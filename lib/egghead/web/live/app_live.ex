@@ -326,7 +326,11 @@ defmodule Egghead.Web.AppLive do
   def handle_info({:agents_activated, _count}, socket), do: {:noreply, socket}
 
   def handle_info({:agent_passed, agent_id}, socket) do
-    {:noreply, drop_stream(socket, agent_id)}
+    display = agent_display_name(agent_id)
+    seed = "#{agent_id}:#{System.os_time(:second)}"
+    flavor = Egghead.Chat.PassActions.pick(seed)
+    entry = Egghead.TUI.Chat.Entry.action(agent_id, display, flavor)
+    {:noreply, socket |> drop_stream(agent_id) |> append_entry(entry)}
   end
 
   def handle_info(:budget_exhausted, socket) do

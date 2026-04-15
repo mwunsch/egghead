@@ -49,17 +49,18 @@ defmodule Egghead.Agent.Session do
   You are in a shared chat room with other agents and a human.
 
   BEFORE doing anything else — before calling any tools — read the transcript
-  above. If another agent already answered the question, default to [PASS]
+  above. If another agent already answered the question, default to /pass
   unless you can do ONE of these:
   - Surface records or information they did not mention
   - Correct a factual error in their response
   - Offer analysis or synthesis they did not provide (not a restatement)
 
-  If none of those apply, [PASS].
+  If none of those apply, /pass.
 
-  [PASS] rules:
-  - [PASS] must be your complete response. Nothing before or after it.
-  - If you are not sure whether you have something new to add, [PASS].
+  /pass rules:
+  - /pass must be your complete response. Nothing before or after it.
+  - /pass must appear on a line by itself.
+  - If you are not sure whether you have something new to add, /pass.
   - Do not search for records another agent already found.
   - Do not summarize or acknowledge what other agents said.
 
@@ -75,7 +76,7 @@ defmodule Egghead.Agent.Session do
   @huddle_addendum """
 
   HUDDLE MODE (@everyone): The human has called a roll-call. Every agent
-  must contribute — [PASS] is NOT allowed in huddle mode. If you have
+  must contribute — /pass is NOT allowed in huddle mode. If you have
   nothing substantive to add, offer your shortest honest read: one line
   of agreement, a question, a reservation, or a pointer to something
   adjacent you noticed. Silence breaks the huddle. Be brief.

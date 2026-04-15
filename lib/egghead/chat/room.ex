@@ -93,6 +93,21 @@ defmodule Egghead.Chat.Room do
   end
 
   @doc """
+  Record that an agent yielded its turn via `/pass`. Commits a `/pass`
+  message to the transcript (so peers reading the transcript see the
+  explicit yield and rehydrate is deterministic) and broadcasts
+  `{:agent_passed, agent_id}` for UI consumers to render as an action
+  line. Does NOT fire `:agent_message` — callers rendering the yield
+  as an atmospheric action should subscribe to `:agent_passed`.
+  """
+  @spec agent_pass(String.t(), String.t()) :: :ok
+  def agent_pass(room_id, agent_id) do
+    name = agent_id |> String.split("/") |> List.last() |> String.capitalize()
+    sender = %Sender{type: :agent, id: agent_id, name: name}
+    GenServer.call(room_name(room_id), {:agent_pass, sender})
+  end
+
+  @doc """
   Update an agent's in-progress (streaming) text. Provisional — replaced
   by `agent_respond` when the agent finishes.
   """
@@ -110,7 +125,7 @@ defmodule Egghead.Chat.Room do
   end
 
   @doc """
-  Clear an agent's in-progress text (e.g., on [PASS]).
+  Clear an agent's in-progress text (e.g., on `/pass`).
   """
   @spec clear_in_progress(String.t(), String.t()) :: :ok
   def clear_in_progress(room_id, agent_id) do
@@ -236,6 +251,31 @@ defmodule Egghead.Chat.Room do
     broadcast(state.id, {:user_message, msg})
 
     reply_with_timeout(:ok, state)
+  end
+
+  def handle_call({:agent_pass, %Sender{} = sender}, _from, state) do
+    msg = %Message{
+      id: generate_id(),
+      room_id: state.id,
+      sender: sender,
+      content: "/pass",
+      timestamp: DateTime.utc_now(),
+      mentions: [],
+      usage: nil
+    }
+
+    state = %{
+      state
+      | transcript: state.transcript ++ [msg],
+        current_round_responded: MapSet.put(state.current_round_responded, sender.id),
+        in_progress: Map.delete(state.in_progress, sender.id)
+    }
+
+    # Fire ONLY :agent_passed, not :agent_message — UI renders this as an
+    # atmospheric action line via PassActions, not a regular agent message.
+    broadcast(state.id, {:agent_passed, sender.id})
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:agent_respond, %Sender{} = sender, content, usage}, _from, state) do

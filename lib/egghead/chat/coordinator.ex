@@ -406,7 +406,7 @@ defmodule Egghead.Chat.Coordinator do
     # need access to the unbuffered token stream.
     #
     # We still need a per-call cumulative accumulator so we can push
-    # the running total to Room.streaming_update (read by the [PASS]
+    # the running total to Room.streaming_update (read by the /pass
     # rescue path below and by tools that ask "what has this agent
     # said so far?"). This MUST live in its own process: on_chunk runs
     # inside the Session GenServer (where Req.post executes), not in
@@ -417,7 +417,7 @@ defmodule Egghead.Chat.Coordinator do
 
     # Belt-and-suspenders: ensure no stale in_progress text from a
     # prior call lingers when this turn begins. Without this, even a
-    # transient bug in the accumulator could cause the [PASS] rescue
+    # transient bug in the accumulator could cause the /pass rescue
     # path below to commit text from a previous turn.
     Room.clear_in_progress(room_id, agent_id)
 
@@ -465,18 +465,21 @@ defmodule Egghead.Chat.Coordinator do
     case result do
       {:ok, %{text: text, usage: usage}} ->
         if pass_response?(text) do
-          # Check if the agent streamed substantive content to the room's
-          # in-progress buffer during tool rounds. on_chunk runs in the
-          # Session process so we query the Room instead of process dict.
+          # The agent's final text is a pass. But an agent may have streamed
+          # substantive content DURING tool rounds before deciding to yield
+          # — in that case we commit the substantive part rather than
+          # throwing it away. When the in-progress buffer contains only the
+          # pass token itself, it's a pure pass with no content to rescue.
           in_progress = Room.get_in_progress(room_id, agent_id)
 
-          if in_progress != nil and String.trim(in_progress) != "" do
-            Logger.debug("Coordinator: #{agent_id} streamed content, committing despite [PASS]")
+          if has_substantive_content?(in_progress) do
+            Logger.debug("Coordinator: #{agent_id} streamed content, committing despite /pass")
             Room.agent_respond(room_id, agent_id, String.trim(in_progress), usage: usage)
           else
             Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
-            Room.clear_in_progress(room_id, agent_id)
-            broadcast_pass(room_id, agent_id)
+            # Room.agent_pass commits `/pass` to transcript AND broadcasts
+            # :agent_passed (in-progress is cleared inside the handler).
+            Room.agent_pass(room_id, agent_id)
           end
         else
           Room.agent_respond(room_id, agent_id, text, usage: usage)
@@ -489,12 +492,27 @@ defmodule Egghead.Chat.Coordinator do
     end
   end
 
-  # [PASS] counts as a pass only if it appears on a line by itself (trimmed).
-  # An agent discussing "[PASS]" as a concept in prose is not a pass.
+  # `/pass` counts as a pass only if it appears on a line by itself
+  # (trimmed). An agent discussing the token as a concept in prose is
+  # not a pass.
   defp pass_response?(text) do
     text
     |> String.split("\n")
-    |> Enum.any?(fn line -> String.trim(line) == "[PASS]" end)
+    |> Enum.any?(&pass_line?/1)
+  end
+
+  defp pass_line?(line), do: String.trim(line) == "/pass"
+
+  # Does the streamed in-progress buffer contain anything worth rescuing
+  # when the agent's final answer is a pass? Returns false for nil, empty,
+  # whitespace-only, or buffers whose non-blank lines are all pass tokens.
+  defp has_substantive_content?(nil), do: false
+
+  defp has_substantive_content?(text) when is_binary(text) do
+    text
+    |> String.split("\n")
+    |> Enum.reject(fn line -> String.trim(line) == "" end)
+    |> Enum.any?(fn line -> not pass_line?(line) end)
   end
 
   defp broadcast_activation(room_id, count) do

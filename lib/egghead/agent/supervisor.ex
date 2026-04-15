@@ -76,7 +76,7 @@ defmodule Egghead.Agent.Supervisor do
       to X", "what changed this week", "how many records have tag Y").
 
       If a question is outside your domain or already answered, respond with
-      [PASS].
+      /pass.
       """,
       source_path: nil
     }

@@ -256,10 +256,14 @@ defmodule Egghead.TUI.Chat.View do
         do: nick_cell(first_entry.sender_name, :agent, first_entry.sender_id),
         else: blank_nick()
 
+    # Each entry was committed on a `\n\n` paragraph boundary, so re-join
+    # with `\n\n` — not `\n`. Joining with a single newline lets CommonMark
+    # treat a following prose line as a lazy continuation of a preceding
+    # blockquote, which pipes the prose into the blockquote gutter.
     merged_text =
       entries_with_nicks
       |> Enum.map(fn {e, _} -> e.text end)
-      |> Enum.join("\n")
+      |> Enum.join("\n\n")
 
     md_rows = merged_text |> Markdown.render(body_w) |> trim_trailing_empty()
     wrap_markdown(nick, md_rows, full_w, nil, active_target)

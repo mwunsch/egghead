@@ -294,7 +294,7 @@ defmodule Egghead.Chat.Coordinator do
       try do
         Room.get_state(room_id).mode
       rescue
-        _ -> :staggered
+        _ -> :serial
       end
 
     if broadcast do

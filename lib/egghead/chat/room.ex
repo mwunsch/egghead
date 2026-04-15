@@ -52,7 +52,7 @@ defmodule Egghead.Chat.Room do
       # %{agent_id => %Message{}} — provisional streaming messages
       in_progress: %{},
       idle_timeout: nil,
-      mode: :staggered,
+      mode: :serial,
       status: :waiting
     ]
   end
@@ -198,7 +198,7 @@ defmodule Egghead.Chat.Room do
 
     Logger.info("Chat room started: #{id}")
 
-    mode = Keyword.get(opts, :mode, :staggered)
+    mode = Keyword.get(opts, :mode, :serial)
 
     state = %State{
       id: id,

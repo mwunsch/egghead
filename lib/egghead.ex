@@ -175,7 +175,7 @@ defmodule Egghead do
 
     round_budget = Keyword.get(opts, :round_budget, 5)
     idle_timeout = Keyword.get(opts, :idle_timeout, false)
-    mode = Keyword.get(opts, :mode, :staggered)
+    mode = Keyword.get(opts, :mode, :serial)
     is_default = Keyword.get(opts, :default, false)
 
     room_opts = [id: id, round_budget: round_budget, idle_timeout: idle_timeout, mode: mode]
@@ -261,8 +261,11 @@ defmodule Egghead do
   end
 
   @doc """
-  Sets the room's activation mode. `:staggered` (default) for overlapping
-  agent activity, `:serial` for strict turn-taking.
+  Sets the room's activation mode. `:serial` (default) for strict
+  turn-taking — each agent reads the transcript-so-far before deciding
+  to speak or `/pass`. `:staggered` is available as opt-in for overlapping
+  activity (next agent starts on the prior agent's first tool call or a
+  3s timeout), trading coordination quality for lower wall-clock latency.
   """
   @spec set_room_mode(String.t(), :staggered | :serial) :: :ok
   def set_room_mode(room_id \\ default_room(), mode) do

@@ -387,9 +387,17 @@ defmodule Egghead.Web.AppLive do
     {:noreply, append_entry(socket, entry)}
   end
 
-  def handle_info({:agent_handoff, _room_id, agent_id, _delib_id}, socket) do
-    entry = Egghead.TUI.Chat.Entry.system("#{agent_display_name(agent_id)} handed off context")
+  def handle_info({:agent_handoff, _room_id, agent_id, delib_id}, socket) do
+    entry =
+      Egghead.TUI.Chat.Entry.system(
+        "#{agent_display_name(agent_id)} handed off context → [[#{delib_id}]]"
+      )
+
     {:noreply, append_entry(socket, entry)}
+  end
+
+  def handle_info({:system_notice, text}, socket) do
+    {:noreply, append_entry(socket, Egghead.TUI.Chat.Entry.system(text))}
   end
 
   def handle_info({:agent_mentions, _room_id, _from, _to}, socket), do: {:noreply, socket}
@@ -729,20 +737,48 @@ defmodule Egghead.Web.AppLive do
       :cmd_handoff ->
         target = String.trim(arg)
 
-        if target == "" do
-          append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /handoff <agent>"))
-        else
-          if socket.assigns.room_id do
-            try do
-              Egghead.handoff(target)
-            catch
-              _, _ -> :ok
-            end
+        cond do
+          target == "" ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /handoff <agent>"))
 
-            append_entry(socket, Egghead.TUI.Chat.Entry.system("Handoff initiated for #{target}"))
-          else
+          socket.assigns.room_id == nil ->
+            append_entry(
+              socket,
+              Egghead.TUI.Chat.Entry.system("/handoff requires an active room")
+            )
+
+          true ->
+            room_id = socket.assigns.room_id
+
+            socket =
+              append_entry(
+                socket,
+                Egghead.TUI.Chat.Entry.system("Handoff initiated for #{target}…")
+              )
+
+            # Run in a Task so the LiveView stays responsive while
+            # the agent summarises. The Coordinator broadcasts
+            # `:agent_handoff` to the room topic on success — the
+            # existing handler renders that as a system line.
+            socket_pid = self()
+
+            Task.start(fn ->
+              case Egghead.handoff(target, room_id: room_id) do
+                {:ok, _delib_id} ->
+                  :ok
+
+                {:ok, _delib_id, _response} ->
+                  :ok
+
+                {:error, reason} ->
+                  send(
+                    socket_pid,
+                    {:system_notice, "Handoff failed: #{inspect(reason)}"}
+                  )
+              end
+            end)
+
             socket
-          end
         end
 
       :cmd_join ->

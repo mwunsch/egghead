@@ -109,11 +109,22 @@ defmodule Egghead do
   defdelegate clear_history(agent_id), to: Egghead.Agent
 
   @doc """
-  Handoff: summarize conversation to a deliberation record and optionally
-  continue with a new prompt. Returns `{:ok, deliberation_id}`.
+  Handoff: summarize the agent's session to a deliberation record and
+  optionally continue with a new prompt.
+
+  Pass a keyword list to target a specific room — `room_id:
+  "my-room"` hands off the agent's session in that room (instead of
+  the default 1:1 session) and broadcasts `:agent_handoff` to the
+  room's topic so the chat UI can render a system line. A bare
+  string (or nil) is shorthand for handing off the default session
+  with that string as the next prompt.
+
+  Returns `{:ok, deliberation_id}` (or `{:ok, delib_id, response}`
+  when `next_prompt` is set).
   """
-  @spec handoff(String.t(), String.t() | nil) :: {:ok, String.t()} | {:error, term()}
-  defdelegate handoff(agent_id, next_prompt \\ nil), to: Egghead.Agent
+  @spec handoff(String.t(), keyword() | String.t() | nil) ::
+          {:ok, String.t()} | {:ok, String.t(), term()} | {:error, term()}
+  defdelegate handoff(agent_id, opts \\ nil), to: Egghead.Agent
 
   @doc """
   Save: ask the agent to extract key insights from the conversation

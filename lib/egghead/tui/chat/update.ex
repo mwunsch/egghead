@@ -422,6 +422,15 @@ defmodule Egghead.TUI.Chat.Update do
     %{model | agents: Enum.reject(model.agents, &(&1.id == agent_id))}
   end
 
+  defp handle_room_event({:agent_handoff, _room_id, agent_id, delib_id}, model) do
+    display = display_name(agent_id, model)
+
+    msg =
+      Entry.system("#{display} handed off context → [[#{delib_id}]]")
+
+    Model.append_entry(model, msg)
+  end
+
   defp handle_room_event(_other, model), do: model
 
   # ---- helpers ------------------------------------------------------------
@@ -764,29 +773,43 @@ defmodule Egghead.TUI.Chat.Update do
   defp apply_command(:cmd_handoff, arg, model) do
     target = String.trim(arg)
 
-    if target == "" do
-      model =
-        Model.append_entry(Model.clear_input(model), Entry.system("Usage: /handoff <agent>"))
+    cond do
+      target == "" ->
+        msg = Entry.system("Usage: /handoff <agent>")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
 
-      {model, :none}
-    else
-      cmd =
-        {:exec,
-         fn ->
-           try do
-             Egghead.handoff(target)
-             :no_msg
-           catch
-             _, _ -> :no_msg
-           end
-         end}
+      model.room_id == nil ->
+        msg = Entry.system("/handoff requires an active room")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
 
-      model =
-        model
-        |> Model.clear_input()
-        |> Model.append_entry(Entry.system("Handoff initiated for #{target}"))
+      true ->
+        # Run the handoff in the background — `Egghead.handoff/2` is a
+        # GenServer.call that summarises the agent's session via the
+        # LLM and can take a few seconds. The Coordinator broadcasts
+        # `:agent_handoff` on success, which the UI renders below.
+        room_id = model.room_id
 
-      {model, cmd}
+        cmd =
+          {:exec,
+           fn ->
+             case Egghead.handoff(target, room_id: room_id) do
+               {:ok, _delib_id} ->
+                 :no_msg
+
+               {:ok, _delib_id, _response} ->
+                 :no_msg
+
+               {:error, reason} ->
+                 {:room_event, {:system_notice, "Handoff failed: #{inspect(reason)}"}}
+             end
+           end}
+
+        model =
+          model
+          |> Model.clear_input()
+          |> Model.append_entry(Entry.system("Handoff initiated for #{target}…"))
+
+        {model, cmd}
     end
   end
 

@@ -27,7 +27,9 @@ defmodule Egghead.Application do
   @app_commands ~w(serve mcp tui init doctor)
   @app_subcommands %{
     "agent" => ~w(list new),
-    "llm" => ~w(test models)
+    "llm" => ~w(test models),
+    # tools always needs the app: querying agents + MCP client state
+    "tools" => ~w(list show add remove who mcp)
   }
 
   @impl true
@@ -55,6 +57,8 @@ defmodule Egghead.Application do
           {Task.Supervisor, name: Egghead.Tool.TaskSupervisor},
           {Egghead.RecordSupervisor,
            records_dir: records_dir, skills_dir: skills_dir, db_path: db_path},
+          Egghead.MCP.Client.Registry,
+          Egghead.MCP.Client.Supervisor,
           {Egghead.Agent.LayerSupervisor, records_dir: records_dir}
         ] ++ web_children()
       else
@@ -67,6 +71,7 @@ defmodule Egghead.Application do
     if Application.get_env(:egghead, :start_record_store, true) do
       Task.start(fn ->
         Egghead.Agent.Supervisor.sync_agents()
+        start_configured_mcp_servers()
 
         room_id =
           "chat-#{Date.to_iso8601(Date.utc_today())}-#{:erlang.unique_integer([:positive])}"
@@ -153,6 +158,7 @@ defmodule Egghead.Application do
       {:ok, config} ->
         Application.put_env(:egghead, :records_dir, Egghead.Config.records_dir(config))
         Application.put_env(:egghead, :skills_dir, Egghead.Config.skills_dir(config))
+        Application.put_env(:egghead, :mcp_servers, config.mcp_servers)
 
         bind =
           case config.web.bind do
@@ -246,6 +252,23 @@ defmodule Egghead.Application do
         Keyword.put(current, :http, Keyword.put(http, :ip, {0, 0, 0, 0}))
       )
     end
+  end
+
+  # --- MCP client startup ---
+
+  defp start_configured_mcp_servers do
+    servers = Application.get_env(:egghead, :mcp_servers, [])
+
+    Enum.each(servers, fn server ->
+      case Egghead.MCP.Client.Supervisor.start_server(server) do
+        {:ok, _pid} ->
+          :ok
+
+        {:error, reason} ->
+          require Logger
+          Logger.warning("MCP server #{inspect(server.name)} failed to start: #{inspect(reason)}")
+      end
+    end)
   end
 
   # --- Logging ---

@@ -34,7 +34,8 @@ defmodule Egghead.Config do
             skills_dir: "~/.agents/skills",
             llm: [],
             default_model: nil,
-            web: %{port: 4000, host: "localhost", bind: "127.0.0.1"}
+            web: %{port: 4000, host: "localhost", bind: "127.0.0.1"},
+            mcp_servers: []
 
   @type llm_entry :: %{
           provider: String.t(),
@@ -43,12 +44,23 @@ defmodule Egghead.Config do
           name: String.t() | nil
         }
 
+  @type mcp_server :: %{
+          name: String.t(),
+          transport: :stdio | :http,
+          command: String.t() | nil,
+          url: String.t() | nil,
+          env: %{String.t() => String.t()},
+          headers: %{String.t() => String.t()},
+          requires: [Egghead.Capability.Grant.t()]
+        }
+
   @type t :: %__MODULE__{
           records_dir: String.t(),
           skills_dir: String.t(),
           llm: [llm_entry()],
           default_model: String.t() | nil,
-          web: %{port: non_neg_integer(), host: String.t(), bind: String.t()}
+          web: %{port: non_neg_integer(), host: String.t(), bind: String.t()},
+          mcp_servers: [mcp_server()]
         }
 
   # --- Paths ---
@@ -244,9 +256,56 @@ defmodule Egghead.Config do
       skills_dir: data["skills_dir"] || "~/.agents/skills",
       llm: parse_llm(data["llm"]),
       default_model: data["default_model"],
-      web: parse_web(data["web"])
+      web: parse_web(data["web"]),
+      mcp_servers: parse_mcp_servers(data["mcp_servers"])
     }
   end
+
+  defp parse_mcp_servers(nil), do: []
+
+  defp parse_mcp_servers(list) when is_list(list) do
+    Enum.flat_map(list, fn entry ->
+      case parse_mcp_server(entry) do
+        {:ok, server} -> [server]
+        :error -> []
+      end
+    end)
+  end
+
+  defp parse_mcp_servers(_), do: []
+
+  defp parse_mcp_server(entry) when is_map(entry) do
+    name = entry["name"]
+
+    if is_binary(name) and name != "" do
+      transport = parse_transport(entry["transport"])
+
+      requires =
+        (entry["requires"] || [])
+        |> Egghead.Capability.parse()
+
+      {:ok,
+       %{
+         name: name,
+         transport: transport,
+         command: entry["command"],
+         url: entry["url"],
+         env: entry["env"] || %{},
+         headers: entry["headers"] || %{},
+         requires: requires
+       }}
+    else
+      :error
+    end
+  end
+
+  defp parse_mcp_server(_), do: :error
+
+  defp parse_transport("stdio"), do: :stdio
+  defp parse_transport("http"), do: :http
+  defp parse_transport(:stdio), do: :stdio
+  defp parse_transport(:http), do: :http
+  defp parse_transport(_), do: :stdio
 
   defp parse_llm(nil), do: []
   defp parse_llm(entries) when is_list(entries), do: Enum.map(entries, &parse_llm_entry/1)
@@ -296,7 +355,8 @@ defmodule Egghead.Config do
       emit_field("skills_dir", config.skills_dir),
       emit_llm(config.llm),
       emit_field("default_model", config.default_model),
-      emit_web(config.web)
+      emit_web(config.web),
+      emit_mcp_servers(config.mcp_servers)
     ]
 
     sections
@@ -304,6 +364,71 @@ defmodule Egghead.Config do
     |> Enum.join("\n")
     |> Kernel.<>("\n")
   end
+
+  defp emit_mcp_servers([]), do: nil
+
+  defp emit_mcp_servers(servers) do
+    items =
+      Enum.map_join(servers, "\n", fn server ->
+        lines = ["  - name: #{server.name}"]
+        lines = lines ++ ["    transport: #{server.transport}"]
+
+        lines =
+          if server.command,
+            do: lines ++ ["    command: #{yaml_escape(server.command)}"],
+            else: lines
+
+        lines =
+          if server.url,
+            do: lines ++ ["    url: #{yaml_escape(server.url)}"],
+            else: lines
+
+        lines = lines ++ emit_mcp_map("env", server.env)
+        lines = lines ++ emit_mcp_map("headers", server.headers)
+        lines = lines ++ emit_mcp_requires(server.requires)
+
+        Enum.join(lines, "\n")
+      end)
+
+    "mcp_servers:\n#{items}"
+  end
+
+  defp emit_mcp_map(_key, map) when map == %{}, do: []
+
+  defp emit_mcp_map(key, map) do
+    entries =
+      Enum.map(map, fn {k, v} -> "      #{k}: #{yaml_escape(to_string(v))}" end)
+
+    ["    #{key}:" | entries]
+  end
+
+  defp emit_mcp_requires([]), do: []
+
+  defp emit_mcp_requires(grants) do
+    entries =
+      Enum.map(grants, fn %Egghead.Capability.Grant{resource: r, verb: v, scope: scope} ->
+        key = "#{r}.#{v}"
+
+        if scope == %{} do
+          "      - #{key}"
+        else
+          scope_lines =
+            Enum.map(scope, fn {sk, sv} ->
+              "          #{sk}: #{yaml_list_escape(sv)}"
+            end)
+
+          Enum.join(["      - #{key}:" | scope_lines], "\n")
+        end
+      end)
+
+    ["    requires:" | entries]
+  end
+
+  defp yaml_list_escape(list) when is_list(list) do
+    "[" <> Enum.map_join(list, ", ", &yaml_escape(to_string(&1))) <> "]"
+  end
+
+  defp yaml_list_escape(value), do: yaml_escape(to_string(value))
 
   defp emit_field(_key, nil), do: nil
   defp emit_field(key, value), do: "#{key}: #{yaml_escape(value)}"

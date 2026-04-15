@@ -1,0 +1,77 @@
+# Curated registry of common MCP servers.
+#
+# Each entry declares *the effective capability the agent takes on*
+# by invoking tools from this server, NOT the shell command Egghead
+# runs to launch it. Spawning the process is an orchestrator
+# decision, authorized once at `egghead tools mcp add` time.
+#
+# Placeholders:
+#   <path>  — a filesystem path, substituted at add time
+
+exa:
+  description: "Web search and research via Exa"
+  transport: stdio
+  command: "npx -y exa-mcp-server"
+  env_required: [EXA_API_KEY]
+  env:
+    EXA_API_KEY: "{env:EXA_API_KEY}"
+  requires:
+    - net.get:
+        hosts: ["api.exa.ai"]
+
+github:
+  description: "GitHub API (repos, issues, PRs)"
+  transport: stdio
+  command: "npx -y @modelcontextprotocol/server-github"
+  env_required: [GITHUB_PERSONAL_ACCESS_TOKEN]
+  env:
+    GITHUB_PERSONAL_ACCESS_TOKEN: "{env:GITHUB_PERSONAL_ACCESS_TOKEN}"
+  requires:
+    - net.get:
+        hosts: ["api.github.com"]
+    - net.post:
+        hosts: ["api.github.com"]
+
+filesystem:
+  description: "Local filesystem (path-scoped at add time)"
+  transport: stdio
+  command: "npx -y @modelcontextprotocol/server-filesystem <path>"
+  requires_template:
+    - fs.read:
+        paths: ["<path>/**"]
+    - fs.write:
+        paths: ["<path>/**"]
+
+brave-search:
+  description: "Web search via Brave"
+  transport: stdio
+  command: "npx -y @modelcontextprotocol/server-brave-search"
+  env_required: [BRAVE_API_KEY]
+  env:
+    BRAVE_API_KEY: "{env:BRAVE_API_KEY}"
+  requires:
+    - net.get:
+        hosts: ["api.search.brave.com"]
+
+slack:
+  description: "Slack API (messages, channels)"
+  transport: stdio
+  command: "npx -y @modelcontextprotocol/server-slack"
+  env_required: [SLACK_BOT_TOKEN, SLACK_TEAM_ID]
+  env:
+    SLACK_BOT_TOKEN: "{env:SLACK_BOT_TOKEN}"
+    SLACK_TEAM_ID: "{env:SLACK_TEAM_ID}"
+  requires:
+    - net.get:
+        hosts: ["slack.com"]
+    - net.post:
+        hosts: ["slack.com"]
+
+egghead:
+  description: "Another Egghead instance's record store"
+  transport: stdio
+  command: "egghead mcp"
+  requires:
+    - records.read
+    - records.create
+    - records.update

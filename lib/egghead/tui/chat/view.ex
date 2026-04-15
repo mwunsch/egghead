@@ -704,6 +704,9 @@ defmodule Egghead.TUI.Chat.View do
     end
   end
 
+  defp mention_label(:agent, %{kind: :broadcast, id: id, label: label}),
+    do: "#{id}  — #{label}"
+
   defp mention_label(:agent, %{id: id}), do: id
   defp mention_label(:agent, %{"id" => id}), do: id
   defp mention_label(:record, %{id: id}), do: id

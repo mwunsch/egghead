@@ -72,6 +72,24 @@ defmodule Egghead.Agent.Session do
     yourself — use "I" not your own name in third person.
   """
 
+  @huddle_addendum """
+
+  HUDDLE MODE (@everyone): The human has called a roll-call. Every agent
+  must contribute — [PASS] is NOT allowed in huddle mode. If you have
+  nothing substantive to add, offer your shortest honest read: one line
+  of agreement, a question, a reservation, or a pointer to something
+  adjacent you noticed. Silence breaks the huddle. Be brief.
+  """
+
+  @jam_addendum """
+
+  JAM MODE (@jam): Low threshold for speaking up — partial thoughts,
+  half-formed ideas, tangents, and overlaps are welcome. You are
+  firing in parallel with other agents and won't see their output
+  before you respond; don't try to coordinate. Keep it short and
+  associative — this is cacophony, not consensus.
+  """
+
   defmodule State do
     @moduledoc false
 
@@ -534,8 +552,16 @@ defmodule Egghead.Agent.Session do
       # for this room so the agent has structured context, not just 5 messages.
       prior_context = if state.history == [], do: room_deliberation_context(room.id)
 
+      activation_addendum =
+        case Map.get(room, :activation, :normal) do
+          :huddle -> @huddle_addendum
+          :jam -> @jam_addendum
+          _ -> ""
+        end
+
       base <>
         @chat_addendum <>
+        activation_addendum <>
         """
 
         Room: #{room.id} | Agents: #{agents_list}

@@ -224,8 +224,9 @@ defmodule Egghead.Chat.Coordinator do
     mentions = msg.mentions || []
 
     cond do
-      # @everyone or @channel → activate ALL agents
-      "everyone" in mentions or "channel" in mentions ->
+      # @everyone or @channel → huddle (serial, must respond) — includes Index
+      # @jam → cacophony (parallel, low threshold) — includes Index
+      broadcast_mention?(mentions) ->
         Map.values(agents)
 
       # @specific-agent → activate just that agent
@@ -237,10 +238,31 @@ defmodule Egghead.Chat.Coordinator do
 
       # Open message (no @-mention) → activate all specialists
       # Index is infrastructure — excluded when specialists are available
-      # TF-IDF scoring in activate/4 determines stagger order
+      # TF-IDF scoring in activate/4 determines activation order
       true ->
         specialists = agents |> Map.values() |> Enum.reject(&(&1.id == "index"))
         if specialists != [], do: specialists, else: Map.values(agents)
+    end
+  end
+
+  # Mentions that trigger room-wide activation (all agents including Index).
+  defp broadcast_mention?(mentions) do
+    Enum.any?(mentions, &(&1 in ["everyone", "channel", "jam"]))
+  end
+
+  # Which activation mode should we use for this message?
+  #
+  # - `:huddle` — `@everyone` / `@channel`: serial, every agent must respond
+  #   (no `/pass`), each sees prior peers' output.
+  # - `:jam`    — `@jam`: parallel, low participation threshold (speak up even
+  #   with partial thoughts). Does not see peer output in-flight.
+  # - `:normal` — anything else: respects the room's `:mode` (`:serial` by
+  #   default, `:staggered` as opt-in). Strict `/pass` semantics.
+  defp activation_mode(mentions) do
+    cond do
+      "jam" in mentions -> :jam
+      "everyone" in mentions or "channel" in mentions -> :huddle
+      true -> :normal
     end
   end
 
@@ -272,10 +294,11 @@ defmodule Egghead.Chat.Coordinator do
 
   defp activate(agents, msg, room_id, state) do
     mentions = msg.mentions || []
-    broadcast = "everyone" in mentions or "channel" in mentions
+    mode = activation_mode(mentions)
 
     # Filter out agents mid-handoff, order by TF-IDF relevance score
-    # (highest score first). Most relevant agent starts first in stagger.
+    # (highest score first). Index is always last when present: infrastructure
+    # rounds out the room after specialists, never leads.
     scores = Egghead.Chat.Relevance.score(msg.content, state.corpus)
 
     agents_to_prompt =
@@ -284,11 +307,12 @@ defmodule Egghead.Chat.Coordinator do
         MapSet.member?(state.handoffs_in_progress, {info.id, room_id})
       end)
       |> Enum.sort_by(fn info ->
-        {-(scores[info.id] || 0), info.id}
+        index_rank = if info.id == "index", do: 1, else: 0
+        {index_rank, -(scores[info.id] || 0), info.id}
       end)
 
     agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)
-    Logger.info("Coordinator: activating agents: #{agent_names}")
+    Logger.info("Coordinator: activating agents (#{mode}): #{agent_names}")
 
     room_mode =
       try do
@@ -297,19 +321,32 @@ defmodule Egghead.Chat.Coordinator do
         _ -> :serial
       end
 
-    if broadcast do
-      # @everyone/@channel — parallel activation regardless of mode
-      broadcast_activation(room_id, length(agents_to_prompt))
+    case mode do
+      :jam ->
+        # Parallel activation with a low-threshold hint for each agent.
+        # Agents fire concurrently and don't see peers' in-flight output —
+        # that's the point (cacophony).
+        broadcast_activation(room_id, length(agents_to_prompt))
 
-      Enum.each(agents_to_prompt, fn agent_info ->
-        Task.start(fn ->
-          prompt_agent_in_room(agent_info.id, room_id, msg.content)
+        Enum.each(agents_to_prompt, fn agent_info ->
+          Task.start(fn ->
+            prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :jam)
+          end)
         end)
-      end)
-    else
-      if room_mode == :staggered and length(agents_to_prompt) > 1 do
-        # Staggered: each agent runs in its own Task. A coordinator Task
-        # subscribes to PubSub and spawns agents with stagger delays.
+
+      :huddle ->
+        # Serial roll-call. Every agent must respond; `/pass` is not allowed
+        # (the Session prompt enforces this via the `:huddle` addendum).
+        Task.start(fn ->
+          Enum.each(agents_to_prompt, fn agent_info ->
+            broadcast_activation(room_id, 1)
+            prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :huddle)
+          end)
+        end)
+
+      :normal when room_mode == :staggered and length(agents_to_prompt) > 1 ->
+        # Staggered (opt-in): each agent runs in its own Task. A coordinator
+        # Task subscribes to PubSub and spawns agents with stagger delays.
         Task.start(fn ->
           Phoenix.PubSub.subscribe(@pubsub, Room.topic(room_id))
 
@@ -332,32 +369,34 @@ defmodule Egghead.Chat.Coordinator do
             # Each agent runs in its own Task so this process stays free
             # to receive PubSub events for stagger timing
             Task.start(fn ->
-              prompt_agent_in_room(agent_info.id, room_id, msg.content)
+              prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :normal)
             end)
           end)
         end)
-      else
-        # Serial: strict A-finishes-then-B in one Task
+
+      :normal ->
+        # Serial (default): strict A-finishes-then-B in one Task
         Task.start(fn ->
           Enum.each(agents_to_prompt, fn agent_info ->
             broadcast_activation(room_id, 1)
-            prompt_agent_in_room(agent_info.id, room_id, msg.content)
+            prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :normal)
           end)
         end)
-      end
     end
   end
 
   # The Coordinator's only job: pass the message and room context to the agent.
   # The agent handles its own context building, usage tracking, and handoff.
-  defp prompt_agent_in_room(agent_id, room_id, message) do
+  defp prompt_agent_in_room(agent_id, room_id, message, opts \\ []) do
+    activation = Keyword.get(opts, :activation, :normal)
     transcript = Room.get_transcript(room_id)
     room_state = Room.get_state(room_id)
 
     room_context = %{
       id: room_id,
       transcript: transcript,
-      agents: room_state.agents
+      agents: room_state.agents,
+      activation: activation
     }
 
     # Streaming is RAW: every text delta is broadcast immediately to

@@ -138,23 +138,57 @@ defmodule Egghead.TUI.Chat.Mentions do
 
   defp id_char?(_), do: false
 
+  # Synthetic broadcast tokens surfaced in the @-mention dropdown alongside
+  # real agents. They are not registered agents — they route through the
+  # Coordinator's tier-1 filter as activation modes.
+  @broadcast_tokens [
+    %{
+      id: "everyone",
+      name: "everyone",
+      kind: :broadcast,
+      label: "huddle — every agent speaks in turn"
+    },
+    %{
+      id: "jam",
+      name: "jam",
+      kind: :broadcast,
+      label: "cacophony — every agent responds in parallel"
+    }
+  ]
+
   @doc """
   Filter and rank a list of agent maps by basename prefix.
   Case-insensitive. Preserves the input order (caller is
   responsible for sorting by recency / activation), then
   returns at most `:limit` results (default 8).
+
+  Broadcast tokens (`@everyone`, `@jam`) are prepended when they match
+  the typed prefix so users discover them alongside real agents.
   """
   @spec rank_agents([map()], String.t(), keyword()) :: [map()]
   def rank_agents(agents, prefix, opts \\ []) when is_list(agents) and is_binary(prefix) do
     limit = Keyword.get(opts, :limit, 8)
     needle = String.downcase(prefix)
 
-    agents
-    |> Enum.filter(fn a ->
-      a |> agent_basename() |> String.downcase() |> String.starts_with?(needle)
-    end)
-    |> Enum.take(limit)
+    broadcasts =
+      Enum.filter(@broadcast_tokens, fn b ->
+        String.starts_with?(b.id, needle)
+      end)
+
+    agents_filtered =
+      agents
+      |> Enum.filter(fn a ->
+        a |> agent_basename() |> String.downcase() |> String.starts_with?(needle)
+      end)
+
+    (broadcasts ++ agents_filtered) |> Enum.take(limit)
   end
+
+  @doc """
+  The canonical list of broadcast mention tokens. Exposed so UIs can
+  render them with a distinct affordance from real agents.
+  """
+  def broadcast_tokens, do: @broadcast_tokens
 
   defp agent_basename(%{id: id}), do: id |> String.split("/") |> List.last()
   defp agent_basename(%{"id" => id}), do: id |> String.split("/") |> List.last()

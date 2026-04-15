@@ -709,14 +709,20 @@ defmodule Egghead.Web.AppLive do
             _, _ -> []
           end
 
-        candidates =
+        broadcasts =
+          Egghead.TUI.Chat.Mentions.broadcast_tokens()
+          |> Enum.filter(&String.starts_with?(&1.id, String.downcase(prefix)))
+          |> Enum.map(&%{id: &1.id, name: &1.name, kind: :broadcast, label: &1.label})
+
+        agent_candidates =
           agents
           |> Enum.filter(fn a ->
             basename = a.id |> String.split("/") |> List.last() |> String.downcase()
             String.starts_with?(basename, String.downcase(prefix))
           end)
-          |> Enum.take(8)
           |> Enum.map(&%{id: &1.id, name: &1.name})
+
+        candidates = (broadcasts ++ agent_candidates) |> Enum.take(8)
 
         if candidates != [] do
           ghost =
@@ -1364,7 +1370,13 @@ defmodule Egghead.Web.AppLive do
                     <span class="dd-desc">{cand.description}</span>
                   <% :agent -> %>
                     <span class="dd-name">@{cand.id}</span>
-                    <span class="dd-desc">{cand.name}</span>
+                    <span class="dd-desc">
+                      <%= if cand[:kind] == :broadcast do %>
+                        {cand.label}
+                      <% else %>
+                        {cand.name}
+                      <% end %>
+                    </span>
                   <% :record -> %>
                     <span class="dd-name">[[{cand.id}]]</span>
                     <span class="dd-desc">{cand.title}</span>

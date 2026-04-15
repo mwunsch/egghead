@@ -62,10 +62,22 @@ defmodule Egghead.TUI.Chat.MentionsTest do
       assert [%{id: "agents/scout"}, %{id: "agents/scribe"}] = Mentions.rank_agents(agents, "sc")
     end
 
-    test "empty prefix matches everything in input order", %{agents: agents} do
+    test "empty prefix matches everything with broadcast tokens prepended", %{agents: agents} do
+      # Broadcast tokens (@everyone, @jam) are surfaced alongside real agents.
       result = Mentions.rank_agents(agents, "")
-      assert length(result) == 3
-      assert [%{id: "agents/scout"}, %{id: "agents/scribe"}, %{id: "agents/index"}] = result
+
+      assert [
+               %{id: "everyone", kind: :broadcast},
+               %{id: "jam", kind: :broadcast},
+               %{id: "agents/scout"},
+               %{id: "agents/scribe"},
+               %{id: "agents/index"}
+             ] = result
+    end
+
+    test "broadcast tokens match their prefix", %{agents: agents} do
+      assert [%{id: "everyone", kind: :broadcast}] = Mentions.rank_agents(agents, "every")
+      assert [%{id: "jam", kind: :broadcast}] = Mentions.rank_agents(agents, "ja")
     end
 
     test "non-matching prefix returns []", %{agents: agents} do
@@ -73,6 +85,7 @@ defmodule Egghead.TUI.Chat.MentionsTest do
     end
 
     test "respects :limit", %{agents: agents} do
+      # Broadcast tokens count toward the limit.
       assert length(Mentions.rank_agents(agents, "", limit: 2)) == 2
     end
   end

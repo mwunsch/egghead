@@ -482,7 +482,13 @@ defmodule Egghead.CLI.Widgets do
 
   defp multiselect_loop(items, cursor, selected, has_label) do
     lines = render_multiselect(items, cursor, selected)
+    multiselect_input(items, cursor, selected, has_label, lines)
+  end
 
+  # Key dispatcher: separate from the render loop so unknown keys
+  # don't trigger a re-render (which would stack menu copies on
+  # the screen). Mirrors grouped_input/6.
+  defp multiselect_input(items, cursor, selected, has_label, lines) do
     case read_key() do
       {:key, :up} ->
         clear_lines(lines)
@@ -492,7 +498,7 @@ defmodule Egghead.CLI.Widgets do
         clear_lines(lines)
         multiselect_loop(items, min(length(items) - 1, cursor + 1), selected, has_label)
 
-      {:key, :space} ->
+      {:char, " "} ->
         {_label, value} = Enum.at(items, cursor)
 
         new_selected =
@@ -526,7 +532,7 @@ defmodule Egghead.CLI.Widgets do
         []
 
       _ ->
-        multiselect_loop(items, cursor, selected, has_label)
+        multiselect_input(items, cursor, selected, has_label, lines)
     end
   end
 

@@ -10,7 +10,7 @@ defmodule Egghead.CLI do
   instead of `Mix.Task.run("app.start")`.
   """
 
-  @commands ~w(init serve mcp llm agent skill config doctor logs help tui)
+  @commands ~w(init serve mcp llm agent skill tools config doctor logs help tui)
 
   @doc """
   Main entry point. Parses argv and dispatches to the appropriate
@@ -141,6 +141,10 @@ defmodule Egghead.CLI do
 
   defp dispatch(:skill, args, _opts) do
     Egghead.CLI.SkillCmd.run(args)
+  end
+
+  defp dispatch(:tools, args, _opts) do
+    Egghead.CLI.ToolsCmd.run(args)
   end
 
   defp dispatch(:config, args, _opts) do

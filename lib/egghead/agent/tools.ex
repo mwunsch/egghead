@@ -25,11 +25,21 @@ defmodule Egghead.Agent.Tools do
   @doc """
   Returns tool definitions for the given grants, in Anthropic tool format.
 
-  A tool is offered if the agent holds any of the tool's `offers_on` verbs.
-  Call-time `Capability.check/3` handles scope and multi-request tools.
+  Merges two sources:
+
+  - **Local tools** — offered if the agent holds any of the tool's
+    `offers_on` verbs. Call-time `Capability.check/3` handles scope.
+  - **MCP tools** — offered only for servers whose `requires:` is a
+    subset of the agent's grants. Tool names are prefixed as
+    `mcp__<server>__<tool>`. The subset check at offering time is
+    the authorization; dispatch re-checks as belt-and-suspenders.
   """
   @spec definitions_for([Grant.t()]) :: [map()]
   def definitions_for(grants) do
+    local_defs(grants) ++ mcp_defs(grants)
+  end
+
+  defp local_defs(grants) do
     held = Capability.verbs_held(grants)
 
     all_tools()
@@ -38,6 +48,39 @@ defmodule Egghead.Agent.Tools do
     end)
     |> Enum.map(&tool_definition/1)
   end
+
+  defp mcp_defs(grants) do
+    Application.get_env(:egghead, :mcp_servers, [])
+    |> Enum.filter(fn server -> Capability.subset?(server.requires, grants) end)
+    |> Enum.flat_map(&mcp_server_defs/1)
+  end
+
+  defp mcp_server_defs(%{name: server_name}) do
+    Egghead.MCP.Client.tools_for(server_name)
+    |> Enum.map(fn tool ->
+      %{
+        name: mcp_tool_name(server_name, tool["name"]),
+        description: tool["description"] || "",
+        input_schema: tool["inputSchema"] || %{type: "object", properties: %{}}
+      }
+    end)
+  end
+
+  @doc "Prefix convention for MCP tool names sent to the LLM."
+  def mcp_tool_name(server, tool), do: "mcp__#{server}__#{tool}"
+
+  @doc """
+  Parse an MCP-prefixed tool name. Returns `{:ok, server, tool}` or
+  `:not_mcp` for local tool names.
+  """
+  def parse_mcp_tool_name("mcp__" <> rest) do
+    case String.split(rest, "__", parts: 2) do
+      [server, tool] when server != "" and tool != "" -> {:ok, server, tool}
+      _ -> :not_mcp
+    end
+  end
+
+  def parse_mcp_tool_name(_), do: :not_mcp
 
   @doc """
   Executes a tool call, gated by the agent's capabilities.
@@ -52,17 +95,54 @@ defmodule Egghead.Agent.Tools do
     room_id = agent_context[:room_id]
     grants = Map.get(agent_context, :capabilities, [])
 
-    case resolve_requests(tool_name, input, agent_context) do
-      {:error, :unknown_tool} ->
-        {:error, "Unknown tool: #{tool_name}"}
+    case parse_mcp_tool_name(tool_name) do
+      {:ok, server, tool} ->
+        execute_mcp(server, tool, tool_name, input, grants, agent_context, room_id)
 
-      {:error, reason} ->
-        {:error, reason}
+      :not_mcp ->
+        case resolve_requests(tool_name, input, agent_context) do
+          {:error, :unknown_tool} ->
+            {:error, "Unknown tool: #{tool_name}"}
 
-      {:ok, requests} ->
-        case check_all(grants, requests, agent_context, tool_name) do
-          :ok -> run_tool(tool_name, input, agent_context, room_id)
-          {:denied, denial} -> handle_denial(denial)
+          {:error, reason} ->
+            {:error, reason}
+
+          {:ok, requests} ->
+            case check_all(grants, requests, agent_context, tool_name) do
+              :ok -> run_tool(tool_name, input, agent_context, room_id)
+              {:denied, denial} -> handle_denial(denial)
+            end
+        end
+    end
+  end
+
+  # MCP dispatch: re-verify the server's requires subset against the
+  # agent's current grants, then forward to MCP.Client. The subset
+  # re-check catches the narrow window where grants changed between
+  # offering and call.
+  defp execute_mcp(server, tool, tool_name, input, grants, agent_context, _room_id) do
+    case Egghead.MCP.Client.config_for(server) do
+      nil ->
+        {:error, "mcp server #{inspect(server)} not configured"}
+
+      %{requires: required} ->
+        if Capability.subset?(required, grants) do
+          case Egghead.MCP.Client.call_tool(server, tool, input) do
+            {:ok, text} -> {:ok, text}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          denial = %Denial{
+            code: :capability_absent,
+            request: %Request{resource: :mcp, verb: String.to_atom(server), tool: tool_name},
+            held: grants,
+            agent_id: Map.get(agent_context, :agent_id),
+            tool: tool_name,
+            message: "agent lacks required capabilities for mcp server #{inspect(server)}",
+            suggested_grant: nil
+          }
+
+          handle_denial(denial)
         end
     end
   end

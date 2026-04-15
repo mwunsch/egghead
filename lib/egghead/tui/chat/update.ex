@@ -519,10 +519,13 @@ defmodule Egghead.TUI.Chat.Update do
   # Scroll is lines-from-bottom: 0 = pinned to newest.
   # Positive delta scrolls up (older), negative scrolls down (newer).
   defp scroll_transcript(%Model{} = model, delta) do
-    # Clamp against transcript length as a safe upper bound.
-    # The view will further clamp against exact rendered row count.
-    max_scroll = max(length(model.transcript), 0)
-    new_scroll = model.scroll |> Kernel.+(delta) |> max(0) |> min(max_scroll)
+    # Only clamp the lower bound here — scroll is measured in rendered
+    # lines, not transcript entries, and a single multi-paragraph agent
+    # message can render to many lines. The view clamps against the
+    # exact rendered row count on every frame, so over-scrolling is
+    # invisible to the user; capping here against `length(transcript)`
+    # would silently limit history to entry count instead of line count.
+    new_scroll = max(model.scroll + delta, 0)
     %{model | scroll: new_scroll}
   end
 
@@ -792,11 +795,7 @@ defmodule Egghead.TUI.Chat.Update do
 
     cond do
       target == "" ->
-        msg = Entry.system("Usage: /join <room-id>. Try /join " <> example_room_id())
-        {Model.append_entry(Model.clear_input(model), msg), :none}
-
-      not Egghead.room_exists?(target) ->
-        msg = Entry.system("No live room with id #{inspect(target)}.")
+        msg = Entry.system("Usage: /join <room-id-or-transcript-id>")
         {Model.append_entry(Model.clear_input(model), msg), :none}
 
       target == model.room_id ->
@@ -804,11 +803,19 @@ defmodule Egghead.TUI.Chat.Update do
         {Model.append_entry(Model.clear_input(model), msg), :none}
 
       true ->
-        # Re-init the chat model with the new room id. The runtime
-        # observes the changed `:room_id` in `subscriptions/1` and
-        # automatically resubscribes to the new room's PubSub topic.
-        new_model = Model.init(room_id: target)
-        {new_model, :none}
+        case resolve_join_target(target) do
+          {:ok, room_id} ->
+            # Switch the model to the new room. Preserves :width and
+            # :height (Model.init would reset them to 80x24, which
+            # shrinks the visible frame until the next resize event).
+            # The runtime observes the changed :room_id in
+            # subscriptions/1 and automatically resubscribes.
+            {Model.switch_room(model, room_id), :none}
+
+          {:error, reason} ->
+            msg = Entry.system("Cannot join #{inspect(target)}: #{reason}")
+            {Model.append_entry(Model.clear_input(model), msg), :none}
+        end
     end
   end
 
@@ -846,10 +853,23 @@ defmodule Egghead.TUI.Chat.Update do
     {model, :none}
   end
 
-  defp example_room_id do
-    case Egghead.list_rooms() do
-      [] -> "<no live rooms>"
-      [first | _] -> first
+  # Resolve a `/join` argument to a room id. Tries, in order:
+  # (1) a live room with that exact id; (2) a saved transcript record
+  # with that id; (3) `chat/<id>` as a transcript record id.
+  defp resolve_join_target(target) do
+    cond do
+      Egghead.room_exists?(target) ->
+        {:ok, target}
+
+      true ->
+        candidate = if String.starts_with?(target, "chat/"), do: target, else: "chat/#{target}"
+
+        case Egghead.Chat.Room.from_transcript(candidate) do
+          {:ok, room_id} -> {:ok, room_id}
+          {:error, :not_found} -> {:error, "no live room or transcript record found"}
+          {:error, :wrong_class} -> {:error, "record exists but is not a transcript"}
+          {:error, reason} -> {:error, inspect(reason)}
+        end
     end
   end
 end

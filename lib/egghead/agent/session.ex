@@ -547,7 +547,14 @@ defmodule Egghead.Agent.Session do
 
     if room do
       agents_list = room.agents |> Enum.join(", ")
-      transcript = format_room_diff(room, state.agent_id)
+      # On first activation in a room (empty history) — including the
+      # rehydrate case after `/join <transcript-id>` — show the full
+      # transcript so the agent has the same context it would have had
+      # if it had been live the whole time. On subsequent activations,
+      # the diff logic only shows the messages since the agent last
+      # spoke (its own messages are already in state.history as
+      # assistant turns).
+      transcript = format_room_diff(room, state.agent_id, state.history == [])
 
       # On first activation in a room, include the most recent deliberation
       # for this room so the agent has structured context, not just 5 messages.
@@ -712,7 +719,7 @@ defmodule Egghead.Agent.Session do
     end
   end
 
-  defp format_room_diff(room, agent_id) do
+  defp format_room_diff(room, agent_id, first_activation?) do
     transcript = room.transcript || []
 
     last_own_idx =
@@ -726,12 +733,21 @@ defmodule Egghead.Agent.Session do
       end)
 
     messages =
-      case last_own_idx do
-        nil ->
+      cond do
+        # First activation in this room (incl. rehydrate from a saved
+        # transcript): give the agent the full historical context. Its
+        # own past messages ARE included here because they're not in
+        # state.history yet — without them the agent would see only
+        # other speakers' lines and have no record of what it itself
+        # said.
+        first_activation? ->
+          transcript
+
+        last_own_idx == nil ->
           Enum.take(transcript, -5)
 
-        idx ->
-          since_idx = length(transcript) - idx
+        true ->
+          since_idx = length(transcript) - last_own_idx
           diff = Enum.drop(transcript, since_idx)
 
           if length(diff) < 3 do
@@ -741,12 +757,16 @@ defmodule Egghead.Agent.Session do
           end
       end
 
-    # Drop the agent's own past messages — they are already present in
-    # state.history as assistant turns. Including them here too caused
-    # the LLM to see its own outputs twice and (in extreme cases) parrot
-    # them back concatenated. The transcript section is meant to be
-    # "what others said".
-    messages = Enum.reject(messages, &own_message?(&1, agent_id))
+    # In the steady-state diff case, drop the agent's own past
+    # messages — they are already present in state.history as
+    # assistant turns. Including them here too caused the LLM to see
+    # its own outputs twice and (in extreme cases) parrot them back
+    # concatenated. On first activation, history is empty and we
+    # explicitly want them in the transcript view.
+    messages =
+      if first_activation?,
+        do: messages,
+        else: Enum.reject(messages, &own_message?(&1, agent_id))
 
     if messages == [] do
       "(no new messages)"

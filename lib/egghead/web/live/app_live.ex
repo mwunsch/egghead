@@ -646,6 +646,27 @@ defmodule Egghead.Web.AppLive do
     MarkdownHTML.render(text)
   end
 
+  # Resolve a `/join` argument to a room id. Tries, in order:
+  # (1) a live room with that exact id; (2) a saved transcript record
+  # with id `chat/<id>` (or the literal id if it already starts with
+  # `chat/`).
+  defp resolve_join_target(target) do
+    cond do
+      Egghead.room_exists?(target) ->
+        {:ok, target}
+
+      true ->
+        candidate = if String.starts_with?(target, "chat/"), do: target, else: "chat/#{target}"
+
+        case Egghead.Chat.Room.from_transcript(candidate) do
+          {:ok, room_id} -> {:ok, room_id}
+          {:error, :not_found} -> {:error, "no live room or transcript record found"}
+          {:error, :wrong_class} -> {:error, "record exists but is not a transcript"}
+          {:error, reason} -> {:error, inspect(reason)}
+        end
+    end
+  end
+
   # --- Slash commands ---
 
   @chat_commands %{
@@ -729,19 +750,25 @@ defmodule Egghead.Web.AppLive do
 
         cond do
           target == "" ->
-            append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /join <room-id>"))
+            append_entry(
+              socket,
+              Egghead.TUI.Chat.Entry.system("Usage: /join <room-id-or-transcript-id>")
+            )
 
           target == socket.assigns.room_id ->
             append_entry(socket, Egghead.TUI.Chat.Entry.system("Already in #{target}"))
 
-          not Egghead.room_exists?(target) ->
-            append_entry(
-              socket,
-              Egghead.TUI.Chat.Entry.system("No live room with id #{inspect(target)}")
-            )
-
           true ->
-            push_patch(socket, to: ~p"/chat/#{target}")
+            case resolve_join_target(target) do
+              {:ok, room_id} ->
+                push_patch(socket, to: ~p"/chat/#{room_id}")
+
+              {:error, reason} ->
+                append_entry(
+                  socket,
+                  Egghead.TUI.Chat.Entry.system("Cannot join #{inspect(target)}: #{reason}")
+                )
+            end
         end
 
       :cmd_help ->

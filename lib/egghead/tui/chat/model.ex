@@ -101,6 +101,34 @@ defmodule Egghead.TUI.Chat.Model do
 
   def init(_other), do: %__MODULE__{}
 
+  @doc """
+  Switch to a different room without losing terminal-layout state
+  (`:width`, `:height`) or app-mode flags (`:providers?`). Resets the
+  per-room state — transcript, streams, pending activations, scroll,
+  input, mention/command dropdowns, status — and rehydrates from the
+  new room.
+
+  Used by `/join` to avoid the brief flash of an 80x24 frame that a
+  raw `Model.init/1` would produce until the next resize event.
+  """
+  @spec switch_room(t(), String.t()) :: t()
+  def switch_room(%__MODULE__{} = m, room_id) do
+    %{
+      m
+      | room_id: room_id,
+        transcript: hydrate_transcript(room_id),
+        agents: hydrate_agents(),
+        streams: %{},
+        pending_activated: MapSet.new(),
+        scroll: 0,
+        input: %EditBuffer{},
+        mention: nil,
+        command: nil,
+        status_message: nil,
+        link_index: nil
+    }
+  end
+
   # ---- transcript ----------------------------------------------------------
 
   @doc """

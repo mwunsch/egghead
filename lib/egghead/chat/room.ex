@@ -182,6 +182,60 @@ defmodule Egghead.Chat.Room do
   end
 
   @doc """
+  Rehydrate a room from a saved `class: transcript` record.
+
+  - If a live room with the derived id is already running, returns it
+    as-is (no overwrite — `/join` of a running room and `/join` of a
+    saved transcript with the same id should be the same act).
+  - Otherwise reads the record, parses the body, and starts a new
+    Room with the transcript pre-populated.
+
+  The room id is derived by stripping the `chat/` prefix from the
+  record id.
+  """
+  @spec from_transcript(String.t()) ::
+          {:ok, String.t()} | {:error, :not_found | :wrong_class | :parse_failed | term()}
+  def from_transcript(record_id) when is_binary(record_id) do
+    with {:ok, record} <- Egghead.get_record(record_id),
+         :transcript <- record.class || :unknown,
+         room_id <- derive_room_id(record_id),
+         {:ok, messages} <- Egghead.Chat.TranscriptParser.parse(record.body || "", room_id) do
+      cond do
+        exists?(room_id) ->
+          {:ok, room_id}
+
+        true ->
+          # Start a fresh room, seed the transcript, then ask the
+          # Coordinator to watch it. The order matters: seeding before
+          # `watch_room` means any peer-visible state is in place
+          # before the coordinator starts dispatching activations.
+          # Without `watch_room`, the coordinator never receives
+          # `:user_message` events from this room and no agents fire.
+          case start_link(id: room_id) do
+            {:ok, _pid} ->
+              GenServer.call(room_name(room_id), {:seed_transcript, messages})
+              Egghead.Chat.Coordinator.watch_room(room_id)
+              {:ok, room_id}
+
+            {:error, {:already_started, _}} ->
+              {:ok, room_id}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+      end
+    else
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, _} = err -> err
+      class when is_atom(class) -> {:error, :wrong_class}
+      _ -> {:error, :parse_failed}
+    end
+  end
+
+  defp derive_room_id("chat/" <> rest), do: rest
+  defp derive_room_id(other), do: other
+
+  @doc """
   Whether a live room with this id is currently running.
   """
   @spec exists?(String.t()) :: boolean()
@@ -279,6 +333,26 @@ defmodule Egghead.Chat.Room do
     broadcast(state.id, {:user_message, msg})
 
     reply_with_timeout(:ok, state)
+  end
+
+  def handle_call({:seed_transcript, messages}, _from, state) do
+    # Seed an empty room with messages parsed from a saved transcript.
+    # Idempotent guard: refuse to overwrite if anything is already there.
+    case state.transcript do
+      [] ->
+        agents =
+          messages
+          |> Enum.filter(&(&1.sender.type == :agent))
+          |> Enum.map(& &1.sender.id)
+          |> Enum.uniq()
+          |> MapSet.new()
+
+        state = %{state | transcript: messages, agents: MapSet.union(state.agents, agents)}
+        {:reply, :ok, state}
+
+      _ ->
+        {:reply, {:error, :not_empty}, state}
+    end
   end
 
   def handle_call({:agent_pass, %Sender{} = sender}, _from, state) do

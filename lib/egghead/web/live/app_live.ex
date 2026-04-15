@@ -327,8 +327,9 @@ defmodule Egghead.Web.AppLive do
 
   def handle_info({:agent_passed, agent_id}, socket) do
     display = agent_display_name(agent_id)
-    seed = "#{agent_id}:#{System.os_time(:second)}"
-    flavor = Egghead.Chat.PassActions.pick(seed)
+    # Random flavor per /pass event. The picked text is stored on the
+    # Entry so re-renders use the same string deterministically.
+    flavor = Egghead.Chat.PassActions.pick()
     entry = Egghead.TUI.Chat.Entry.action(agent_id, display, flavor)
     {:noreply, socket |> drop_stream(agent_id) |> append_entry(entry)}
   end
@@ -471,6 +472,29 @@ defmodule Egghead.Web.AppLive do
 
   # --- Private: chat ---
 
+  # Translate a Room.Message map into the right Entry kind for the
+  # chat view. `/pass` messages render as `/me`-style action lines
+  # (matching the live-event handler in `:agent_passed`); everything
+  # else maps to its sender type.
+  defp message_to_entry(%{sender: %{type: :user, name: name}, content: content}) do
+    Egghead.TUI.Chat.Entry.user(name, content)
+  end
+
+  defp message_to_entry(%{
+         id: msg_id,
+         sender: %{type: :agent, id: id, name: name},
+         content: "/pass"
+       }) do
+    # Use the message id as the seed so each /pass event picks the same
+    # flavor across reloads — different events get different flavors.
+    flavor = Egghead.Chat.PassActions.pick(msg_id)
+    Egghead.TUI.Chat.Entry.action(id, name, flavor)
+  end
+
+  defp message_to_entry(%{sender: %{type: :agent, id: id, name: name}, content: content}) do
+    Egghead.TUI.Chat.Entry.agent(id, name, content)
+  end
+
   defp hydrate_chat(socket) do
     case socket.assigns.room_id do
       nil ->
@@ -481,25 +505,16 @@ defmodule Egghead.Web.AppLive do
           Egghead.Chat.Room.subscribe(room_id)
         end
 
+        # Room.get_transcript/1 returns the message list directly (not
+        # `{:ok, messages}`). Wrap in try so a dead room degrades to an
+        # empty transcript rather than crashing the LiveView.
         transcript =
-          case Egghead.Chat.Room.get_transcript(room_id) do
-            {:ok, messages} ->
-              Enum.map(messages, fn msg ->
-                case msg.sender.type do
-                  :user ->
-                    Egghead.TUI.Chat.Entry.user(msg.sender.name, msg.content)
-
-                  :agent ->
-                    Egghead.TUI.Chat.Entry.agent(
-                      msg.sender.id,
-                      msg.sender.name,
-                      msg.content
-                    )
-                end
-              end)
-
-            _ ->
-              []
+          try do
+            room_id
+            |> Egghead.Chat.Room.get_transcript()
+            |> Enum.map(&message_to_entry/1)
+          catch
+            _, _ -> []
           end
 
         agents =
@@ -1249,6 +1264,9 @@ defmodule Egghead.Web.AppLive do
           <div class="chat-inner">
             <div class="chat-header">
               <span class="chat-title">Chat</span>
+              <span :if={@room_id} class="chat-room-id" title="Room id">
+                #{@room_id}
+              </span>
               <button class="toolbar-btn" phx-click="toggle_agents" title="Agent roster">
                 <span class="toolbar-label">{length(@agents)} agents</span>
               </button>

@@ -383,10 +383,10 @@ defmodule Egghead.TUI.Chat.Update do
 
   defp handle_room_event({:agent_passed, agent_id}, model) do
     display = display_name(agent_id, model)
-    # Seed the flavor pick on agent_id + coarse time so the same /pass
-    # event renders the same line on re-render within the same second.
-    seed = "#{agent_id}:#{System.os_time(:second)}"
-    flavor = Egghead.Chat.PassActions.pick(seed)
+    # Random flavor per /pass event. The picked text is stored on the
+    # Entry so subsequent re-renders use the same string — no need to
+    # seed the pick deterministically.
+    flavor = Egghead.Chat.PassActions.pick()
 
     model
     |> Model.drop_stream(agent_id)

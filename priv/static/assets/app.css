@@ -868,6 +868,15 @@ details[open] > .properties-summary::before {
 }
 
 .chat-title { font-weight: 700; font-size: 13px; color: var(--fg); }
+.chat-room-id {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-left: auto;
+  margin-right: 8px;
+  user-select: text;
+  cursor: text;
+}
 .room-id { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
 
 .chat-transcript {
@@ -1013,7 +1022,9 @@ details[open] > .properties-summary::before {
   padding: 2px 8px;
 }
 
-.meta-line.action { font-style: normal; }
+/* Action lines render as `/me`-style atmospheric italic — IRC convention.
+   Used by `/pass` flavor lines and other in-character actions. */
+.meta-line.action { font-style: italic; }
 
 /* Capability denial — amber guardrail, not red crash */
 .meta-line.denial {

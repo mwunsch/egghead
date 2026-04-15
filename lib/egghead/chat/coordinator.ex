@@ -207,6 +207,7 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_streaming, _, _, _}, state), do: {:noreply, state}
   def handle_info({:agent_tool_call, _, _, _, _}, state), do: {:noreply, state}
   def handle_info({:agent_tool_denied, _, _, _, _, _}, state), do: {:noreply, state}
+  def handle_info({:agent_tool_output, _, _, _, _, _}, state), do: {:noreply, state}
 
   def handle_info({:agent_handoff, room_id, agent_id, _delib_id}, state) do
     state = %{

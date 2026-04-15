@@ -52,6 +52,7 @@ defmodule Egghead.Application do
 
         [
           {Phoenix.PubSub, name: Egghead.PubSub},
+          {Task.Supervisor, name: Egghead.Tool.TaskSupervisor},
           {Egghead.RecordSupervisor,
            records_dir: records_dir, skills_dir: skills_dir, db_path: db_path},
           {Egghead.Agent.LayerSupervisor, records_dir: records_dir}

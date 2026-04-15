@@ -347,6 +347,25 @@ defmodule Egghead.TUI.Chat.Update do
     |> Model.append_entry(Entry.denial(agent_id, display, text, denial))
   end
 
+  # Streaming tool output (stdout chunks from shell_exec, etc.).
+  # Appends each chunk as a muted :action entry so long-running
+  # commands don't look hung. Rolling merge: if the last transcript
+  # entry is our own tool_output for the same tool_use_id, extend
+  # its text rather than adding a new line.
+  defp handle_room_event(
+         {:agent_tool_output, _room_id, agent_id, tool_name, tool_use_id, chunk},
+         model
+       ) do
+    trimmed = String.trim_trailing(chunk)
+
+    if trimmed == "" do
+      model
+    else
+      display = display_name(agent_id, model)
+      merge_tool_output(model, agent_id, display, tool_name, tool_use_id, trimmed)
+    end
+  end
+
   defp handle_room_event({:agents_activated, _count}, model) do
     # The Coordinator just decided which agents are about to
     # speak; we don't yet know their ids individually. The first
@@ -552,6 +571,31 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   defp format_tool_call(name, _), do: "uses #{name}"
+
+  # Merge a streamed tool_output chunk with the last transcript
+  # entry if it's the same tool invocation (matched via tool_use_id
+  # stored in Entry metadata). Otherwise append a new entry.
+  defp merge_tool_output(model, agent_id, display, tool_name, tool_use_id, chunk) do
+    transcript = model.transcript
+
+    case List.last(transcript) do
+      %Entry{kind: :action, metadata: %{tool_output: true, tool_use_id: ^tool_use_id}} = last ->
+        updated = %{last | text: last.text <> "\n" <> chunk}
+        %{model | transcript: List.replace_at(transcript, -1, updated)}
+
+      _ ->
+        entry = %Entry{
+          kind: :action,
+          sender_id: agent_id,
+          sender_name: display,
+          text: "#{tool_name}: #{chunk}",
+          timestamp: DateTime.utc_now(),
+          metadata: %{tool_output: true, tool_use_id: tool_use_id}
+        }
+
+        Model.append_entry(model, entry)
+    end
+  end
 
   defp format_denial(agent_id, tool_name, input, denial) do
     input_summary =

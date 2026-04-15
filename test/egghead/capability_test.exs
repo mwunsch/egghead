@@ -318,6 +318,47 @@ defmodule Egghead.CapabilityTest do
     end
   end
 
+  describe "parse_grant_spec/1 and grant_to_spec/1" do
+    test "bare resource.verb parses as a string" do
+      assert {:ok, "records.read"} = Capability.parse_grant_spec("records.read")
+    end
+
+    test "scoped grant parses to a map" do
+      assert {:ok, %{"net.get" => %{"hosts" => ["*.github.com"]}}} =
+               Capability.parse_grant_spec("net.get{hosts=[*.github.com]}")
+    end
+
+    test "multiple scope pairs" do
+      {:ok, parsed} =
+        Capability.parse_grant_spec("shell.exec{cmds=[rg,jq],patterns=[git:*]}")
+
+      assert %{"shell.exec" => scope} = parsed
+      assert scope["cmds"] == ["rg", "jq"]
+      assert scope["patterns"] == ["git:*"]
+    end
+
+    test "empty spec errors" do
+      assert {:error, _} = Capability.parse_grant_spec("")
+    end
+
+    test "malformed scope (missing }) errors" do
+      assert {:error, _} = Capability.parse_grant_spec("net.get{hosts=[x]")
+    end
+
+    test "grant_to_spec/1 round-trips bare grants" do
+      [grant] = Capability.parse(["records.read"])
+      assert Capability.grant_to_spec(grant) == "records.read"
+    end
+
+    test "grant_to_spec/1 round-trips scoped grants" do
+      [grant] = Capability.parse([%{"net.get" => %{"hosts" => ["*.github.com"]}}])
+      spec = Capability.grant_to_spec(grant)
+      assert spec =~ "net.get{"
+      assert spec =~ "hosts="
+      assert spec =~ "*.github.com"
+    end
+  end
+
   describe "Denial.to_tool_result/1" do
     test "formats a scope_violation actionably" do
       grants = Capability.parse([%{"net.get" => %{"hosts" => ["*.github.com"]}}])

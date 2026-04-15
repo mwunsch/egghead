@@ -300,6 +300,30 @@ defmodule Egghead.Web.AppLive do
     {:noreply, append_entry(socket, entry)}
   end
 
+  def handle_info(
+        {:agent_tool_output, _room_id, agent_id, tool_name, _tool_use_id, chunk},
+        socket
+      ) do
+    trimmed = String.trim_trailing(chunk)
+
+    if trimmed == "" do
+      {:noreply, socket}
+    else
+      display = agent_display_name(agent_id)
+
+      entry = %Egghead.TUI.Chat.Entry{
+        kind: :action,
+        sender_id: agent_id,
+        sender_name: display,
+        text: "#{tool_name}: #{trimmed}",
+        timestamp: DateTime.utc_now(),
+        metadata: %{tool_output: true}
+      }
+
+      {:noreply, append_entry(socket, entry)}
+    end
+  end
+
   def handle_info({:agents_activated, _count}, socket), do: {:noreply, socket}
 
   def handle_info({:agent_passed, agent_id}, socket) do

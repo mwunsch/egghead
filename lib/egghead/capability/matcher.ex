@@ -66,19 +66,15 @@ defmodule Egghead.Capability.Matcher do
   end
 
   # --- Shell ---
-  def check(grant_scope, %{cmd: cmd}, :shell, :exec) do
-    cmds = Map.get(grant_scope, :cmds, [])
+  # Request scope is `%{cmd: argv[0], argv: [argv0, arg1, ...]}`.
+  # Grant scope supports `cmds:` (argv[0] allowlist) and `patterns:`
+  # (full-invocation glob); delegates to Tool.Pattern.
+  def check(grant_scope, request_scope, :shell, :exec) do
+    argv =
+      Map.get(request_scope, :argv) ||
+        [to_string(Map.get(request_scope, :cmd, ""))]
 
-    cond do
-      cmds == [] ->
-        {:scope_violation, "command #{cmd} not allowed (no cmds in grant)"}
-
-      to_string(cmd) in Enum.map(cmds, &to_string/1) ->
-        :ok
-
-      true ->
-        {:scope_violation, "command #{cmd} not in allow-list #{inspect(cmds)}"}
-    end
+    Egghead.Tool.Pattern.check(argv, grant_scope)
   end
 
   # --- Records.update with optional class/path scoping ---

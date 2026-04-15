@@ -249,6 +249,109 @@ defmodule Egghead.Agent.Tools do
         }
       },
       %{
+        name: "web_fetch",
+        offers_on: [{:net, :get}, {:net, :post}, {:net, :put}, {:net, :delete}],
+        resolve: &Egghead.Tool.WebFetch.request_for/1,
+        description:
+          "Fetch a URL over HTTP. Default method is GET; pass `method` for POST/PUT/DELETE. HTML responses are stripped to readable text with links preserved by default (pass `raw: true` for raw HTML). Scoped by `net.*{hosts: [...]}` capability — the URL's host must be in the allow-list.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            url: %{type: "string", description: "Full URL to fetch"},
+            method: %{
+              type: "string",
+              enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+              description: "HTTP method (default: GET)"
+            },
+            body: %{type: "string", description: "Request body (for POST/PUT/PATCH)"},
+            headers: %{
+              type: "array",
+              items: %{type: "array", items: %{type: "string"}},
+              description: "Header pairs as [name, value] arrays"
+            },
+            raw: %{
+              type: "boolean",
+              description: "Preserve raw HTML/body instead of stripping to text"
+            },
+            timeout: %{
+              type: "integer",
+              description: "Timeout in milliseconds (default 30000)"
+            }
+          },
+          required: ["url"]
+        }
+      },
+      %{
+        name: "shell_exec",
+        offers_on: [{:shell, :exec}],
+        resolve: &Egghead.Tool.ShellExec.request_for/1,
+        description:
+          "Run a shell command. The `cmd` and `args` are passed directly to spawn_executable — no shell interpretation, no injection surface. Gated by `shell.exec{cmds: [...], patterns: [...]}` capability. Command output is captured (stdout + stderr combined) and truncated at 30k tokens if oversized.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            cmd: %{type: "string", description: "Command to run (argv[0])"},
+            args: %{
+              type: "array",
+              items: %{type: "string"},
+              description: "Command arguments (no shell interpretation)"
+            },
+            cwd: %{type: "string", description: "Working directory"},
+            timeout: %{
+              type: "integer",
+              description: "Timeout in milliseconds (default 30000)"
+            }
+          },
+          required: ["cmd"]
+        }
+      },
+      %{
+        name: "fs_read",
+        offers_on: [{:fs, :read}],
+        resolve: &Egghead.Tool.FS.request_for_read/1,
+        description:
+          "Read a file outside the record store. Gated by `fs.read{paths: [...]}` capability. Non-UTF-8 files are refused; large files are truncated.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            path: %{type: "string", description: "Absolute or ~-prefixed file path"},
+            max_bytes: %{type: "integer", description: "Override default byte cap"}
+          },
+          required: ["path"]
+        }
+      },
+      %{
+        name: "fs_write",
+        offers_on: [{:fs, :write}],
+        resolve: &Egghead.Tool.FS.request_for_write/1,
+        description:
+          "Write (or overwrite) a file outside the record store. Atomic via temp + rename. Gated by `fs.write{paths: [...]}` capability.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            path: %{type: "string", description: "Absolute or ~-prefixed file path"},
+            content: %{type: "string", description: "File content (UTF-8 text)"}
+          },
+          required: ["path", "content"]
+        }
+      },
+      %{
+        name: "fs_grep",
+        offers_on: [{:fs, :read}],
+        resolve: &Egghead.Tool.FS.request_for_grep/1,
+        description:
+          "Search file contents for a regex pattern. Uses ripgrep if available, Elixir fallback otherwise. Gated by `fs.read{paths: [...]}` capability on the search root.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            pattern: %{type: "string", description: "Regex pattern"},
+            path: %{type: "string", description: "File or directory to search"},
+            max_results: %{type: "integer", description: "Max matches to return (default 200)"}
+          },
+          required: ["pattern", "path"]
+        }
+      },
+      %{
         name: "update_record",
         offers_on: [{:records, :update}, {:agent, :update}, {:agent, :grant}],
         resolve: &req_update_record/1,
@@ -458,6 +561,27 @@ defmodule Egghead.Agent.Tools do
       {:error, :already_exists} -> {:error, "Record already exists: #{attrs["id"]}"}
       {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
     end
+  end
+
+  defp do_execute("web_fetch", input, _ctx) do
+    Egghead.Tool.WebFetch.run(input)
+  end
+
+  defp do_execute("shell_exec", input, ctx) do
+    on_output = Map.get(ctx, :on_tool_output)
+    Egghead.Tool.ShellExec.run(input, on_output: on_output)
+  end
+
+  defp do_execute("fs_read", input, _ctx) do
+    Egghead.Tool.FS.read(input)
+  end
+
+  defp do_execute("fs_write", input, _ctx) do
+    Egghead.Tool.FS.write(input)
+  end
+
+  defp do_execute("fs_grep", input, _ctx) do
+    Egghead.Tool.FS.grep(input)
   end
 
   defp do_execute("update_record", %{"id" => id} = input, _ctx) do

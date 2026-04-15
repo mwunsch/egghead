@@ -16,15 +16,18 @@ defmodule Egghead.CLI.SkillCmd do
     if "--help" in args or "-h" in args do
       print_help()
     else
-      {_opts, rest, _} = OptionParser.parse(args, switches: [], aliases: [])
+      {opts, rest, _} =
+        OptionParser.parse(args, switches: [agent: :string], aliases: [a: :agent])
 
       case rest do
         [] -> do_list()
         ["list" | _] -> do_list()
         ["show", name | _] -> do_show(name)
         ["inspect", name | _] -> do_show(name)
+        ["check", name | _] -> do_check(name, opts)
         ["show" | _] -> IO.puts("Usage: egghead skill show <name>")
-        _ -> IO.puts("Usage: egghead skill <command>\nCommands: list, show <name>")
+        ["check" | _] -> IO.puts("Usage: egghead skill check <name> --agent <id>")
+        _ -> IO.puts("Usage: egghead skill <command>\nCommands: list, show, check <name>")
       end
     end
   end
@@ -44,8 +47,10 @@ defmodule Egghead.CLI.SkillCmd do
       See https://agentskills.io/specification for the SKILL.md format.
 
     COMMANDS
-      list              List available skills (default)
-      show <name>       Show a skill's body and validation status
+      list                              List available skills (default)
+      show <name>                       Show a skill's body and validation status
+      check <name> --agent <id>         Report the capability delta between a
+                                        skill's allowed-tools and an agent's grants
 
     SEE ALSO
       egghead agent, design/capability-model
@@ -106,6 +111,134 @@ defmodule Egghead.CLI.SkillCmd do
         )
       end
     end
+  end
+
+  defp do_check(name, opts) do
+    Egghead.CLI.start_app(:silent, web: false)
+
+    agent_id = opts[:agent]
+
+    if is_nil(agent_id) do
+      IO.puts("Usage: egghead skill check <name> --agent <agent_id>")
+      System.halt(1)
+    end
+
+    case find_by_name(name) do
+      nil ->
+        IO.puts("Skill not found: #{name}")
+        System.halt(1)
+
+      lightweight ->
+        record =
+          case Egghead.get_record(lightweight.id) do
+            {:ok, full} -> full
+            _ -> lightweight
+          end
+
+        case Egghead.get_record(agent_id) do
+          {:ok, agent_record} when agent_record.class == :agent ->
+            report_delta(record, agent_record)
+
+          {:ok, _} ->
+            IO.puts("#{agent_id} is not an agent record")
+            System.halt(1)
+
+          {:error, :not_found} ->
+            IO.puts("Agent not found: #{agent_id}")
+            System.halt(1)
+        end
+    end
+  end
+
+  defp report_delta(skill_record, agent_record) do
+    skill_name = Skill.derive_name(skill_record)
+    agent_grants = Egghead.Capability.parse(agent_record.meta["capabilities"] || [])
+
+    %{requests: requests, unknown: unknown} = Skill.derive_requirements(skill_record)
+
+    Widgets.header("Capability check: #{skill_name} → #{agent_record.id}")
+
+    if requests == [] and unknown == [] do
+      IO.puts("  Skill declares no allowed-tools — no capability requirements to check.")
+    end
+
+    results =
+      Enum.map(requests, fn req ->
+        case Egghead.Capability.check(agent_grants, req, %{agent_id: agent_record.id}) do
+          :ok -> {:ok, req}
+          {:denied, denial} -> {:denied, req, denial}
+        end
+      end)
+
+    ok_count = Enum.count(results, fn {status, _} -> status == :ok end)
+    denied = Enum.filter(results, &match?({:denied, _, _}, &1))
+
+    Enum.each(results, fn
+      {:ok, req} ->
+        IO.puts("  \e[32m✓\e[0m #{format_request(req)}")
+
+      {:denied, req, denial} ->
+        IO.puts("  \e[33m⚠\e[0m #{format_request(req)}")
+        IO.puts("    \e[90m#{denial.message}\e[0m")
+    end)
+
+    Enum.each(unknown, fn tok ->
+      IO.puts("  \e[31m?\e[0m #{tok}  \e[90m(unknown tool — capability can't be derived)\e[0m")
+    end)
+
+    IO.puts("")
+
+    cond do
+      denied == [] and unknown == [] ->
+        IO.puts("  \e[32mAll requirements satisfied.\e[0m")
+
+      denied == [] and unknown != [] ->
+        IO.puts("  Known requirements satisfied. #{length(unknown)} unknown tools.")
+
+      true ->
+        IO.puts(
+          "  \e[33m#{length(denied)} missing capabilities.\e[0m (\e[32m#{ok_count} satisfied\e[0m, #{length(unknown)} unknown)"
+        )
+
+        IO.puts("")
+        IO.puts("  To grant:")
+
+        Enum.each(denied, fn {:denied, req, _} ->
+          spec = suggest_spec(req)
+          IO.puts("    egghead agent grant #{agent_record.id} '#{spec}'")
+        end)
+    end
+  end
+
+  defp format_request(%Egghead.Capability.Request{} = req) do
+    key = "#{req.resource}.#{req.verb}"
+
+    scope_desc =
+      case req.scope do
+        s when s == %{} -> ""
+        %{hosts: hs} -> "{hosts=[#{Enum.join(hs, ",")}]}"
+        %{paths: ps} -> "{paths=[#{Enum.join(ps, ",")}]}"
+        %{patterns: ps} -> "{patterns=[#{Enum.join(ps, ",")}]}"
+        %{cmds: cs} -> "{cmds=[#{Enum.join(cs, ",")}]}"
+        _ -> ""
+      end
+
+    key <> scope_desc
+  end
+
+  defp suggest_spec(%Egghead.Capability.Request{resource: r, verb: v, scope: scope})
+       when scope == %{} do
+    "#{r}.#{v}"
+  end
+
+  defp suggest_spec(%Egghead.Capability.Request{resource: r, verb: v, scope: scope}) do
+    pairs =
+      Enum.map_join(scope, ",", fn {k, val} ->
+        val_str = if is_list(val), do: "[" <> Enum.join(val, ",") <> "]", else: to_string(val)
+        "#{k}=#{val_str}"
+      end)
+
+    "#{r}.#{v}{#{pairs}}"
   end
 
   defp do_show(name) do

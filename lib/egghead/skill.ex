@@ -107,10 +107,138 @@ defmodule Egghead.Skill do
   defp normalize_id(id), do: id
 
   @doc """
+  Derives the list of `%Capability.Request{}`s a skill would need
+  in order to execute successfully. Parses `allowed-tools` with
+  `parse_allowed_tools/1`, then maps each token through a known-tool
+  translation table.
+
+  Returns a map with:
+
+    %{
+      requests: [%Request{}, ...],
+      unknown: ["FooTool(...)", ...],    # tokens we couldn't map
+      warnings: [...]
+    }
+
+  Unknown tokens don't block — they surface as warnings the user
+  can see in `egghead skill check`, prompting them to either grant
+  a broader capability or skip the skill.
+  """
+  @spec derive_requirements(Record.t()) :: %{
+          requests: [Egghead.Capability.Request.t()],
+          unknown: [String.t()],
+          warnings: [String.t()]
+        }
+  def derive_requirements(%Record{meta: meta}) do
+    tokens = parse_allowed_tools(meta["allowed-tools"])
+
+    Enum.reduce(tokens, %{requests: [], unknown: [], warnings: []}, fn token, acc ->
+      case token_to_requests(token) do
+        {:ok, reqs} ->
+          %{acc | requests: acc.requests ++ reqs}
+
+        :unknown ->
+          %{acc | unknown: [token | acc.unknown]}
+      end
+    end)
+  end
+
+  # Translation table — Claude Code / Agent Skills tokens → our
+  # capability %Request{}s. `*` wildcards pass through as our
+  # auditable-wildcard convention.
+  defp token_to_requests("Bash(" <> rest) do
+    case String.trim_trailing(rest, ")") do
+      "*" ->
+        {:ok, [request(:shell, :exec, %{patterns: ["*"]})]}
+
+      pattern ->
+        if String.contains?(pattern, ":") do
+          {:ok, [request(:shell, :exec, %{patterns: [pattern]})]}
+        else
+          {:ok, [request(:shell, :exec, %{patterns: [pattern]})]}
+        end
+    end
+  end
+
+  defp token_to_requests("Bash"),
+    do: {:ok, [request(:shell, :exec, %{patterns: ["*"]})]}
+
+  defp token_to_requests("Read"),
+    do: {:ok, [request(:fs, :read, %{})]}
+
+  defp token_to_requests("Read(" <> rest) do
+    path = String.trim_trailing(rest, ")")
+    {:ok, [request(:fs, :read, %{paths: [path]})]}
+  end
+
+  defp token_to_requests("Write"),
+    do: {:ok, [request(:fs, :write, %{})]}
+
+  defp token_to_requests("Write(" <> rest) do
+    path = String.trim_trailing(rest, ")")
+    {:ok, [request(:fs, :write, %{paths: [path]})]}
+  end
+
+  defp token_to_requests("Edit"),
+    do: {:ok, [request(:fs, :write, %{})]}
+
+  defp token_to_requests("Edit(" <> rest) do
+    path = String.trim_trailing(rest, ")")
+    {:ok, [request(:fs, :write, %{paths: [path]})]}
+  end
+
+  defp token_to_requests("Glob"),
+    do: {:ok, [request(:fs, :read, %{})]}
+
+  defp token_to_requests("Grep"),
+    do: {:ok, [request(:fs, :read, %{})]}
+
+  defp token_to_requests("WebFetch") do
+    {:ok,
+     [
+       request(:net, :get, %{}),
+       request(:net, :post, %{})
+     ]}
+  end
+
+  defp token_to_requests("WebFetch(" <> rest) do
+    inner = String.trim_trailing(rest, ")")
+
+    host =
+      case String.split(inner, ":", parts: 2) do
+        ["domain", host] -> host
+        [raw] -> raw
+        _ -> inner
+      end
+
+    {:ok,
+     [
+       request(:net, :get, %{hosts: [host]}),
+       request(:net, :post, %{hosts: [host]})
+     ]}
+  end
+
+  defp token_to_requests("WebSearch") do
+    # Conservatively require both fetch verbs — the actual search
+    # implementation lives behind the provider/MCP layer we build next.
+    {:ok,
+     [
+       request(:net, :get, %{}),
+       request(:net, :post, %{})
+     ]}
+  end
+
+  defp token_to_requests(_), do: :unknown
+
+  defp request(resource, verb, scope) do
+    %Egghead.Capability.Request{resource: resource, verb: verb, scope: scope}
+  end
+
+  @doc """
   Parses the spec's `allowed-tools` frontmatter string (e.g.
   `"Bash(git:*) Bash(jq:*) Read"`) into a list of loose tool
-  references. These are mapped to capability requests by the
-  capability/skill integration layer (step 5).
+  references. These are mapped to capability requests by
+  `derive_requirements/1`.
   """
   @spec parse_allowed_tools(term()) :: [String.t()]
   def parse_allowed_tools(nil), do: []

@@ -15,37 +15,63 @@ defmodule Egghead.CLI.AgentCmd do
         whose body serves as their system prompt.
 
       COMMANDS
-        list              List running agents (default)
-        new               Create a new agent interactively
+        list                              List running agents (default)
+        new                               Create a new agent interactively
+        grant <agent-id> <cap>            Add a capability to an agent
+        revoke <agent-id> <cap>           Remove a capability from an agent
+        capabilities <agent-id>           Show an agent's held capabilities
 
       FLAGS
         --name <name>     Agent name (skip prompt, for `new`)
         --model <model>   Model string (skip picker, for `new`)
         --dry-run         Preview without saving (for `new`)
+        --yes, -y         Skip confirmation prompt (for `grant`)
         --config PATH     Override config file location
         -h, --help        Show this help
 
       EXAMPLES
         $ egghead agent list
         $ egghead agent new
-        $ egghead agent new --name scout
-        $ egghead agent new --name scout --model anthropic/claude-haiku-4-5
+        $ egghead agent grant agents/scout 'net.get{hosts=[*.github.com]}'
+        $ egghead agent revoke agents/scout records.update
+        $ egghead agent capabilities agents/scout
 
       SEE ALSO
-        egghead llm models, egghead config
+        egghead llm models, egghead skill check, design/capability-model
       """)
     else
       {opts, rest, _} =
         OptionParser.parse(args,
-          switches: [name: :string, model: :string, dry_run: :boolean],
-          aliases: []
+          switches: [name: :string, model: :string, dry_run: :boolean, yes: :boolean],
+          aliases: [y: :yes]
         )
 
       case rest do
-        ["list" | _] -> do_list()
-        ["new" | _] -> do_new(opts)
-        [] -> do_list()
-        _ -> IO.puts("Usage: egghead agent <command>\nCommands: list, new")
+        ["list" | _] ->
+          do_list()
+
+        ["new" | _] ->
+          do_new(opts)
+
+        ["grant", agent_id, cap | _] ->
+          do_grant(agent_id, cap, opts)
+
+        ["revoke", agent_id, cap | _] ->
+          do_revoke(agent_id, cap)
+
+        ["capabilities", agent_id | _] ->
+          do_capabilities(agent_id)
+
+        ["caps", agent_id | _] ->
+          do_capabilities(agent_id)
+
+        [] ->
+          do_list()
+
+        _ ->
+          IO.puts(
+            "Usage: egghead agent <command>\nCommands: list, new, grant, revoke, capabilities"
+          )
       end
     end
   end
@@ -207,4 +233,165 @@ defmodule Egghead.CLI.AgentCmd do
       template
     end
   end
+
+  # --- Capability management ---
+
+  defp do_grant(agent_id, cap_spec, opts) do
+    Egghead.CLI.start_app(:silent, web: false)
+
+    case Egghead.Capability.parse_grant_spec(cap_spec) do
+      {:ok, parsed} ->
+        grants = Egghead.Capability.parse([parsed])
+
+        if grants == [] do
+          Widgets.error("Could not interpret capability: #{cap_spec}")
+          System.halt(1)
+        end
+
+        case Egghead.get_record(agent_id) do
+          {:ok, record} ->
+            if record.class != :agent do
+              Widgets.error("#{agent_id} is not an agent record (class: #{record.class})")
+              System.halt(1)
+            end
+
+            new_cap = hd(grants)
+            existing = record.meta["capabilities"] || []
+
+            if opts[:yes] || confirm_grant(agent_id, new_cap) do
+              merged = existing ++ [parsed]
+
+              case Egghead.update_record(agent_id, %{"capabilities" => merged}) do
+                {:ok, _} ->
+                  Widgets.success(
+                    "Granted #{Egghead.Capability.grant_to_spec(new_cap)} to #{agent_id}"
+                  )
+
+                  IO.puts("  Agent will hot-reload with new capability.")
+
+                {:error, reason} ->
+                  Widgets.error("Update failed: #{inspect(reason)}")
+                  System.halt(1)
+              end
+            else
+              IO.puts("  Cancelled.")
+            end
+
+          {:error, :not_found} ->
+            Widgets.error("Agent not found: #{agent_id}")
+            System.halt(1)
+        end
+
+      {:error, reason} ->
+        Widgets.error("Invalid capability spec: #{reason}")
+        System.halt(1)
+    end
+  end
+
+  defp do_revoke(agent_id, cap_spec) do
+    Egghead.CLI.start_app(:silent, web: false)
+
+    case Egghead.Capability.parse_grant_spec(cap_spec) do
+      {:ok, parsed} ->
+        grants = Egghead.Capability.parse([parsed])
+
+        if grants == [] do
+          Widgets.error("Could not interpret capability: #{cap_spec}")
+          System.halt(1)
+        end
+
+        target = hd(grants)
+
+        case Egghead.get_record(agent_id) do
+          {:ok, record} ->
+            existing = record.meta["capabilities"] || []
+            filtered = Enum.reject(existing, &same_grant?(&1, target))
+
+            cond do
+              filtered == existing ->
+                IO.puts("No change — #{agent_id} doesn't hold #{cap_spec}.")
+
+              true ->
+                case Egghead.update_record(agent_id, %{"capabilities" => filtered}) do
+                  {:ok, _} ->
+                    Widgets.success(
+                      "Revoked #{Egghead.Capability.grant_to_spec(target)} from #{agent_id}"
+                    )
+
+                  {:error, reason} ->
+                    Widgets.error("Update failed: #{inspect(reason)}")
+                    System.halt(1)
+                end
+            end
+
+          {:error, :not_found} ->
+            Widgets.error("Agent not found: #{agent_id}")
+            System.halt(1)
+        end
+
+      {:error, reason} ->
+        Widgets.error("Invalid capability spec: #{reason}")
+        System.halt(1)
+    end
+  end
+
+  defp do_capabilities(agent_id) do
+    Egghead.CLI.start_app(:silent, web: false)
+
+    case Egghead.get_record(agent_id) do
+      {:ok, record} ->
+        if record.class != :agent do
+          Widgets.error("#{agent_id} is not an agent record (class: #{record.class})")
+          System.halt(1)
+        end
+
+        raw = record.meta["capabilities"] || []
+        grants = Egghead.Capability.parse(raw) |> Egghead.Capability.Catalog.sort_by_risk()
+
+        Widgets.header("Capabilities: #{agent_id}")
+
+        if grants == [] do
+          IO.puts("  (none)")
+        else
+          Enum.each(grants, fn grant ->
+            marker = risk_marker(Egghead.Capability.Catalog.risk(grant))
+            IO.puts("  #{marker} #{Egghead.Capability.Catalog.describe(grant)}")
+          end)
+
+          IO.puts("")
+          IO.puts("  #{length(grants)} capabilities")
+        end
+
+      {:error, :not_found} ->
+        Widgets.error("Agent not found: #{agent_id}")
+        System.halt(1)
+    end
+  end
+
+  defp confirm_grant(agent_id, %Egghead.Capability.Grant{} = grant) do
+    risk = Egghead.Capability.Catalog.risk(grant)
+    risk_label = risk |> to_string() |> String.upcase()
+    description = Egghead.Capability.Catalog.describe(grant)
+
+    IO.puts("")
+    IO.puts("  Agent:  #{agent_id}")
+    IO.puts("  Grant:  #{Egghead.Capability.grant_to_spec(grant)}")
+    IO.puts("  Risk:   #{risk_label}")
+    IO.puts("  Effect: #{description}")
+    IO.puts("")
+
+    Widgets.confirm("Grant this capability?", default: false)
+  end
+
+  defp same_grant?(existing, %Egghead.Capability.Grant{resource: r, verb: v}) do
+    case Egghead.Capability.parse([existing]) do
+      [%Egghead.Capability.Grant{resource: ^r, verb: ^v}] -> true
+      _ -> false
+    end
+  end
+
+  defp risk_marker(:low), do: "\e[32m●\e[0m"
+  defp risk_marker(:medium), do: "\e[33m●\e[0m"
+  defp risk_marker(:high), do: "\e[31m●\e[0m"
+  defp risk_marker(_), do: "○"
 end

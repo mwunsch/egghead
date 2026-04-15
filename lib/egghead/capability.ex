@@ -254,6 +254,115 @@ defmodule Egghead.Capability do
     end)
   end
 
+  @doc """
+  Parses a compact grant spec string (the form `egghead agent grant`
+  accepts) into the data shape consumable by `parse/1`.
+
+  Accepts:
+
+      records.read
+      net.get{hosts=[*.github.com,api.anthropic.com]}
+      shell.exec{cmds=[rg,jq],patterns=[git:*]}
+      fs.read{paths=[~/projects/**]}
+
+  Returns `{:ok, value}` where `value` is a string (bare form) or a
+  map `%{resource_verb => scope_map}` suitable for `Capability.parse/1`.
+  Returns `{:error, reason}` on parse failure.
+  """
+  @spec parse_grant_spec(String.t()) :: {:ok, term()} | {:error, String.t()}
+  def parse_grant_spec(str) when is_binary(str) do
+    trimmed = String.trim(str)
+
+    cond do
+      trimmed == "" ->
+        {:error, "empty spec"}
+
+      String.contains?(trimmed, "{") ->
+        parse_scoped(trimmed)
+
+      true ->
+        {:ok, trimmed}
+    end
+  end
+
+  defp parse_scoped(str) do
+    with [verb_part, rest] <- String.split(str, "{", parts: 2),
+         true <- String.ends_with?(rest, "}") or {:error, "missing closing }"},
+         scope_body <- String.trim_trailing(rest, "}"),
+         {:ok, scope_map} <- parse_scope_body(scope_body) do
+      {:ok, %{String.trim(verb_part) => scope_map}}
+    else
+      {:error, _} = err -> err
+      _ -> {:error, "malformed spec: #{str}"}
+    end
+  end
+
+  defp parse_scope_body(body) do
+    # Split on top-level commas (not inside [...])
+    pairs = split_top_level(body, ",")
+
+    result =
+      Enum.reduce_while(pairs, {:ok, %{}}, fn pair, {:ok, acc} ->
+        case String.split(String.trim(pair), "=", parts: 2) do
+          [key, value] ->
+            parsed_value = parse_scope_value(String.trim(value))
+            {:cont, {:ok, Map.put(acc, String.trim(key), parsed_value)}}
+
+          _ ->
+            {:halt, {:error, "malformed scope pair: #{pair}"}}
+        end
+      end)
+
+    result
+  end
+
+  defp parse_scope_value("[" <> rest) do
+    inner = String.trim_trailing(rest, "]")
+
+    inner
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp parse_scope_value(raw), do: raw
+
+  # Splits on `,` but skips commas inside balanced `[...]` brackets.
+  defp split_top_level(str, delim) do
+    {acc, current, _depth} =
+      str
+      |> String.graphemes()
+      |> Enum.reduce({[], "", 0}, fn
+        "[", {acc, cur, d} -> {acc, cur <> "[", d + 1}
+        "]", {acc, cur, d} -> {acc, cur <> "]", max(0, d - 1)}
+        ^delim, {acc, cur, 0} -> {[cur | acc], "", 0}
+        ch, {acc, cur, d} -> {acc, cur <> ch, d}
+      end)
+
+    Enum.reverse([current | acc])
+  end
+
+  @doc """
+  Formats a `%Grant{}` back to the compact spec string suitable for
+  `egghead agent grant`. Round-trips with `parse_grant_spec/1`.
+  """
+  @spec grant_to_spec(Grant.t()) :: String.t()
+  def grant_to_spec(%Grant{resource: r, verb: v, scope: scope}) when scope == %{} do
+    "#{r}.#{v}"
+  end
+
+  def grant_to_spec(%Grant{resource: r, verb: v, scope: scope}) do
+    pairs =
+      Enum.map_join(scope, ",", fn {k, v} ->
+        "#{k}=#{format_scope_value(v)}"
+      end)
+
+    "#{r}.#{v}{#{pairs}}"
+  end
+
+  defp format_scope_value(v) when is_list(v), do: "[" <> Enum.join(v, ",") <> "]"
+  defp format_scope_value(v), do: to_string(v)
+
   @doc "Suggests a YAML snippet the human could add to widen a grant for this request."
   @spec suggest_grant(Request.t()) :: String.t()
   def suggest_grant(%Request{resource: :net, verb: v, scope: %{host: host}}) do

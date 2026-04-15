@@ -93,6 +93,74 @@ defmodule Egghead.SkillTest do
     end
   end
 
+  describe "derive_requirements/1" do
+    test "empty allowed-tools → no requirements" do
+      r = record(meta: %{"description" => "d"})
+      assert %{requests: [], unknown: [], warnings: []} = Skill.derive_requirements(r)
+    end
+
+    test "Bash(git:*) → shell.exec{patterns: [git:*]}" do
+      r = record(meta: %{"description" => "d", "allowed-tools" => "Bash(git:*)"})
+      %{requests: [req], unknown: []} = Skill.derive_requirements(r)
+      assert req.resource == :shell
+      assert req.verb == :exec
+      assert req.scope.patterns == ["git:*"]
+    end
+
+    test "Read(path) → fs.read with path scope" do
+      r = record(meta: %{"description" => "d", "allowed-tools" => "Read(src/**)"})
+      %{requests: [req]} = Skill.derive_requirements(r)
+      assert req.resource == :fs
+      assert req.verb == :read
+      assert req.scope.paths == ["src/**"]
+    end
+
+    test "bare Read → fs.read (no scope — broad)" do
+      r = record(meta: %{"description" => "d", "allowed-tools" => "Read"})
+      %{requests: [req]} = Skill.derive_requirements(r)
+      assert req.resource == :fs
+      assert req.verb == :read
+      assert req.scope == %{}
+    end
+
+    test "WebFetch(domain:host) → net.get + net.post scoped to host" do
+      r = record(meta: %{"description" => "d", "allowed-tools" => "WebFetch(domain:github.com)"})
+      %{requests: reqs} = Skill.derive_requirements(r)
+
+      assert Enum.any?(reqs, fn req ->
+               req.resource == :net and req.verb == :get and
+                 req.scope.hosts == ["github.com"]
+             end)
+
+      assert Enum.any?(reqs, fn req ->
+               req.resource == :net and req.verb == :post
+             end)
+    end
+
+    test "unknown token surfaces in :unknown" do
+      r = record(meta: %{"description" => "d", "allowed-tools" => "NotARealTool(xyz)"})
+      %{unknown: unknown} = Skill.derive_requirements(r)
+      assert "NotARealTool(xyz)" in unknown
+    end
+
+    test "multi-token allowed-tools accumulates" do
+      r =
+        record(
+          meta: %{
+            "description" => "d",
+            "allowed-tools" => "Bash(git:*) Read WebFetch"
+          }
+        )
+
+      %{requests: reqs, unknown: []} = Skill.derive_requirements(r)
+      # Bash + Read + WebFetch(×2 methods) = 4 requests
+      assert length(reqs) >= 3
+      assert Enum.any?(reqs, &(&1.resource == :shell))
+      assert Enum.any?(reqs, &(&1.resource == :fs))
+      assert Enum.any?(reqs, &(&1.resource == :net))
+    end
+  end
+
   describe "parse_allowed_tools/1" do
     test "splits space-separated tool patterns" do
       assert Skill.parse_allowed_tools("Bash(git:*) Bash(jq:*) Read") == [

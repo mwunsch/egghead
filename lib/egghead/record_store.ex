@@ -591,16 +591,60 @@ defmodule Egghead.RecordStore do
   end
 
   defp render_meta_field(key, value) when is_list(value) do
-    "#{key}: [#{Enum.join(value, ", ")}]"
+    # Lists can contain scoped-capability maps (e.g. `%{"net.get" =>
+    # %{"hosts" => ["*"]}}`). For homogeneous-scalar lists we use the
+    # compact YAML inline form; for lists with maps we fall through to
+    # a block format so the YAML parser can round-trip them.
+    if Enum.all?(value, &scalar?/1) do
+      "#{key}: [#{Enum.map_join(value, ", ", &to_string/1)}]"
+    else
+      "#{key}:\n" <>
+        Enum.map_join(value, "\n", fn
+          %{} = map when map_size(map) == 1 ->
+            [{k, scope}] = Map.to_list(map)
+            render_scoped_item(k, scope)
+
+          other ->
+            "  - #{other}"
+        end)
+    end
   end
 
   defp render_meta_field(key, value) when is_map(value) do
-    # For nested maps, use inline JSON-ish representation
     "#{key}: #{Jason.encode!(value)}"
   end
 
   defp render_meta_field(key, value) do
     "#{key}: #{value}"
+  end
+
+  defp scalar?(v) when is_binary(v) or is_number(v) or is_atom(v) or is_boolean(v), do: true
+  defp scalar?(_), do: false
+
+  defp render_scoped_item(key, %{} = scope) do
+    scope_lines =
+      Enum.map_join(scope, "\n", fn {sk, sv} ->
+        "      #{sk}: #{render_scope_value(sv)}"
+      end)
+
+    "  - #{key}:\n#{scope_lines}"
+  end
+
+  defp render_scope_value(list) when is_list(list) do
+    "[" <> Enum.map_join(list, ", ", &format_scope_scalar/1) <> "]"
+  end
+
+  defp render_scope_value(other), do: format_scope_scalar(other)
+
+  defp format_scope_scalar(v) when is_binary(v), do: yaml_quote_if_needed(v)
+  defp format_scope_scalar(v), do: to_string(v)
+
+  defp yaml_quote_if_needed(str) do
+    if String.match?(str, ~r/^[A-Za-z0-9_\-\/\.\*]+$/) do
+      str
+    else
+      "\"" <> String.replace(str, "\"", "\\\"") <> "\""
+    end
   end
 
   defp maybe_field(_key, nil), do: nil

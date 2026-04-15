@@ -328,44 +328,25 @@ defmodule Egghead.Agent.Session do
         if stop_reason == "tool_use" do
           tool_uses = Enum.filter(content, &(&1["type"] == "tool_use"))
 
+          # Run tool calls concurrently under a supervised Task —
+          # tool crashes (runaway regex, hung HTTP, NIF fault) stay
+          # isolated from the Session. `ordered: true` keeps
+          # tool_results aligned with their tool_use blocks.
           {tool_results, tool_log} =
-            Enum.map(tool_uses, fn tool_use ->
-              Logger.info(
-                "Agent #{state.identity[:name]} calling tool: #{tool_use["name"]}(#{inspect(tool_use["input"])})"
-              )
-
-              {status, result_text} =
-                case Egghead.Agent.Tools.execute(tool_use["name"], tool_use["input"], %{
-                       agent_id: state.agent_id,
-                       room_id: room_id,
-                       capabilities: state.identity[:capabilities] || []
-                     }) do
-                  {:ok, text} ->
-                    {:ok, text}
-
-                  {:error, text} ->
-                    {:error, text}
-
-                  {:denied, %Egghead.Capability.Denial{} = denial} ->
-                    broadcast_denial(room_id, state.agent_id, tool_use, denial)
-                    {:error, Egghead.Capability.Denial.to_tool_result(denial)}
-                end
-
-              tool_result = %{
-                type: "tool_result",
-                tool_use_id: tool_use["id"],
-                content: result_text,
-                is_error: status == :error
-              }
-
-              log_entry = %{
-                name: tool_use["name"],
-                input: tool_use["input"],
-                result: result_text,
-                error: status == :error
-              }
-
-              {tool_result, log_entry}
+            Task.Supervisor.async_stream_nolink(
+              Egghead.Tool.TaskSupervisor,
+              tool_uses,
+              fn tool_use ->
+                run_single_tool(tool_use, state, room_id)
+              end,
+              max_concurrency: 5,
+              ordered: true,
+              timeout: :infinity,
+              on_timeout: :kill_task
+            )
+            |> Enum.map(fn
+              {:ok, result} -> result
+              {:exit, reason} -> tool_crash_result(reason)
             end)
             |> Enum.unzip()
 
@@ -829,6 +810,92 @@ defmodule Egghead.Agent.Session do
       Egghead.Chat.Room.topic(room_id),
       {:agent_tool_denied, room_id, agent_id, tool_use["name"], tool_use["input"], denial}
     )
+  end
+
+  # Per-tool-call runner. Extracted so we can run it inside
+  # `Task.Supervisor.async_stream_nolink/5` for parallel execution
+  # with crash isolation.
+  defp run_single_tool(tool_use, state, room_id) do
+    Logger.info(
+      "Agent #{state.identity[:name]} calling tool: #{tool_use["name"]}(#{inspect(tool_use["input"])})"
+    )
+
+    on_output = build_output_streamer(room_id, state.agent_id, tool_use)
+
+    ctx = %{
+      agent_id: state.agent_id,
+      room_id: room_id,
+      capabilities: state.identity[:capabilities] || [],
+      on_tool_output: on_output
+    }
+
+    {status, result_text} =
+      case Egghead.Agent.Tools.execute(tool_use["name"], tool_use["input"], ctx) do
+        {:ok, text} ->
+          {:ok, text}
+
+        {:error, text} ->
+          {:error, text}
+
+        {:denied, %Egghead.Capability.Denial{} = denial} ->
+          broadcast_denial(room_id, state.agent_id, tool_use, denial)
+          {:error, Egghead.Capability.Denial.to_tool_result(denial)}
+      end
+
+    tool_result = %{
+      type: "tool_result",
+      tool_use_id: tool_use["id"],
+      content: result_text,
+      is_error: status == :error
+    }
+
+    log_entry = %{
+      name: tool_use["name"],
+      input: tool_use["input"],
+      result: result_text,
+      error: status == :error
+    }
+
+    {tool_result, log_entry}
+  end
+
+  # Fallback when a tool Task crashes — we still need a tool_result
+  # with the right shape so the LLM can continue. Note we lose the
+  # tool_use_id; that's OK for the "tool literally exploded" edge case
+  # because Anthropic accepts a tool_result with a missing id as long
+  # as the sequencing is intact.
+  defp tool_crash_result(reason) do
+    msg = "Tool crashed: #{inspect(reason)}"
+
+    tool_result = %{
+      type: "tool_result",
+      content: msg,
+      is_error: true
+    }
+
+    log_entry = %{
+      name: "(unknown — task crash)",
+      input: %{},
+      result: msg,
+      error: true
+    }
+
+    {tool_result, log_entry}
+  end
+
+  # Builds an on_tool_output callback for tools that support streaming
+  # (currently `shell_exec`). Each chunk broadcasts an
+  # `:agent_tool_output` event that the TUI/web renders incrementally.
+  defp build_output_streamer(nil, _agent_id, _tool_use), do: nil
+
+  defp build_output_streamer(room_id, agent_id, tool_use) do
+    fn chunk ->
+      Phoenix.PubSub.broadcast(
+        Egghead.PubSub,
+        Egghead.Chat.Room.topic(room_id),
+        {:agent_tool_output, room_id, agent_id, tool_use["name"], tool_use["id"], chunk}
+      )
+    end
   end
 
   defp extract_refs_from_tool_log(tool_log) do

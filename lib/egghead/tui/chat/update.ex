@@ -28,6 +28,7 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
+    %{name: "join", description: "Enter a different room by id"},
     %{name: "tools", description: "Summary of tools available to agents"},
     %{name: "mcp", description: "Summary of MCP servers"},
     %{name: "leave", description: "Return to records (F1)"},
@@ -44,6 +45,7 @@ defmodule Egghead.TUI.Chat.Update do
     "copy" => :cmd_copy,
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
+    "join" => :cmd_join,
     "tools" => :cmd_tools,
     "mcp" => :cmd_mcp,
     "help" => :cmd_help
@@ -785,10 +787,35 @@ defmodule Egghead.TUI.Chat.Update do
     end
   end
 
+  defp apply_command(:cmd_join, arg, model) do
+    target = String.trim(arg)
+
+    cond do
+      target == "" ->
+        msg = Entry.system("Usage: /join <room-id>. Try /join " <> example_room_id())
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      not Egghead.room_exists?(target) ->
+        msg = Entry.system("No live room with id #{inspect(target)}.")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      target == model.room_id ->
+        msg = Entry.system("Already in #{target}.")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      true ->
+        # Re-init the chat model with the new room id. The runtime
+        # observes the changed `:room_id` in `subscriptions/1` and
+        # automatically resubscribes to the new room's PubSub topic.
+        new_model = Model.init(room_id: target)
+        {new_model, :none}
+    end
+  end
+
   defp apply_command(:cmd_help, _arg, model) do
     help_text = """
     Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
-    Commands: /save /copy /continue /handoff <agent> /tools /mcp /leave /help /quit
+    Commands: /save /copy /continue /handoff <agent> /join <room> /tools /mcp /leave /help /quit
     Navigation: F1 records │ F2 chat │ Esc dismiss
     Copy: hold Shift + drag to select text\
     """
@@ -817,5 +844,12 @@ defmodule Egghead.TUI.Chat.Update do
       |> Model.append_entry(Entry.system(Egghead.TUI.ToolCatalog.mcp_summary()))
 
     {model, :none}
+  end
+
+  defp example_room_id do
+    case Egghead.list_rooms() do
+      [] -> "<no live rooms>"
+      [first | _] -> first
+    end
   end
 end

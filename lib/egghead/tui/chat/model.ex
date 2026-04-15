@@ -270,6 +270,15 @@ defmodule Egghead.TUI.Chat.Model do
     Entry.user(name, content)
   end
 
+  defp message_to_entry(%{
+         id: msg_id,
+         sender: %{type: :agent, id: id, name: name},
+         content: "/pass"
+       }) do
+    flavor = Egghead.Chat.PassActions.pick(msg_id)
+    Entry.action(id, name, flavor)
+  end
+
   defp message_to_entry(%{sender: %{type: :agent, id: id, name: name}, content: content}) do
     Entry.agent(id, name, content)
   end

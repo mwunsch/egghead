@@ -28,5 +28,6 @@ defmodule Egghead.Web.Router do
 
     live("/", AppLive)
     live("/records/*id", AppLive)
+    live("/chat/:room_id", AppLive)
   end
 end

@@ -272,6 +272,18 @@ defmodule Egghead do
     Egghead.Chat.Room.set_mode(room_id, mode)
   end
 
+  @doc """
+  Ids of all currently-running chat rooms.
+  """
+  @spec list_rooms() :: [String.t()]
+  def list_rooms, do: Egghead.Chat.Room.list_ids()
+
+  @doc """
+  Whether a live room with this id is currently running.
+  """
+  @spec room_exists?(String.t()) :: boolean()
+  def room_exists?(room_id), do: Egghead.Chat.Room.exists?(room_id)
+
   # --- Consultation API ---
 
   @doc """

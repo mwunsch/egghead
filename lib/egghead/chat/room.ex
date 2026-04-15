@@ -182,6 +182,34 @@ defmodule Egghead.Chat.Room do
   end
 
   @doc """
+  Whether a live room with this id is currently running.
+  """
+  @spec exists?(String.t()) :: boolean()
+  def exists?(room_id) do
+    case Process.whereis(room_name(room_id)) do
+      nil -> false
+      pid -> Process.alive?(pid)
+    end
+  end
+
+  @doc """
+  Ids of all currently-running rooms, sorted alphabetically.
+  Discovered by scanning the registered atom namespace for
+  `egghead_room_*` names.
+  """
+  @spec list_ids() :: [String.t()]
+  def list_ids do
+    Process.registered()
+    |> Enum.flat_map(fn name ->
+      case Atom.to_string(name) do
+        "egghead_room_" <> id -> [id]
+        _ -> []
+      end
+    end)
+    |> Enum.sort()
+  end
+
+  @doc """
   Returns the room state (agents, status, turns remaining).
   """
   @spec get_state(String.t()) :: map()

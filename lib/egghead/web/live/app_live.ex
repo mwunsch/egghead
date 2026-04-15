@@ -19,7 +19,8 @@ defmodule Egghead.Web.AppLive do
         id when is_binary(id) -> id
       end
 
-    room_id = Egghead.default_room()
+    # Room comes from `/chat/:room_id` if present, otherwise default room.
+    room_id = params["room_id"] || Egghead.default_room()
 
     socket =
       socket
@@ -69,18 +70,51 @@ defmodule Egghead.Web.AppLive do
         id when is_binary(id) -> id
       end
 
-    if id do
-      {:noreply, socket |> assign(selected_id: id) |> hydrate_selection()}
-    else
-      {:noreply,
-       assign(socket,
-         selected_id: nil,
-         selected_record: nil,
-         selected_body_html: nil,
-         backlinks: [],
-         word_count: 0
-       )}
+    socket =
+      if id do
+        socket |> assign(selected_id: id) |> hydrate_selection()
+      else
+        assign(socket,
+          selected_id: nil,
+          selected_record: nil,
+          selected_body_html: nil,
+          backlinks: [],
+          word_count: 0
+        )
+      end
+
+    socket =
+      case params["room_id"] do
+        nil ->
+          socket
+
+        room_id when room_id == socket.assigns.room_id ->
+          socket
+
+        new_room_id ->
+          socket
+          |> unsubscribe_room(socket.assigns.room_id)
+          |> assign(
+            room_id: new_room_id,
+            transcript: [],
+            active_streams: %{},
+            chat_status: nil,
+            chat_dropdown: nil
+          )
+          |> hydrate_chat()
+      end
+
+    {:noreply, socket}
+  end
+
+  defp unsubscribe_room(socket, nil), do: socket
+
+  defp unsubscribe_room(socket, room_id) do
+    if connected?(socket) do
+      Phoenix.PubSub.unsubscribe(Egghead.PubSub, Egghead.Chat.Room.topic(room_id))
     end
+
+    socket
   end
 
   # --- UI events ---
@@ -618,6 +652,7 @@ defmodule Egghead.Web.AppLive do
     "save" => :cmd_save,
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
+    "join" => :cmd_join,
     "help" => :cmd_help
   }
 
@@ -625,6 +660,7 @@ defmodule Egghead.Web.AppLive do
     %{name: "save", description: "Save transcript as a record"},
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
+    %{name: "join", description: "Enter a different room by id"},
     %{name: "help", description: "Show keybindings & commands"}
   ]
 
@@ -686,6 +722,26 @@ defmodule Egghead.Web.AppLive do
           else
             socket
           end
+        end
+
+      :cmd_join ->
+        target = String.trim(arg)
+
+        cond do
+          target == "" ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /join <room-id>"))
+
+          target == socket.assigns.room_id ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("Already in #{target}"))
+
+          not Egghead.room_exists?(target) ->
+            append_entry(
+              socket,
+              Egghead.TUI.Chat.Entry.system("No live room with id #{inspect(target)}")
+            )
+
+          true ->
+            push_patch(socket, to: ~p"/chat/#{target}")
         end
 
       :cmd_help ->

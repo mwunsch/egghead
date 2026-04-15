@@ -27,21 +27,22 @@ defmodule Egghead.Tool.ShellExec do
   Builds the capability request this call would make. The scope
   includes the full argv so the matcher can apply cmds + patterns.
   """
-  @spec request_for(map()) :: [Request.t()]
+  @spec request_for(map()) :: {:ok, [Request.t()]} | {:error, term()}
   def request_for(%{"cmd" => cmd} = input) do
     argv = build_argv(cmd, input["args"])
 
-    [
-      %Request{
-        resource: :shell,
-        verb: :exec,
-        scope: %{cmd: hd(argv), argv: argv},
-        tool: "shell_exec"
-      }
-    ]
+    {:ok,
+     [
+       %Request{
+         resource: :shell,
+         verb: :exec,
+         scope: %{cmd: hd(argv), argv: argv},
+         tool: "shell_exec"
+       }
+     ]}
   end
 
-  def request_for(_), do: []
+  def request_for(_), do: {:error, "shell_exec requires a cmd"}
 
   @doc """
   Runs the command. `ctx` may include `:on_output` (a callback

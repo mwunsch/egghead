@@ -568,6 +568,11 @@ defmodule Egghead.Web.AppLive do
     end
   end
 
+  # Commit whatever's in the agent's streaming buffer as an entry
+  # and clear the buffer. Clearing matters: without it, a subsequent
+  # apply_stream_delta for the same agent would see the old text and
+  # concatenate new chunks onto it — the "Got it — fetching now."
+  # text leaks into the next turn's committed message.
   defp finalize_stream(socket, agent_id) do
     case Map.get(socket.assigns.active_streams, agent_id) do
       nil ->
@@ -576,11 +581,14 @@ defmodule Egghead.Web.AppLive do
       buf ->
         text = String.trim(buf.text)
 
-        if text == "" do
-          socket
-        else
-          append_entry(socket, Egghead.TUI.Chat.Entry.agent(agent_id, buf.name, text))
-        end
+        socket =
+          if text == "" do
+            socket
+          else
+            append_entry(socket, Egghead.TUI.Chat.Entry.agent(agent_id, buf.name, text))
+          end
+
+        drop_stream(socket, agent_id)
     end
   end
 

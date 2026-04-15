@@ -640,10 +640,18 @@ defmodule Egghead.RecordStore do
   defp format_scope_scalar(v), do: to_string(v)
 
   defp yaml_quote_if_needed(str) do
-    if String.match?(str, ~r/^[A-Za-z0-9_\-\/\.\*]+$/) do
-      str
-    else
-      "\"" <> String.replace(str, "\"", "\\\"") <> "\""
+    cond do
+      # YAML indicator characters at the start need quoting — `*`
+      # is an alias reference, `&` is an anchor, `!` is a tag, etc.
+      String.match?(str, ~r/^[\*&!|>@`?:]/) ->
+        "\"" <> String.replace(str, "\"", "\\\"") <> "\""
+
+      # Plain alphanumeric + hyphen/slash/dot is safe.
+      String.match?(str, ~r/^[A-Za-z0-9_\-\/\.]+$/) ->
+        str
+
+      true ->
+        "\"" <> String.replace(str, "\"", "\\\"") <> "\""
     end
   end
 

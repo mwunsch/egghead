@@ -413,7 +413,13 @@ defmodule Egghead.CLI.Widgets do
   defp select_grouped_loop(rows, selectable_indices, render_as, cursor_pos, has_label) do
     current_idx = Enum.at(selectable_indices, cursor_pos)
     lines = render_grouped(rows, current_idx, render_as)
+    grouped_input(rows, selectable_indices, render_as, cursor_pos, has_label, lines)
+  end
 
+  # Key dispatcher: separate from the render loop so unknown keys
+  # don't trigger a re-render (which would stack menu copies on
+  # the screen). Unknown keys just re-read without redrawing.
+  defp grouped_input(rows, selectable_indices, render_as, cursor_pos, has_label, lines) do
     case read_key() do
       {:key, :up} ->
         new_pos = max(0, cursor_pos - 1)
@@ -428,6 +434,7 @@ defmodule Egghead.CLI.Widgets do
       {:key, :enter} ->
         clear_lines(lines)
         if has_label, do: clear_lines(1)
+        current_idx = Enum.at(selectable_indices, cursor_pos)
         {:item, selected} = Enum.at(rows, current_idx)
         raw_puts("\e[32m✓\e[0m #{render_as.(selected)}")
         selected
@@ -443,7 +450,7 @@ defmodule Egghead.CLI.Widgets do
         nil
 
       _ ->
-        select_grouped_loop(rows, selectable_indices, render_as, cursor_pos, has_label)
+        grouped_input(rows, selectable_indices, render_as, cursor_pos, has_label, lines)
     end
   end
 

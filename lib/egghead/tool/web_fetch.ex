@@ -22,22 +22,23 @@ defmodule Egghead.Tool.WebFetch do
   Builds the capability request this call would make. Branches on
   HTTP method: GET → `net.get`, POST → `net.post`, etc.
   """
-  @spec request_for(map()) :: [Request.t()]
+  @spec request_for(map()) :: {:ok, [Request.t()]} | {:error, term()}
   def request_for(%{"url" => url} = input) do
     method = method_from_input(input)
     host = url_host(url)
 
-    [
-      %Request{
-        resource: :net,
-        verb: method,
-        scope: %{host: host},
-        tool: "web_fetch"
-      }
-    ]
+    {:ok,
+     [
+       %Request{
+         resource: :net,
+         verb: method,
+         scope: %{host: host},
+         tool: "web_fetch"
+       }
+     ]}
   end
 
-  def request_for(_), do: []
+  def request_for(_), do: {:error, "web_fetch requires a url"}
 
   @doc """
   Executes the HTTP call. Returns `{:ok, body}` or
@@ -157,53 +158,74 @@ defmodule Egghead.Tool.WebFetch do
     end
   end
 
-  # Minimal HTML → text conversion: strips scripts/styles, converts
-  # structural tags to markdown-ish, collapses whitespace. Not a full
-  # readability implementation — good enough for most articles. Users
-  # who need rich extraction can install a skill for it.
+  # HTML → readable text via Floki. We parse the document, drop
+  # the obvious noise (scripts, styles, navigation chrome), then
+  # walk the tree emitting a markdown-ish rendering — headings get
+  # `#` prefixes, links become `[text](url)`, list items `- `, etc.
+  # Floki handles malformed HTML for us; we don't touch regex.
   defp html_to_text(html) do
-    html
-    |> strip_tags(~r/<script\b[^>]*>.*?<\/script>/si)
-    |> strip_tags(~r/<style\b[^>]*>.*?<\/style>/si)
-    |> strip_tags(~r/<noscript\b[^>]*>.*?<\/noscript>/si)
-    |> strip_tags(~r/<!--.*?-->/s)
-    |> convert_links()
-    |> String.replace(~r/<h1[^>]*>(.*?)<\/h1>/si, "\n# \\1\n")
-    |> String.replace(~r/<h2[^>]*>(.*?)<\/h2>/si, "\n## \\1\n")
-    |> String.replace(~r/<h3[^>]*>(.*?)<\/h3>/si, "\n### \\1\n")
-    |> String.replace(~r/<h[4-6][^>]*>(.*?)<\/h[4-6]>/si, "\n#### \\1\n")
-    |> String.replace(~r/<li[^>]*>(.*?)<\/li>/si, "\n- \\1")
-    |> String.replace(~r/<(p|div|br)[^>]*>/i, "\n")
-    |> String.replace(~r/<\/p>|<\/div>/i, "\n")
-    |> strip_all_tags()
-    |> decode_entities()
-    |> collapse_whitespace()
+    case Floki.parse_document(html) do
+      {:ok, doc} ->
+        doc
+        |> Floki.filter_out("script")
+        |> Floki.filter_out("style")
+        |> Floki.filter_out("noscript")
+        |> Floki.filter_out("svg")
+        |> Floki.filter_out("nav")
+        |> Floki.filter_out("iframe")
+        |> Enum.map_join("\n", &render_node/1)
+        |> collapse_whitespace()
+
+      {:error, _} ->
+        # Unparseable — fall back to the raw bytes. The capability
+        # check already approved the fetch; the model can still
+        # reason about garbled output.
+        collapse_whitespace(html)
+    end
   end
 
-  defp strip_tags(html, regex), do: Regex.replace(regex, html, "")
-  defp strip_all_tags(html), do: Regex.replace(~r/<[^>]+>/s, html, "")
+  # Walk Floki's {tag, attrs, children} tuples, emitting markdown
+  # approximations. Text nodes pass through; unknown tags are
+  # transparent (we render their children).
+  defp render_node({tag, _attrs, children}) when tag in ["h1"],
+    do: "\n# " <> inner_text(children) <> "\n"
 
-  defp convert_links(html) do
-    Regex.replace(
-      ~r/<a\s+[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/si,
-      html,
-      "[\\2](\\1)"
-    )
+  defp render_node({tag, _attrs, children}) when tag in ["h2"],
+    do: "\n## " <> inner_text(children) <> "\n"
+
+  defp render_node({tag, _attrs, children}) when tag in ["h3"],
+    do: "\n### " <> inner_text(children) <> "\n"
+
+  defp render_node({tag, _attrs, children}) when tag in ["h4", "h5", "h6"],
+    do: "\n#### " <> inner_text(children) <> "\n"
+
+  defp render_node({"li", _attrs, children}),
+    do: "- " <> inner_text(children) <> "\n"
+
+  defp render_node({"a", attrs, children}) do
+    href = Enum.find_value(attrs, "", fn {k, v} -> if k == "href", do: v end)
+    text = inner_text(children)
+
+    cond do
+      text == "" -> ""
+      href == "" -> text
+      true -> "[#{text}](#{href})"
+    end
   end
 
-  defp decode_entities(text) do
-    text
-    |> String.replace("&amp;", "&")
-    |> String.replace("&lt;", "<")
-    |> String.replace("&gt;", ">")
-    |> String.replace("&quot;", "\"")
-    |> String.replace("&#39;", "'")
-    |> String.replace("&apos;", "'")
-    |> String.replace("&nbsp;", " ")
-    |> String.replace(~r/&#(\d+);/, fn _, n ->
-      n |> String.to_integer() |> List.wrap() |> List.to_string()
-    end)
-  end
+  defp render_node({tag, _attrs, _children}) when tag in ["br", "hr"], do: "\n"
+
+  defp render_node({tag, _attrs, children})
+       when tag in ["p", "div", "section", "article", "main", "header", "footer", "aside"],
+       do: Enum.map_join(children, "", &render_node/1) <> "\n\n"
+
+  defp render_node({_tag, _attrs, children}),
+    do: Enum.map_join(children, "", &render_node/1)
+
+  defp render_node(text) when is_binary(text), do: text
+  defp render_node(_), do: ""
+
+  defp inner_text(children), do: Enum.map_join(children, "", &render_node/1)
 
   defp collapse_whitespace(text) do
     text

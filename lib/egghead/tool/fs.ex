@@ -20,47 +20,50 @@ defmodule Egghead.Tool.FS do
 
   # --- Capability requests ---
 
-  @spec request_for_read(map()) :: [Request.t()]
+  @spec request_for_read(map()) :: {:ok, [Request.t()]} | {:error, term()}
   def request_for_read(%{"path" => path}) do
-    [
-      %Request{
-        resource: :fs,
-        verb: :read,
-        scope: %{path: canonicalize(path)},
-        tool: "fs_read"
-      }
-    ]
+    {:ok,
+     [
+       %Request{
+         resource: :fs,
+         verb: :read,
+         scope: %{path: canonicalize(path)},
+         tool: "fs_read"
+       }
+     ]}
   end
 
-  def request_for_read(_), do: []
+  def request_for_read(_), do: {:error, "fs_read requires a path"}
 
-  @spec request_for_write(map()) :: [Request.t()]
+  @spec request_for_write(map()) :: {:ok, [Request.t()]} | {:error, term()}
   def request_for_write(%{"path" => path}) do
-    [
-      %Request{
-        resource: :fs,
-        verb: :write,
-        scope: %{path: canonicalize(path)},
-        tool: "fs_write"
-      }
-    ]
+    {:ok,
+     [
+       %Request{
+         resource: :fs,
+         verb: :write,
+         scope: %{path: canonicalize(path)},
+         tool: "fs_write"
+       }
+     ]}
   end
 
-  def request_for_write(_), do: []
+  def request_for_write(_), do: {:error, "fs_write requires a path"}
 
-  @spec request_for_grep(map()) :: [Request.t()]
+  @spec request_for_grep(map()) :: {:ok, [Request.t()]} | {:error, term()}
   def request_for_grep(%{"path" => path}) do
-    [
-      %Request{
-        resource: :fs,
-        verb: :read,
-        scope: %{path: canonicalize(path)},
-        tool: "fs_grep"
-      }
-    ]
+    {:ok,
+     [
+       %Request{
+         resource: :fs,
+         verb: :read,
+         scope: %{path: canonicalize(path)},
+         tool: "fs_grep"
+       }
+     ]}
   end
 
-  def request_for_grep(_), do: []
+  def request_for_grep(_), do: {:error, "fs_grep requires a path"}
 
   # --- Execution ---
 

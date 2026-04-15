@@ -5,7 +5,7 @@ defmodule Egghead.Tool.ShellExecTest do
 
   describe "request_for/1" do
     test "builds a shell.exec request with cmd + full argv in scope" do
-      [req] = ShellExec.request_for(%{"cmd" => "rg", "args" => ["foo", "src/"]})
+      {:ok, [req]} = ShellExec.request_for(%{"cmd" => "rg", "args" => ["foo", "src/"]})
       assert req.resource == :shell
       assert req.verb == :exec
       assert req.scope.cmd == "rg"

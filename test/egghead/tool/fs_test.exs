@@ -17,7 +17,7 @@ defmodule Egghead.Tool.FSTest do
 
   describe "request_for_read/1" do
     test "builds an fs.read request with path in scope" do
-      [req] = FS.request_for_read(%{"path" => "/tmp/foo.md"})
+      {:ok, [req]} = FS.request_for_read(%{"path" => "/tmp/foo.md"})
       assert req.resource == :fs
       assert req.verb == :read
       assert req.scope.path == "/tmp/foo.md"
@@ -26,7 +26,7 @@ defmodule Egghead.Tool.FSTest do
 
   describe "request_for_write/1" do
     test "builds an fs.write request" do
-      [req] = FS.request_for_write(%{"path" => "/tmp/foo.md"})
+      {:ok, [req]} = FS.request_for_write(%{"path" => "/tmp/foo.md"})
       assert req.resource == :fs
       assert req.verb == :write
     end

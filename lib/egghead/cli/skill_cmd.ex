@@ -53,7 +53,7 @@ defmodule Egghead.CLI.SkillCmd do
                                         skill's allowed-tools and an agent's grants
 
     SEE ALSO
-      egghead agent, design/capability-model
+      egghead agent
     """)
   end
 

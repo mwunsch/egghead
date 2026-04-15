@@ -32,8 +32,7 @@ defmodule Egghead.Agent.Supervisor do
   edit its disposition drop an `index.md` file anywhere in their record
   store with `class: agent` in frontmatter (path is convention, not
   requirement — any agent-class record whose derived id is `"index"`
-  will shadow). See `design/capability-model` for the override
-  rationale.
+  will shadow).
   """
   def default_agent do
     # Read the configured default model, fall back to haiku if not set

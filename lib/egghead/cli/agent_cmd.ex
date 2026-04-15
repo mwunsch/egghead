@@ -17,7 +17,8 @@ defmodule Egghead.CLI.AgentCmd do
       COMMANDS
         list                              List running agents (default)
         new                               Create a new agent interactively
-        grant <agent-id> <cap>            Add a capability to an agent
+        grant <agent-id> [cap]            Add a capability to an agent.
+                                          Omit <cap> for an interactive picker.
         revoke <agent-id> <cap>           Remove a capability from an agent
         capabilities <agent-id>           Show an agent's held capabilities
 
@@ -37,7 +38,7 @@ defmodule Egghead.CLI.AgentCmd do
         $ egghead agent capabilities agents/scout
 
       SEE ALSO
-        egghead llm models, egghead skill check, design/capability-model
+        egghead llm models, egghead skill check
       """)
     else
       {opts, rest, _} =
@@ -55,6 +56,9 @@ defmodule Egghead.CLI.AgentCmd do
 
         ["grant", agent_id, cap | _] ->
           do_grant(agent_id, cap, opts)
+
+        ["grant", agent_id] ->
+          do_grant_interactive(agent_id, opts)
 
         ["revoke", agent_id, cap | _] ->
           do_revoke(agent_id, cap)
@@ -286,6 +290,139 @@ defmodule Egghead.CLI.AgentCmd do
         Widgets.error("Invalid capability spec: #{reason}")
         System.halt(1)
     end
+  end
+
+  # Interactive grant: pick a capability from the Catalog by short
+  # description, then prompt for scope values if the resource
+  # supports them.
+  defp do_grant_interactive(agent_id, opts) do
+    Egghead.CLI.start_app(:silent, web: false)
+
+    case Egghead.get_record(agent_id) do
+      {:ok, record} when record.class == :agent ->
+        groups = build_capability_groups()
+
+        case Widgets.select_grouped(groups,
+               label: "Capability:",
+               render_as: &render_catalog_entry/1
+             ) do
+          nil ->
+            IO.puts("  Cancelled.")
+
+          %{resource: r, verb: v} = entry ->
+            spec = prompt_for_scope(r, v, entry)
+
+            if spec do
+              do_grant(agent_id, spec, opts)
+            else
+              IO.puts("  Cancelled.")
+            end
+        end
+
+      {:ok, _} ->
+        Widgets.error("#{agent_id} is not an agent record")
+        System.halt(1)
+
+      {:error, :not_found} ->
+        Widgets.error("Agent not found: #{agent_id}")
+        System.halt(1)
+    end
+  end
+
+  defp build_capability_groups do
+    risk_order = %{low: 0, medium: 1, high: 2}
+
+    Egghead.Capability.Catalog.all()
+    |> Enum.map(fn {r, v, meta} ->
+      %{resource: r, verb: v, short: meta.short, risk: meta.risk}
+    end)
+    |> Enum.group_by(& &1.resource)
+    |> Enum.map(fn {resource, entries} ->
+      sorted =
+        Enum.sort_by(entries, fn e ->
+          {Map.get(risk_order, e.risk, 1), "#{e.verb}"}
+        end)
+
+      {to_string(resource), sorted}
+    end)
+    |> Enum.sort_by(fn {resource, _} -> resource end)
+  end
+
+  defp render_catalog_entry(%{verb: v, short: short, risk: risk}) do
+    marker = risk_marker(risk)
+    "#{marker} #{Widgets.pad("#{v}", 10)} \e[90m#{short}\e[0m"
+  end
+
+  # If the resource supports scoping, prompt the user for values.
+  # External resources (net, fs, shell) default to empty → bare
+  # grants are inert, so we require at least one scope entry.
+  defp prompt_for_scope(:net, verb, _entry) do
+    hosts = Widgets.input("Hosts (comma-separated, `*` for any)", default: "*")
+
+    if hosts == nil or String.trim(hosts) == "" do
+      nil
+    else
+      list = hosts |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+      "net.#{verb}{hosts=[#{Enum.join(list, ",")}]}"
+    end
+  end
+
+  defp prompt_for_scope(:fs, verb, _entry) do
+    paths = Widgets.input("Paths (comma-separated globs)")
+
+    if paths == nil or String.trim(paths) == "" do
+      nil
+    else
+      list = paths |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+      "fs.#{verb}{paths=[#{Enum.join(list, ",")}]}"
+    end
+  end
+
+  defp prompt_for_scope(:shell, :exec, _entry) do
+    cmds = Widgets.input("Commands (comma-separated argv[0])", default: "")
+    patterns = Widgets.input("Patterns (e.g. `git:*`, `npm test`)", default: "")
+
+    scope_parts =
+      []
+      |> then(fn acc ->
+        if cmds != nil and String.trim(cmds) != "" do
+          list = cmds |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+          ["cmds=[#{Enum.join(list, ",")}]" | acc]
+        else
+          acc
+        end
+      end)
+      |> then(fn acc ->
+        if patterns != nil and String.trim(patterns) != "" do
+          list = patterns |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+          ["patterns=[#{Enum.join(list, ",")}]" | acc]
+        else
+          acc
+        end
+      end)
+
+    if scope_parts == [] do
+      nil
+    else
+      "shell.exec{#{Enum.join(scope_parts, ",")}}"
+    end
+  end
+
+  defp prompt_for_scope(:records, verb, _entry)
+       when verb in [:create, :update, :delete] do
+    classes = Widgets.input("Classes (optional, comma-separated)", default: "")
+
+    if classes == nil or String.trim(classes) == "" do
+      "records.#{verb}"
+    else
+      list = classes |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+      "records.#{verb}{classes=[#{Enum.join(list, ",")}]}"
+    end
+  end
+
+  # Bare verbs (records.read, agent.*) — no scope needed.
+  defp prompt_for_scope(resource, verb, _entry) do
+    "#{resource}.#{verb}"
   end
 
   defp do_revoke(agent_id, cap_spec) do

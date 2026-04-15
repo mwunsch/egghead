@@ -26,7 +26,7 @@ defmodule Egghead.Agent.Session do
   (with YAML frontmatter) or org-mode files, each with an id, title, tags,
   links to other records, a class (durable, inbox, deliberation, agent), and
   a body. Records are linked with [[wikilinks]]. When you reference a record
-  in your response, always use [[wikilink]] syntax (e.g. [[design/egghead-overview]]).
+  in your response, always use [[wikilink]] syntax (e.g. [[record-id]]).
   This makes records navigable in the interface.
   """
 
@@ -329,16 +329,14 @@ defmodule Egghead.Agent.Session do
           tool_uses = Enum.filter(content, &(&1["type"] == "tool_use"))
 
           # Run tool calls concurrently under a supervised Task —
-          # tool crashes (runaway regex, hung HTTP, NIF fault) stay
-          # isolated from the Session. `ordered: true` keeps
+          # crashes (runaway regex, hung HTTP, NIF fault) die in
+          # their task, not the Session. `ordered: true` keeps
           # tool_results aligned with their tool_use blocks.
           {tool_results, tool_log} =
             Task.Supervisor.async_stream_nolink(
               Egghead.Tool.TaskSupervisor,
               tool_uses,
-              fn tool_use ->
-                run_single_tool(tool_use, state, room_id)
-              end,
+              fn tool_use -> run_single_tool(tool_use, state, room_id) end,
               max_concurrency: 5,
               ordered: true,
               timeout: :infinity,

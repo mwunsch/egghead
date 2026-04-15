@@ -10,9 +10,6 @@ defmodule Egghead.Capability do
   Widening capabilities requires editing the agent's frontmatter — a
   human act. Narrowing is always permitted. Runtime denial produces a
   `%Denial{}` that surfaces to the LLM, the transcript, and the log.
-
-  See [`design/capability-model`](design/capability-model) for the full
-  design.
   """
 
   require Logger

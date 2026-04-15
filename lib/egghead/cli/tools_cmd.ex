@@ -79,13 +79,23 @@ defmodule Egghead.CLI.ToolsCmd do
 
   defp print_local_tools(grants) do
     # Pull tool definitions without a filter; if grants given, mark
-    # which ones would actually be offered.
-    all = Egghead.Agent.Tools.definitions_for(all_local_grants())
+    # which ones would actually be offered. Strip MCP-prefixed names
+    # — definitions_for merges local + MCP, but this section is
+    # "Local tools" only. MCP tools appear under the MCP header.
+    all =
+      Egghead.Agent.Tools.definitions_for(all_local_grants())
+      |> Enum.reject(&String.starts_with?(&1.name, "mcp__"))
 
     offered =
       case grants do
-        nil -> MapSet.new(Enum.map(all, & &1.name))
-        g -> MapSet.new(Enum.map(Egghead.Agent.Tools.definitions_for(g), & &1.name))
+        nil ->
+          MapSet.new(Enum.map(all, & &1.name))
+
+        g ->
+          Egghead.Agent.Tools.definitions_for(g)
+          |> Enum.reject(&String.starts_with?(&1.name, "mcp__"))
+          |> Enum.map(& &1.name)
+          |> MapSet.new()
       end
 
     name_w =
@@ -406,7 +416,9 @@ defmodule Egghead.CLI.ToolsCmd do
             headers: %{},
             requires: []
           },
-          opts, wizard_caps: true)
+          opts,
+          wizard_caps: true
+        )
 
       opts[:http] ->
         finalize_add(
@@ -420,7 +432,9 @@ defmodule Egghead.CLI.ToolsCmd do
             headers: %{},
             requires: []
           },
-          opts, wizard_caps: true)
+          opts,
+          wizard_caps: true
+        )
 
       true ->
         case KnownServers.lookup(name) do
@@ -574,7 +588,9 @@ defmodule Egghead.CLI.ToolsCmd do
   end
 
   defp prompt_scope("net", cap_key) do
-    hosts = Widgets.input("  #{cap_key} hosts (comma-separated globs, or * for any)", default: "*")
+    hosts =
+      Widgets.input("  #{cap_key} hosts (comma-separated globs, or * for any)", default: "*")
+
     %{hosts: parse_list(hosts)}
   end
 
@@ -730,8 +746,12 @@ defmodule Egghead.CLI.ToolsCmd do
       end)
 
     cond do
-      pending == [] -> :ok
-      System.monotonic_time(:millisecond) > deadline -> :timeout
+      pending == [] ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        :timeout
+
       true ->
         Process.sleep(100)
         do_poll(servers, deadline)

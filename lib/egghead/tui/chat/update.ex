@@ -28,6 +28,8 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
+    %{name: "tools", description: "Summary of tools available to agents"},
+    %{name: "mcp", description: "Summary of MCP servers"},
     %{name: "leave", description: "Return to records (F1)"},
     %{name: "help", description: "Show keybindings & commands"},
     %{name: "quit", description: "Exit the TUI"}
@@ -42,6 +44,8 @@ defmodule Egghead.TUI.Chat.Update do
     "copy" => :cmd_copy,
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
+    "tools" => :cmd_tools,
+    "mcp" => :cmd_mcp,
     "help" => :cmd_help
   }
 
@@ -777,7 +781,7 @@ defmodule Egghead.TUI.Chat.Update do
   defp apply_command(:cmd_help, _arg, model) do
     help_text = """
     Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
-    Commands: /save /copy /continue /handoff <agent> /leave /help /quit
+    Commands: /save /copy /continue /handoff <agent> /tools /mcp /leave /help /quit
     Navigation: F1 records │ F2 chat │ Esc dismiss
     Copy: hold Shift + drag to select text\
     """
@@ -786,6 +790,24 @@ defmodule Egghead.TUI.Chat.Update do
       model
       |> Model.clear_input()
       |> Model.append_entry(Entry.system(help_text))
+
+    {model, :none}
+  end
+
+  defp apply_command(:cmd_tools, _arg, model) do
+    model =
+      model
+      |> Model.clear_input()
+      |> Model.append_entry(Entry.system(Egghead.TUI.ToolCatalog.tools_summary()))
+
+    {model, :none}
+  end
+
+  defp apply_command(:cmd_mcp, _arg, model) do
+    model =
+      model
+      |> Model.clear_input()
+      |> Model.append_entry(Entry.system(Egghead.TUI.ToolCatalog.mcp_summary()))
 
     {model, :none}
   end

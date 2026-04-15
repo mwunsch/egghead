@@ -295,6 +295,14 @@ defmodule Egghead.TUI.Records.Update do
     {Model.show_help(model) |> Model.exit_command_mode(), :none}
   end
 
+  defp execute_command(%{name: "tools"}, model) do
+    {Model.show_tools(model) |> Model.exit_command_mode(), :none}
+  end
+
+  defp execute_command(%{name: "mcp"}, model) do
+    {Model.show_mcp(model) |> Model.exit_command_mode(), :none}
+  end
+
   defp execute_command(%{name: "copy"}, model) do
     body = model.selected_body || ""
     Egghead.OpenTUI.Clipboard.copy(body)

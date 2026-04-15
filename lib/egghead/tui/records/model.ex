@@ -92,6 +92,8 @@ defmodule Egghead.TUI.Records.Model do
   @records_commands [
     %{name: "quit", description: "Exit the TUI"},
     %{name: "help", description: "Show keybindings & commands"},
+    %{name: "tools", description: "Catalog of tools available to agents"},
+    %{name: "mcp", description: "MCP servers and their eligible agents"},
     %{name: "copy", description: "Copy current record to clipboard"},
     %{name: "debug", description: "Dump current view tree to /tmp/egghead-render.log"},
     %{name: "chat", description: "Enter chat mode"},
@@ -684,6 +686,52 @@ defmodule Egghead.TUI.Records.Model do
   def help_visible?(_), do: false
 
   @doc """
+  Show a synthetic record with the full tools catalog (local +
+  MCP servers). Same `:synthetic` class + preview pipeline as
+  `/help`.
+  """
+  @spec show_tools(t()) :: t()
+  def show_tools(%__MODULE__{} = model) do
+    show_synthetic(model, "tools", "egghead — tools", Egghead.TUI.ToolCatalog.tools_markdown())
+  end
+
+  @doc "Show a synthetic record narrowed to MCP servers."
+  @spec show_mcp(t()) :: t()
+  def show_mcp(%__MODULE__{} = model) do
+    show_synthetic(model, "mcp", "egghead — MCP servers", Egghead.TUI.ToolCatalog.mcp_markdown())
+  end
+
+  defp show_synthetic(model, id, title, body) do
+    links = extract_wikilinks(body)
+
+    fake = %Egghead.Record{
+      id: id,
+      title: title,
+      body: body,
+      class: :synthetic,
+      # Populate `links:` so Tab cycles through wikilinks in the
+      # generated body just like a real record. `wikilinks:` is the
+      # parsed frontmatter field, unused here.
+      links: links,
+      wikilinks: []
+    }
+
+    %{
+      model
+      | selected_id: id,
+        selected_record: fake,
+        selected_body: fake.body,
+        preview_scroll: 0,
+        preview_rendered: nil,
+        preview_rendered_width: nil,
+        preview_footer: [],
+        preview_links: [],
+        link_index: nil
+    }
+    |> recompute_preview()
+  end
+
+  @doc """
   Dismiss the synthetic help record by re-hydrating the preview
   from the actual list selection. The help record's `selected_id`
   ("help") is cleared first so `hydrate_selection/1` doesn't
@@ -755,6 +803,17 @@ defmodule Egghead.TUI.Records.Model do
   # Forward link targets for a record. The worktree's parser
   # already merges frontmatter `links:` with body wikilinks into
   # `record.links`, deduped, in order, so we just read it.
+  # Pull `[[target]]` refs from a markdown body via the same parser
+  # real records go through. Used for synthetic records like
+  # `/tools` and `/mcp` whose body is generated in code — nothing
+  # loads them through the file parser, so we invoke its extractor
+  # directly.
+  defp extract_wikilinks(body) do
+    Egghead.Record.Parser.extract_wikilinks(body)
+    |> Enum.map(& &1.target)
+    |> Enum.uniq()
+  end
+
   defp forward_targets_for(nil), do: []
 
   defp forward_targets_for(%{links: links}) when is_list(links), do: links

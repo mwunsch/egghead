@@ -21,8 +21,9 @@ defmodule Egghead.TUI.Chat.Model do
   model in sync with new room events.
   """
 
+  alias Egghead.Chat.Stream
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Mentions, Stream}
+  alias Egghead.TUI.Chat.{Entry, Mentions}
 
   defmodule AgentPresence do
     @moduledoc false
@@ -147,19 +148,8 @@ defmodule Egghead.TUI.Chat.Model do
   """
   @spec finalize_stream(t(), String.t()) :: t()
   def finalize_stream(%__MODULE__{} = m, agent_id) do
-    case Map.get(m.streams, agent_id) do
-      nil ->
-        m
-
-      stream ->
-        committed = Stream.finalize(stream)
-
-        %{
-          m
-          | streams: Map.delete(m.streams, agent_id),
-            transcript: m.transcript ++ committed
-        }
-    end
+    {streams, committed} = Stream.finalize_and_drop(m.streams, agent_id)
+    %{m | streams: streams, transcript: m.transcript ++ committed}
   end
 
   @spec drop_stream(t(), String.t()) :: t()

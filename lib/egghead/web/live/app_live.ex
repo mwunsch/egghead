@@ -255,7 +255,6 @@ defmodule Egghead.Web.AppLive do
     socket =
       socket
       |> finalize_stream(msg.sender.id)
-      |> drop_stream(msg.sender.id)
       |> set_agent_status(msg.sender.id, :idle)
       |> update_agent_ctx(msg.sender.id, msg)
 
@@ -520,76 +519,36 @@ defmodule Egghead.Web.AppLive do
     end
   end
 
-  # Buffer streaming deltas and commit on \n\n (paragraph break).
-  # Each committed paragraph becomes its own chat bubble.
-  # Single \n within a paragraph renders as a line break inside the bubble.
+  # Buffer streaming deltas via the shared Chat.Stream module.
+  # LiveView renders bubble-style: commit on \n\n (paragraph), trim
+  # each committed paragraph. Single \n within a paragraph renders
+  # as a line break inside the bubble.
   defp apply_stream_delta(socket, agent_id, delta) do
-    current = socket.assigns.active_streams
+    streams = socket.assigns.active_streams
     name = agent_display_name(agent_id)
 
-    buf =
-      case Map.get(current, agent_id) do
-        nil ->
-          %{
-            agent_id: agent_id,
-            name: name,
-            text: "",
-            started_at: System.monotonic_time(:millisecond)
-          }
+    stream =
+      Map.get_lazy(streams, agent_id, fn ->
+        Egghead.Chat.Stream.new(agent_id, name, commit_on: "\n\n", trim: true)
+      end)
 
-        existing ->
-          existing
-      end
+    {stream, committed} = Egghead.Chat.Stream.append(stream, delta)
 
-    new_text = buf.text <> delta
-
-    case String.split(new_text, "\n\n") do
-      [single] ->
-        # No paragraph break yet — just buffer
-        buf = %{buf | text: single}
-
-        socket
-        |> assign(active_streams: Map.put(current, agent_id, buf))
-
-      parts ->
-        # Last element is the trailing incomplete paragraph
-        {commits, [tail]} = Enum.split(parts, -1)
-
-        entries =
-          commits
-          |> Enum.reject(&(&1 == ""))
-          |> Enum.map(&Egghead.TUI.Chat.Entry.agent(agent_id, name, String.trim(&1)))
-
-        buf = %{buf | text: tail}
-
-        socket
-        |> assign(active_streams: Map.put(current, agent_id, buf))
-        |> append_entries(entries)
-    end
+    socket
+    |> assign(active_streams: Map.put(streams, agent_id, stream))
+    |> append_entries(committed)
   end
 
-  # Commit whatever's in the agent's streaming buffer as an entry
-  # and clear the buffer. Clearing matters: without it, a subsequent
-  # apply_stream_delta for the same agent would see the old text and
-  # concatenate new chunks onto it — the "Got it — fetching now."
-  # text leaks into the next turn's committed message.
+  # Flush whatever's buffered for the agent and drop the stream in
+  # one atomic step. Fused so a future edit can't reintroduce the
+  # "commit-without-clear" concat bug.
   defp finalize_stream(socket, agent_id) do
-    case Map.get(socket.assigns.active_streams, agent_id) do
-      nil ->
-        socket
+    {streams, committed} =
+      Egghead.Chat.Stream.finalize_and_drop(socket.assigns.active_streams, agent_id)
 
-      buf ->
-        text = String.trim(buf.text)
-
-        socket =
-          if text == "" do
-            socket
-          else
-            append_entry(socket, Egghead.TUI.Chat.Entry.agent(agent_id, buf.name, text))
-          end
-
-        drop_stream(socket, agent_id)
-    end
+    socket
+    |> assign(active_streams: streams)
+    |> append_entries(committed)
   end
 
   defp drop_stream(socket, agent_id) do
@@ -625,7 +584,7 @@ defmodule Egghead.Web.AppLive do
 
   defp typing_agents(streams) do
     streams
-    |> Enum.filter(fn {_id, s} -> s.text != "" end)
+    |> Enum.filter(fn {_id, s} -> Egghead.Chat.Stream.has_text?(s) end)
     |> Enum.sort_by(fn {_id, s} -> s.started_at end)
     |> Enum.map(fn {_id, s} -> {s.name, s.agent_id} end)
   end

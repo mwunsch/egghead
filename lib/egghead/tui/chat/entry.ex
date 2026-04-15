@@ -12,7 +12,7 @@ defmodule Egghead.TUI.Chat.Entry do
 
   Entries are immutable: once committed, the view never has to
   reach back into the stream to fix them up. The in-progress
-  buffer lives in `Egghead.TUI.Chat.Stream`.
+  buffer lives in `Egghead.Chat.Stream`.
   """
 
   @type kind :: :user | :agent | :system | :action | :handoff | :denial

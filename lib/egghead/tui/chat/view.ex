@@ -24,8 +24,9 @@ defmodule Egghead.TUI.Chat.View do
 
   import Egghead.OpenTUI.View
 
+  alias Egghead.Chat.Stream
   alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer, Markdown}
-  alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste, Stream}
+  alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste}
   alias Model.AgentPresence
 
   @prompt "❯ "

@@ -27,7 +27,7 @@ defmodule Egghead.Web do
 
   def live_view do
     quote do
-      use Phoenix.LiveView, layout: {Egghead.Web.Layouts, :app}
+      use Phoenix.LiveView, layout: {Egghead.Web.Layouts, :app}, log: false
 
       unquote(html_helpers())
     end

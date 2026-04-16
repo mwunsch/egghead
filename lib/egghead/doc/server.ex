@@ -151,9 +151,17 @@ defmodule Egghead.Doc.Server do
       {name, color} = agent_display(agent_id)
       ops = compute_agent_ops(current_body, new_body)
 
-      broadcast_to_clients(state, {:agent_cursor, %{
-        agent_id: agent_id, name: name, color: color, pos: 0, active: true
-      }})
+      broadcast_to_clients(
+        state,
+        {:agent_cursor,
+         %{
+           agent_id: agent_id,
+           name: name,
+           color: color,
+           pos: 0,
+           active: true
+         }}
+      )
 
       send(self(), {:agent_chunk, agent_id, name, color, ops})
     end
@@ -198,19 +206,33 @@ defmodule Egghead.Doc.Server do
 
   def handle_info({:agent_chunk, agent_id, name, color, {[], _pos, _delay}}, state) do
     # All chunks done — remove cursor, flush
-    broadcast_to_clients(state, {:agent_cursor, %{
-      agent_id: agent_id, name: name, color: color, pos: 0, active: false
-    }})
+    broadcast_to_clients(
+      state,
+      {:agent_cursor,
+       %{
+         agent_id: agent_id,
+         name: name,
+         color: color,
+         pos: 0,
+         active: false
+       }}
+    )
 
     {:noreply, mark_dirty(state)}
   end
 
-  def handle_info({:agent_chunk, agent_id, name, color, {[{:eq, bytes} | rest], pos, delay}}, state) do
+  def handle_info(
+        {:agent_chunk, agent_id, name, color, {[{:eq, bytes} | rest], pos, delay}},
+        state
+      ) do
     send(self(), {:agent_chunk, agent_id, name, color, {rest, pos + length(bytes), delay}})
     {:noreply, state}
   end
 
-  def handle_info({:agent_chunk, agent_id, name, color, {[{:del, bytes} | rest], pos, delay}}, state) do
+  def handle_info(
+        {:agent_chunk, agent_id, name, color, {[{:del, bytes} | rest], pos, delay}},
+        state
+      ) do
     Yex.Doc.transaction(state.doc, :agent, fn ->
       Yex.Text.delete(state.text, pos, length(bytes))
     end)
@@ -219,17 +241,34 @@ defmodule Egghead.Doc.Server do
     {:noreply, state}
   end
 
-  def handle_info({:agent_chunk, agent_id, name, color, {[{:ins, line} | rest], pos, delay}}, state) do
+  def handle_info(
+        {:agent_chunk, agent_id, name, color, {[{:ins, line} | rest], pos, delay}},
+        state
+      ) do
     Yex.Doc.transaction(state.doc, :agent, fn ->
       Yex.Text.insert(state.text, pos, line)
     end)
 
     new_pos = pos + byte_size(line)
-    broadcast_to_clients(state, {:agent_cursor, %{
-      agent_id: agent_id, name: name, color: color, pos: new_pos, active: true
-    }})
 
-    Process.send_after(self(), {:agent_chunk, agent_id, name, color, {rest, new_pos, delay}}, delay)
+    broadcast_to_clients(
+      state,
+      {:agent_cursor,
+       %{
+         agent_id: agent_id,
+         name: name,
+         color: color,
+         pos: new_pos,
+         active: true
+       }}
+    )
+
+    Process.send_after(
+      self(),
+      {:agent_chunk, agent_id, name, color, {rest, new_pos, delay}},
+      delay
+    )
+
     {:noreply, state}
   end
 
@@ -378,8 +417,14 @@ defmodule Egghead.Doc.Server do
   end
 
   @agent_colors [
-    "#e84855", "#30bced", "#6eeb83", "#ffbc42",
-    "#8b5cf6", "#f472b6", "#34d399", "#fb923c"
+    "#e84855",
+    "#30bced",
+    "#6eeb83",
+    "#ffbc42",
+    "#8b5cf6",
+    "#f472b6",
+    "#34d399",
+    "#fb923c"
   ]
 
   defp agent_color(agent_id) do

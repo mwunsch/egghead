@@ -12,42 +12,27 @@ import * as Y from "https://esm.sh/yjs@13";
 import { yCollab } from "https://esm.sh/y-codemirror.next@0.3";
 import * as awarenessProtocol from "https://esm.sh/y-protocols@1/awareness";
 
-// Match the existing .markdown-body CSS exactly.
+// --- Markdown highlight style (matches .markdown-body CSS) ---
+
 const markdownHighlight = HighlightStyle.define([
-  // Headings — match .markdown-body h1-h4
   { tag: tags.heading1, fontSize: "24px", fontWeight: "300", color: "var(--heading)", fontFamily: "var(--font-display)", lineHeight: "1.3" },
   { tag: tags.heading2, fontSize: "20px", fontWeight: "300", color: "var(--heading)", fontFamily: "var(--font-display)", lineHeight: "1.3" },
   { tag: tags.heading3, fontSize: "18px", fontWeight: "400", color: "var(--heading)", fontFamily: "var(--font-display)", lineHeight: "1.3" },
   { tag: tags.heading4, fontSize: "16px", fontWeight: "400", color: "var(--heading)", fontFamily: "var(--font-display)", lineHeight: "1.3" },
   { tag: tags.heading5, fontWeight: "600", color: "var(--heading)", fontFamily: "var(--font-display)" },
   { tag: tags.heading6, fontWeight: "600", color: "var(--heading)", fontFamily: "var(--font-display)" },
-
-  // Markdown syntax markers (#, **, *, `, ~~, >, ```)
   { tag: tags.processingInstruction, color: "var(--syntax)", fontFamily: "var(--font-mono)", fontWeight: "400" },
-
-  // Inline formatting
   { tag: tags.strong, fontWeight: "700" },
   { tag: tags.emphasis, fontStyle: "italic" },
   { tag: tags.strikethrough, textDecoration: "line-through", color: "var(--muted)" },
-
-  // Code
   { tag: tags.monospace, fontFamily: "var(--font-mono)", fontSize: "0.88em", color: "var(--fg)" },
-
-  // Links
   { tag: tags.link, color: "var(--link)" },
   { tag: tags.url, color: "var(--link)" },
-
-  // Blockquote content
   { tag: tags.quote, color: "var(--muted)", fontStyle: "italic" },
-
-  // Meta (frontmatter delimiters, etc.)
   { tag: tags.meta, color: "var(--syntax)", fontFamily: "var(--font-mono)", fontSize: "0.88em" },
-
-  // HR
   { tag: tags.contentSeparator, color: "var(--chrome-lo)" },
 ]);
 
-// Base theme — structural overrides only; typography is in app.css
 const proseTheme = EditorView.theme({
   ".cm-gutters": { display: "none" },
   ".cm-activeLineGutter": { display: "none" },
@@ -67,19 +52,17 @@ function makeMatchPlugin(matcher) {
   );
 }
 
-// [[wikilinks]] → .cm-wikilink
 const wikilinkHighlighter = makeMatchPlugin(new MatchDecorator({
   regexp: /\[\[([^\]]+)\]\]/g,
   decoration: () => Decoration.mark({ class: "cm-wikilink" }),
 }));
 
-// Bare URLs → .cm-url
 const urlHighlighter = makeMatchPlugin(new MatchDecorator({
   regexp: /https?:\/\/[^\s)>\]]+/g,
   decoration: () => Decoration.mark({ class: "cm-url" }),
 }));
 
-// --- Markdown link widget: [text](url) → clickable text ---
+// --- Markdown link widget: [text](url) → clickable [text] ---
 
 class LinkWidget extends WidgetType {
   constructor(text, url) {
@@ -141,9 +124,7 @@ function buildMdLinkDecos(state) {
     while ((m = re.exec(line.text)) !== null) {
       const from = line.from + m.index;
       const to = from + m[0].length;
-      const cursorInside = sel.from >= from && sel.from <= to;
-
-      if (!cursorInside) {
+      if (!(sel.from >= from && sel.from <= to)) {
         builder.add(from, to, Decoration.replace({
           widget: new LinkWidget(m[1], m[2]),
         }));
@@ -154,7 +135,7 @@ function buildMdLinkDecos(state) {
   return builder.finish();
 }
 
-// --- Table widget: render pipe tables as <table> ---
+// --- Table widget ---
 
 function parseTable(text) {
   const lines = text.split("\n").filter((l) => l.trim());
@@ -168,19 +149,12 @@ function parseTable(text) {
   };
 
   const header = splitRow(lines[0]);
-  // lines[1] should be the separator (---|----|---)
   if (!/^[\s|:\-]+$/.test(lines[1])) return null;
-  const rows = lines.slice(2).map(splitRow);
-
-  return { header, rows };
+  return { header, rows: lines.slice(2).map(splitRow) };
 }
 
 class TableWidget extends WidgetType {
-  constructor(text) {
-    super();
-    this.text = text;
-  }
-
+  constructor(text) { super(); this.text = text; }
   eq(other) { return this.text === other.text; }
 
   toDOM() {
@@ -222,31 +196,21 @@ class TableWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
-// StateField (not ViewPlugin) because the decoration spans line breaks.
 const tableField = StateField.define({
-  create(state) {
-    return buildTableDecos(state);
-  },
+  create(state) { return buildTableDecos(state); },
   update(decos, tr) {
-    if (tr.docChanged || tr.selection) {
-      return buildTableDecos(tr.state);
-    }
+    if (tr.docChanged || tr.selection) return buildTableDecos(tr.state);
     return decos;
   },
-  provide(field) {
-    return EditorView.decorations.from(field);
-  },
+  provide(field) { return EditorView.decorations.from(field); },
 });
 
 function buildTableDecos(state) {
   const builder = new RangeSetBuilder();
-  const doc = state.doc;
   const sel = state.selection.main;
-  const text = doc.toString();
+  const text = state.doc.toString();
   const lines = text.split("\n");
-
-  let i = 0;
-  let pos = 0;
+  let i = 0, pos = 0;
 
   while (i < lines.length) {
     const line = lines[i];
@@ -254,78 +218,51 @@ function buildTableDecos(state) {
       const tableStart = pos;
       const tableLines = [line];
       let j = i + 1;
-
       while (j < lines.length && /^\s*\|/.test(lines[j])) {
         tableLines.push(lines[j]);
         j++;
       }
-
       if (tableLines.length >= 2 && /^[\s|:\-]+$/.test(tableLines[1])) {
         const tableText = tableLines.join("\n");
         let tableEnd = tableStart;
-        for (const tl of tableLines) {
-          tableEnd += tl.length + 1;
-        }
+        for (const tl of tableLines) tableEnd += tl.length + 1;
         tableEnd--;
 
-        const cursorInside = sel.from <= tableEnd && sel.to >= tableStart;
-
-        if (!cursorInside) {
-          builder.add(
-            tableStart,
-            tableEnd,
-            Decoration.replace({
-              widget: new TableWidget(tableText),
-              block: true,
-            })
-          );
+        if (!(sel.from <= tableEnd && sel.to >= tableStart)) {
+          builder.add(tableStart, tableEnd, Decoration.replace({
+            widget: new TableWidget(tableText), block: true,
+          }));
         } else {
-          // Cursor inside: add .cm-table-source class to each line
           let linePos = tableStart;
           for (const tl of tableLines) {
-            builder.add(
-              linePos,
-              linePos,
-              Decoration.line({ class: "cm-table-source" })
-            );
+            builder.add(linePos, linePos, Decoration.line({ class: "cm-table-source" }));
             linePos += tl.length + 1;
           }
         }
-
         pos = tableEnd + 1;
         i = j;
         continue;
       }
     }
-
     pos += line.length + 1;
     i++;
   }
-
   return builder.finish();
 }
 
 // --- Click handler ---
-// Plain click on wikilinks → navigate.
-// Plain click on URLs → open in new tab.
-// Cursor placement still works on non-link text.
 
 function clickableLinks(navigate) {
   return EditorView.domEventHandlers({
     mousedown(event, view) {
-      // Only handle plain left-clicks (no selection drags)
       if (event.button !== 0) return false;
-
       const target = event.target;
 
-      // Widget link clicks are handled by the widget itself
       if (target.closest(".cm-md-link")) return false;
 
-      // Wikilink click
       const wikilink = target.closest(".cm-wikilink");
       if (wikilink) {
-        const text = wikilink.textContent;
-        const match = text.match(/\[\[([^\]]+)\]\]/);
+        const match = wikilink.textContent.match(/\[\[([^\]]+)\]\]/);
         if (match) {
           event.preventDefault();
           navigate(match[1]);
@@ -333,26 +270,18 @@ function clickableLinks(navigate) {
         }
       }
 
-      // URL click — scan line for URL at click position
       const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
       if (pos == null) return false;
       const line = view.state.doc.lineAt(pos);
       const col = pos - line.from;
       const text = line.text;
 
-      // Skip positions inside a markdown [text](url) — the widget handles those
       const mdSkipRe = /\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;
-      let skip = false;
       let s;
       while ((s = mdSkipRe.exec(text)) !== null) {
-        if (col >= s.index && col <= s.index + s[0].length) {
-          skip = true;
-          break;
-        }
+        if (col >= s.index && col <= s.index + s[0].length) return false;
       }
-      if (skip) return false;
 
-      // Bare URLs only (not inside markdown link parens)
       const urlRe = /https?:\/\/[^\s)>\]]+/g;
       let m;
       while ((m = urlRe.exec(text)) !== null) {
@@ -368,9 +297,28 @@ function clickableLinks(navigate) {
   });
 }
 
-// --- Phoenix channel-backed Yjs provider ---
+// --- Helpers ---
 
-// User colors — stable hash of a random session id
+function hashToInt(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return 0x40000000 + (Math.abs(h) % 0x3FFFFFFF);
+}
+
+function byteOffsetToCharIndex(str, byteOffset) {
+  const encoder = new TextEncoder();
+  let bytes = 0;
+  let chars = 0;
+  for (const ch of str) {
+    if (bytes >= byteOffset) break;
+    bytes += encoder.encode(ch).length;
+    chars++;
+  }
+  return chars;
+}
+
+// --- Phoenix provider ---
+
 const USER_COLORS = [
   "#30bced", "#6eeb83", "#ffbc42", "#e84855",
   "#8b5cf6", "#f472b6", "#34d399", "#fb923c",
@@ -383,10 +331,12 @@ function pickColor(id) {
 }
 
 class PhoenixProvider {
-  constructor(ydoc, channel) {
+  constructor(ydoc, channel, ytext) {
     this.ydoc = ydoc;
+    this.ytext = ytext;
     this.channel = channel;
     this.synced = false;
+    this.agentCursors = new Map(); // for linger color lookup
 
     // Awareness
     this.awareness = new awarenessProtocol.Awareness(ydoc);
@@ -413,24 +363,11 @@ class PhoenixProvider {
       channel.push("update", { data: this._encode(update) });
     });
 
-    // Awareness sync
+    // Awareness sync (browser ↔ browser)
     channel.on("awareness", ({ data }) => {
       awarenessProtocol.applyAwarenessUpdate(
         this.awareness, this._decode(data), "remote"
       );
-    });
-
-    // Agent cursor tracking
-    this.agentCursors = new Map(); // agent_id → {name, color, pos, active}
-    this._agentCursorListeners = [];
-
-    channel.on("agent_cursor", (cursor) => {
-      if (cursor.active) {
-        this.agentCursors.set(cursor.agent_id, cursor);
-      } else {
-        this.agentCursors.delete(cursor.agent_id);
-      }
-      for (const fn of this._agentCursorListeners) fn();
     });
 
     this.awareness.on("update", ({ added, updated, removed }) => {
@@ -439,6 +376,58 @@ class PhoenixProvider {
         this.awareness, changed
       );
       channel.push("awareness", { data: this._encode(encoded) });
+    });
+
+    // Track last-known agent color for linger highlights
+    this.lastAgentColor = null;
+
+    // Agent cursor → inject into awareness so y-codemirror.next renders it
+    channel.on("agent_cursor", (cursor) => {
+      const clientId = hashToInt(cursor.agent_id);
+      this.agentCursors.set(cursor.agent_id, cursor);
+      if (cursor.active) this.lastAgentColor = cursor.color;
+
+      if (cursor.active) {
+        const textContent = this.ytext.toString();
+        const charIdx = byteOffsetToCharIndex(textContent, cursor.pos);
+        const safeIdx = Math.min(charIdx, textContent.length);
+        const relPos = Y.createRelativePositionFromTypeIndex(this.ytext, safeIdx);
+        const jsonPos = Y.relativePositionToJSON(relPos);
+
+        const state = {
+          user: {
+            name: cursor.name,
+            color: cursor.color,
+            colorLight: cursor.color + "40",
+          },
+          cursor: { anchor: jsonPos, head: jsonPos },
+        };
+
+        // Set both states and meta so the awareness machinery is consistent
+        const isNew = !this.awareness.states.has(clientId);
+        this.awareness.states.set(clientId, state);
+        this.awareness.meta.set(clientId, {
+          clock: (this.awareness.meta.get(clientId)?.clock || 0) + 1,
+          lastUpdated: Date.now(),
+        });
+
+        this.awareness.emit("change", [
+          { added: isNew ? [clientId] : [], updated: isNew ? [] : [clientId], removed: [] },
+          "agent",
+        ]);
+      } else {
+        this.agentCursors.delete(cursor.agent_id);
+        const hadState = this.awareness.states.has(clientId);
+        this.awareness.states.delete(clientId);
+        this.awareness.meta.delete(clientId);
+
+        if (hadState) {
+          this.awareness.emit("change", [
+            { added: [], updated: [], removed: [clientId] },
+            "agent",
+          ]);
+        }
+      }
     });
   }
 
@@ -459,68 +448,62 @@ class PhoenixProvider {
   }
 }
 
-// --- Agent cursor decorations ---
+// --- Linger highlight: remote edits fade out in the editing agent's color ---
 
-class AgentCursorWidget extends WidgetType {
-  constructor(name, color) {
-    super();
-    this.name = name;
-    this.color = color;
-  }
+const LINGER_DURATION_MS = 2000;
 
-  eq(other) { return this.name === other.name && this.color === other.color; }
-
-  toDOM() {
-    const wrap = document.createElement("span");
-    wrap.className = "cm-agent-cursor";
-    wrap.style.borderLeftColor = this.color;
-
-    const label = document.createElement("span");
-    label.className = "cm-agent-cursor-label";
-    label.style.backgroundColor = this.color;
-    label.textContent = this.name;
-    wrap.appendChild(label);
-
-    return wrap;
-  }
-
-  ignoreEvent() { return true; }
-}
-
-function agentCursorPlugin(provider) {
+function lingerPluginFor(provider) {
   return ViewPlugin.fromClass(
     class {
-      constructor(view) {
-        this.decorations = this.build(view);
-        provider._agentCursorListeners.push(() => {
-          this.decorations = this.build(view);
-          view.dispatch(); // trigger re-render
-        });
-      }
-
-      build(view) {
-        const builder = new RangeSetBuilder();
-        const cursors = [...provider.agentCursors.values()]
-          .filter((c) => c.active)
-          .sort((a, b) => a.pos - b.pos);
-
-        for (const cursor of cursors) {
-          const pos = Math.min(cursor.pos, view.state.doc.length);
-          builder.add(
-            pos, pos,
-            Decoration.widget({
-              widget: new AgentCursorWidget(cursor.name, cursor.color),
-              side: 1,
-            })
-          );
-        }
-
-        return builder.finish();
+      constructor() {
+        this.decorations = Decoration.none;
+        this.pending = [];
       }
 
       update(update) {
         if (update.docChanged) {
-          this.decorations = this.build(update.view);
+          this.decorations = this.decorations.map(update.changes);
+
+          if (!provider.synced) return;
+
+          const now = Date.now();
+          this.pending = this.pending.filter((p) => p.expires > now);
+
+          const isRemote = update.transactions.some(
+            (tr) => tr.docChanged && !tr.isUserEvent("input") &&
+                    !tr.isUserEvent("delete") && !tr.isUserEvent("undo") &&
+                    !tr.isUserEvent("redo")
+          );
+
+          if (isRemote) {
+            const color = provider.lastAgentColor || "#F0B030";
+            const expires = now + LINGER_DURATION_MS;
+
+            update.changes.iterChanges((_fromA, _toA, fromB, toB) => {
+              if (fromB < toB) {
+                this.pending.push({ from: fromB, to: toB, expires, color });
+              }
+            });
+          }
+
+          this.decorations = Decoration.set(
+            this.pending
+              .sort((a, b) => a.from - b.from)
+              .map((p) => Decoration.mark({
+                class: "cm-linger",
+                attributes: { style: `--linger-color: ${p.color}` },
+              }).range(
+                Math.min(p.from, update.view.state.doc.length),
+                Math.min(p.to, update.view.state.doc.length)
+              ))
+          );
+
+          if (this.pending.length > 0 && !this._timer) {
+            this._timer = setTimeout(() => {
+              this._timer = null;
+              update.view.dispatch();
+            }, LINGER_DURATION_MS + 50);
+          }
         }
       }
     },
@@ -538,7 +521,7 @@ export function createEditor(element, recordId, { navigate } = {}) {
   socket.connect();
   const channel = socket.channel(`doc:${recordId}`);
 
-  const provider = new PhoenixProvider(ydoc, channel);
+  const provider = new PhoenixProvider(ydoc, channel, ytext);
 
   const nav = navigate || ((target) => {
     window.location.href = `/records/${target}`;
@@ -557,7 +540,7 @@ export function createEditor(element, recordId, { navigate } = {}) {
     history(),
     drawSelection(),
     yCollab(ytext, provider.awareness),
-    agentCursorPlugin(provider),
+    lingerPluginFor(provider),
     EditorView.lineWrapping,
   ];
 

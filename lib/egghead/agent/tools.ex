@@ -676,10 +676,8 @@ defmodule Egghead.Agent.Tools do
     agent_id = ctx[:agent_id]
 
     if agent_id && Map.has_key?(attrs, "body") && Egghead.Doc.Server.alive?(id) do
-      case Egghead.Doc.Server.agent_edit(id, agent_id, attrs["body"]) do
-        :ok -> {:ok, "Updated record: #{id}"}
-        {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
-      end
+      Egghead.Doc.Server.agent_edit(id, agent_id, attrs["body"])
+      {:ok, "Updating record: #{id} (live edit in progress)"}
     else
       case Egghead.update_record(id, attrs) do
         {:ok, record} -> {:ok, "Updated record: #{record.id}"}

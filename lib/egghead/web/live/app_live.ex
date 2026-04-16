@@ -370,7 +370,9 @@ defmodule Egghead.Web.AppLive do
 
   def handle_info(:budget_exhausted, socket) do
     {:noreply,
-     assign(socket, chat_status: "Budget exhausted \u2014 type /continue to grant more turns.")}
+     assign(socket,
+       chat_status: "We've been chatting for a bit. Anything to add? If not, type /continue."
+     )}
   end
 
   def handle_info(:continued, socket) do

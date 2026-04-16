@@ -178,7 +178,7 @@ defmodule Egghead.TUI.Chat.UpdateTest do
 
     test "budget_exhausted sets a status flash; continued clears it" do
       {m, :none} = Update.update({:room_event, :budget_exhausted}, model())
-      assert m.status_message =~ "budget"
+      assert m.status_message =~ "continue"
 
       {m, :none} = Update.update({:room_event, :continued}, m)
       assert m.status_message == nil

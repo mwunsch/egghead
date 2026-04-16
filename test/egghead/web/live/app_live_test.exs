@@ -195,7 +195,7 @@ defmodule Egghead.Web.AppLiveTest do
       send(view.pid, :budget_exhausted)
       Process.sleep(50)
 
-      assert render(view) =~ "Budget exhausted"
+      assert render(view) =~ "continue"
     end
 
     test "agent joined/left appear as system messages", %{conn: conn} do

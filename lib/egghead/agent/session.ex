@@ -20,6 +20,10 @@ defmodule Egghead.Agent.Session do
   @max_protected_results 2
   @compact_threshold 200
   @body_cap 500
+  # How many recent room messages to replay into state.history when
+  # a session is created mid-conversation or rehydrates after a
+  # handoff. Deeper history can always be searched via record tools.
+  @backfill_limit 50
 
   @base_system_prompt_intro """
   You are an agent in Egghead, a shared knowledge base. Records are Markdown
@@ -61,10 +65,15 @@ defmodule Egghead.Agent.Session do
   @chat_addendum """
   You are in a shared chat room with other agents and a human.
 
-  The transcript above contains messages from the human and from other
-  agents labeled `[agents/<id>]`. These are OTHER voices. Do not restate
-  their words. Do not adopt their framing as your own. Do not continue
-  their message in first person — their turn is done; yours is separate.
+  Your conversation history shows turns from the human and from other
+  agents, prefixed with their name (e.g. `agents/scout: ...` or
+  `mark: ...`). These are OTHER voices — not your prior turns, not
+  prompts directed only at you. Do not mirror them: don't repackage
+  a peer's point as your own contribution, don't adopt their framing
+  wholesale, don't continue their message in first person.
+
+  If the human asks you to recall, paraphrase, or summarize what a
+  peer said, do it directly.
 
   Speak when you have something substantive to add:
   - Records, information, or analysis others haven't mentioned
@@ -75,7 +84,8 @@ defmodule Egghead.Agent.Session do
 
   Yield with /pass when you truly have nothing to add — not as a safe
   default, but as an honest read. /pass must be your complete response,
-  on its own line, nothing before or after.
+  on its own line, nothing before or after. A direct question from the
+  human is not a pass situation — answer it.
 
   Other conventions:
   - Address agents with @id to activate them.
@@ -183,15 +193,39 @@ defmodule Egghead.Agent.Session do
     # Monitor the room process so we stop when it dies
     if room_pid, do: Process.monitor(room_pid)
 
+    # Subscribe to the room's PubSub topic so we can append peer and
+    # user messages to state.history as they're broadcast. This is the
+    # AutoGen-style pattern: peer content lives in the conversation
+    # array (strong attention channel), not in the system prompt (weak).
+    # Default sessions (room_id = nil) don't subscribe — nothing to listen to.
+    if room_id do
+      Phoenix.PubSub.subscribe(Egghead.PubSub, Egghead.Chat.Room.topic(room_id))
+    end
+
+    # Rehydrate history from the room's current transcript. When this
+    # session is first created mid-conversation — or after a handoff
+    # cleared history — it needs to catch up on what's already been said.
+    # Capped at the last @backfill_limit messages to keep the prompt sane.
+    history =
+      if room_id do
+        rehydrate_history_from_transcript(room_id, agent_id)
+      else
+        []
+      end
+
     state = %State{
       agent_id: agent_id,
       room_id: room_id,
       identity: identity,
+      history: history,
       context_window: identity[:context_window],
       context_threshold: identity[:context_threshold] || 0.80
     }
 
-    Logger.debug("Session started: #{agent_id} in #{room_id || "default"}")
+    Logger.debug(
+      "Session started: #{agent_id} in #{room_id || "default"} " <>
+        "(rehydrated #{length(history)} turns)"
+    )
 
     {:ok, state}
   end
@@ -267,10 +301,19 @@ defmodule Egghead.Agent.Session do
   end
 
   def handle_call(:clear_history, _from, state) do
+    # Rehydrate from the room after clearing so the agent doesn't lose
+    # peer context. Non-room sessions (1:1 prompts) just clear to empty.
+    history =
+      if state.room_id do
+        rehydrate_history_from_transcript(state.room_id, state.agent_id)
+      else
+        []
+      end
+
     {:reply, :ok,
      %{
        state
-       | history: [],
+       | history: history,
          session_tokens: 0,
          current_context_tokens: 0,
          referenced_records: MapSet.new()
@@ -301,6 +344,38 @@ defmodule Egghead.Agent.Session do
     {:stop, :normal, state}
   end
 
+  # Peer agent posted to the room — append to history as a user turn
+  # with name-prefixed content. Ignore our own messages (they're
+  # already in history via agent_loop's assistant turn). Skip pure
+  # /pass messages — the atmospheric flavor render in the UI is the
+  # only consumer of /pass semantics; they add noise to conversation.
+  def handle_info({:agent_message, msg}, state) do
+    cond do
+      msg.sender.id == state.agent_id ->
+        {:noreply, state}
+
+      msg.content == "/pass" ->
+        {:noreply, state}
+
+      true ->
+        entry = %{role: "user", content: "#{msg.sender.id}: #{msg.content}"}
+        {:noreply, %{state | history: state.history ++ [entry]}}
+    end
+  end
+
+  # Human posted to the room — append as a user turn with the human's
+  # display name prefixed. This is what the agent "sees" when they're
+  # next activated.
+  def handle_info({:user_message, msg}, state) do
+    entry = %{role: "user", content: "#{msg.sender.name}: #{msg.content}"}
+    {:noreply, %{state | history: state.history ++ [entry]}}
+  end
+
+  # Room events we don't need to act on (other agents' lifecycle,
+  # streaming chunks, etc.). Ignore silently — we're only listening
+  # for commits (agent_message / user_message).
+  def handle_info(_event, state), do: {:noreply, state}
+
   # --- Prompt execution ---
 
   defp do_prompt(state, message, opts) do
@@ -309,7 +384,17 @@ defmodule Egghead.Agent.Session do
     system_prompt = build_system_prompt(state, room)
 
     compacted = compact_history(state.history)
-    history = compacted ++ [%{role: "user", content: message}]
+
+    # In rooms, the coordinator calls with an empty message — the
+    # triggering user/peer turn is already in state.history via the
+    # broadcast subscription. For non-room 1:1 prompts, the message
+    # is the user turn and gets appended as before.
+    history =
+      case message do
+        "" -> compacted
+        nil -> compacted
+        _ -> compacted ++ [%{role: "user", content: message}]
+      end
 
     tools = Egghead.Agent.Tools.definitions_for(id[:capabilities] || [])
 
@@ -534,9 +619,22 @@ defmodule Egghead.Agent.Session do
                 Logger.warning("Agent #{id[:name]} deliberation failed: #{inspect(reason)}")
             end
 
+            # Rehydrate history from the room after the handoff
+            # clears state. The deliberation record is the long-term
+            # memory; the rehydrated recent transcript is the short-
+            # term conversational floor. Without this, an agent that
+            # handed off mid-conversation would next activate with
+            # zero peer context and feel amnesiac to collaborators.
+            rehydrated =
+              if state.room_id do
+                rehydrate_history_from_transcript(state.room_id, state.agent_id)
+              else
+                []
+              end
+
             new_state = %{
               state
-              | history: [],
+              | history: rehydrated,
                 session_tokens: 0,
                 current_context_tokens: 0,
                 referenced_records: MapSet.new([delib_id])
@@ -583,7 +681,7 @@ defmodule Egghead.Agent.Session do
       llm_opts = maybe_opt(llm_opts, :tools, if(tools != [], do: tools))
 
       case agent_loop(state, messages, llm_opts, nil, 0) do
-        {:ok, response, _history, _usage, _refs} ->
+        {:ok, response, _history, _usage, _last_call, _tool_log} ->
           {{:ok, response}, state}
 
         {:error, _} = error ->
@@ -616,17 +714,12 @@ defmodule Egghead.Agent.Session do
 
     if room do
       agents_list = room.agents |> Enum.join(", ")
-      # On first activation in a room (empty history) — including the
-      # rehydrate case after `/join <transcript-id>` — show the full
-      # transcript so the agent has the same context it would have had
-      # if it had been live the whole time. On subsequent activations,
-      # the diff logic only shows the messages since the agent last
-      # spoke (its own messages are already in state.history as
-      # assistant turns).
-      transcript = format_room_diff(room, state.agent_id, state.history == [])
 
-      # On first activation in a room, include the most recent deliberation
-      # for this room so the agent has structured context, not just 5 messages.
+      # Peer and human messages live in state.history as role:user
+      # turns — the strong attention channel. No need to duplicate
+      # them in the system prompt. If history is empty (fresh session
+      # whose rehydrate came up empty), we still include a prior-
+      # context block from the most recent deliberation record, if any.
       prior_context = if state.history == [], do: room_deliberation_context(room.id)
 
       activation_addendum =
@@ -643,11 +736,7 @@ defmodule Egghead.Agent.Session do
 
         Room: #{room.id} | Agents: #{agents_list}
         """ <>
-        if(prior_context, do: "\n#{prior_context}\n", else: "") <>
-        """
-
-        #{transcript}
-        """
+        if(prior_context, do: "\n#{prior_context}\n", else: "")
     else
       base
     end
@@ -679,6 +768,49 @@ defmodule Egghead.Agent.Session do
           _ ->
             nil
         end
+    end
+  end
+
+  # --- Rehydration ---
+
+  # Convert the last @backfill_limit messages of the room's transcript
+  # into history entries (user/assistant role turns) for this agent.
+  # Called on session init and after handoff, when history is empty and
+  # we need to catch up to the room's current state.
+  #
+  # - Human messages become user turns with the human's name prefix.
+  # - Our own messages become assistant turns (verbatim).
+  # - Other agents' messages become user turns with "agents/<id>: " prefix.
+  # - /pass messages are skipped — no conversational content.
+  defp rehydrate_history_from_transcript(room_id, agent_id) do
+    try do
+      transcript = Egghead.Chat.Room.get_transcript(room_id)
+
+      transcript
+      |> Enum.take(-@backfill_limit)
+      |> Enum.reject(fn m -> m.content == "/pass" end)
+      |> Enum.map(fn m ->
+        case m.sender do
+          %{type: :user, name: name} ->
+            %{role: "user", content: "#{name}: #{m.content}"}
+
+          %{type: :agent, id: ^agent_id} ->
+            %{role: "assistant", content: m.content}
+
+          %{type: :agent, id: id} ->
+            %{role: "user", content: "#{id}: #{m.content}"}
+
+          _ ->
+            %{role: "user", content: m.content}
+        end
+      end)
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "Session #{agent_id}: rehydrate failed (#{inspect(reason)}) — starting empty"
+        )
+
+        []
     end
   end
 
@@ -787,98 +919,6 @@ defmodule Egghead.Agent.Session do
         ""
     end
   end
-
-  defp format_room_diff(room, agent_id, first_activation?) do
-    transcript = room.transcript || []
-
-    last_own_idx =
-      transcript
-      |> Enum.reverse()
-      |> Enum.find_index(fn m ->
-        case m.sender do
-          %{id: ^agent_id} -> true
-          _ -> false
-        end
-      end)
-
-    messages =
-      cond do
-        # First activation in this room (incl. rehydrate from a saved
-        # transcript): give the agent the full historical context. Its
-        # own past messages ARE included here because they're not in
-        # state.history yet — without them the agent would see only
-        # other speakers' lines and have no record of what it itself
-        # said.
-        first_activation? ->
-          transcript
-
-        # Agent has never spoken in this room. Treat like first
-        # activation: show everything. (Previously truncated to last 5,
-        # which hid substantive earlier context.)
-        last_own_idx == nil ->
-          transcript
-
-        # Steady state: show everything since our last turn. No minimum-
-        # size fallback — if only one new message landed, that's all the
-        # agent needs to see. (Previously fell back to last 5 when diff
-        # was <3, which was Rube Goldberg and produced stale windows.)
-        true ->
-          since_idx = length(transcript) - last_own_idx
-          Enum.drop(transcript, since_idx)
-      end
-
-    # In the steady-state diff case, drop the agent's own past
-    # messages — they are already present in state.history as
-    # assistant turns. Including them here too caused the LLM to see
-    # its own outputs twice and (in extreme cases) parrot them back
-    # concatenated. On first activation, history is empty and we
-    # explicitly want them in the transcript view.
-    messages =
-      if first_activation?,
-        do: messages,
-        else: Enum.reject(messages, &own_message?(&1, agent_id))
-
-    if messages == [] do
-      "(no new messages)"
-    else
-      render_transcript_messages(messages)
-    end
-  end
-
-  # Render messages with tiered truncation: the last two messages render
-  # verbatim (the agent is usually responding to them, so they need to be
-  # complete), older messages in the diff are capped at a generous 2000
-  # chars. Typical diffs are 2-5 messages, so worst case is ~10K chars of
-  # transcript in the system prompt — trivial against any modern window.
-  defp render_transcript_messages(messages) do
-    total = length(messages)
-
-    messages
-    |> Enum.with_index()
-    |> Enum.map_join("\n", fn {m, idx} ->
-      label =
-        case m.sender do
-          %{type: :user, name: name} -> "[#{name}]"
-          %{type: :agent, id: id} -> "[#{id}]"
-          _ -> "[unknown]"
-        end
-
-      # idx counts from 0; the last two messages have idx >= total - 2.
-      verbatim? = idx >= total - 2
-
-      content =
-        cond do
-          verbatim? -> m.content
-          String.length(m.content) > 2000 -> String.slice(m.content, 0, 2000) <> "..."
-          true -> m.content
-        end
-
-      "#{label} #{content}"
-    end)
-  end
-
-  defp own_message?(%{sender: %{id: id}}, agent_id), do: id == agent_id
-  defp own_message?(_, _), do: false
 
   # --- LLM dispatch ---
 

@@ -148,7 +148,116 @@ defmodule Egghead.ChatTest do
       state = Room.get_state(room)
       assert state.id == room
       assert "agents/scout" in state.agents
-      assert state.round_budget == 5
+      assert state.round_budget == 15
+    end
+
+    test "budget ticks on every agent response (not just @-mention cascades)" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+
+      # Seed a user message to reset budget to full.
+      Room.send_message(room, "hi")
+      assert Room.get_state(room).rounds_remaining == 15
+
+      # Four plain responses (no @-mentions) should tick budget by 4.
+      for i <- 1..4 do
+        Room.agent_respond(room, "agents/test-#{i}", "response #{i}")
+      end
+
+      assert Room.get_state(room).rounds_remaining == 11
+    end
+  end
+
+  # --- Session peer-visibility (Phase 6) ---
+
+  describe "Session peer history" do
+    alias Egghead.Agent.Session
+
+    test "appends peer messages to state.history as name-prefixed user turns" do
+      room_id = "test-room-#{:erlang.unique_integer([:positive])}"
+      {:ok, room_pid} = Room.start_link(id: room_id)
+
+      identity = [
+        id: "agents/alpha",
+        name: "Alpha",
+        model: "anthropic/claude-haiku-4-5",
+        capabilities: [],
+        disposition: "Test agent."
+      ]
+
+      {:ok, session_pid} =
+        Session.start_link(
+          agent_id: "agents/alpha",
+          room_id: room_id,
+          identity: identity,
+          room_pid: room_pid
+        )
+
+      # Peer posts. Our session should receive it via PubSub and append
+      # as a name-prefixed user turn.
+      Room.agent_respond(room_id, "agents/beta", "beta speaking here")
+      Process.sleep(50)
+
+      state = :sys.get_state(session_pid)
+
+      assert Enum.any?(state.history, fn entry ->
+               entry.role == "user" and
+                 entry.content == "agents/beta: beta speaking here"
+             end)
+
+      # Our own message should NOT be appended via the broadcast
+      # (it would duplicate the assistant turn in agent_loop).
+      Room.agent_respond(room_id, "agents/alpha", "alpha speaking")
+      Process.sleep(50)
+
+      state = :sys.get_state(session_pid)
+
+      refute Enum.any?(state.history, fn entry ->
+               entry.role == "user" and
+                 entry.content == "agents/alpha: alpha speaking"
+             end)
+
+      # /pass messages are skipped — no conversational content.
+      Room.agent_pass(room_id, "agents/beta")
+      Process.sleep(50)
+
+      state = :sys.get_state(session_pid)
+
+      refute Enum.any?(state.history, fn entry ->
+               entry.role == "user" and entry.content =~ "/pass"
+             end)
+    end
+
+    test "rehydrates history from room transcript on session init" do
+      room_id = "test-room-#{:erlang.unique_integer([:positive])}"
+      {:ok, room_pid} = Room.start_link(id: room_id)
+
+      # Populate the room before the agent's session exists.
+      Room.send_message(room_id, "hello")
+      Room.agent_respond(room_id, "agents/beta", "hi there")
+
+      identity = [
+        id: "agents/alpha",
+        name: "Alpha",
+        model: "anthropic/claude-haiku-4-5",
+        capabilities: [],
+        disposition: "Test agent."
+      ]
+
+      {:ok, session_pid} =
+        Session.start_link(
+          agent_id: "agents/alpha",
+          room_id: room_id,
+          identity: identity,
+          room_pid: room_pid
+        )
+
+      state = :sys.get_state(session_pid)
+
+      # Both past messages should be in history: the user msg and
+      # the peer agent msg, in transcript order, as user-role turns.
+      assert length(state.history) >= 2
+      assert Enum.any?(state.history, &(&1.content =~ "hello"))
+      assert Enum.any?(state.history, &(&1.content == "agents/beta: hi there"))
     end
   end
 

@@ -155,7 +155,7 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
-  def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids, content}, state) do
+  def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids, _content}, state) do
     agents =
       mentioned_ids
       |> Enum.flat_map(fn id -> find_agent(state.agents, id) end)
@@ -165,11 +165,13 @@ defmodule Egghead.Chat.Coordinator do
 
       broadcast_activation(room_id, length(agents))
 
-      prompt = "@-mentioned by #{from_agent}, who said:\n\n#{content}"
-
+      # The mention content is already in each activated agent's
+      # state.history via its broadcast subscription. The activation
+      # call is a pure "take your turn" signal — an empty message
+      # tells do_prompt not to append another user turn.
       Enum.each(agents, fn agent_info ->
         Task.start(fn ->
-          prompt_agent_in_room(agent_info.id, room_id, prompt)
+          prompt_agent_in_room(agent_info.id, room_id, "")
         end)
       end)
     end
@@ -399,7 +401,7 @@ defmodule Egghead.Chat.Coordinator do
 
         Enum.each(agents_to_prompt, fn agent_info ->
           Task.start(fn ->
-            prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :jam)
+            prompt_agent_in_room(agent_info.id, room_id, "", activation: :jam)
           end)
         end)
 
@@ -409,7 +411,7 @@ defmodule Egghead.Chat.Coordinator do
         Task.start(fn ->
           Enum.each(agents_to_prompt, fn agent_info ->
             broadcast_activation(room_id, 1)
-            prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :huddle)
+            prompt_agent_in_room(agent_info.id, room_id, "", activation: :huddle)
           end)
         end)
 
@@ -438,7 +440,7 @@ defmodule Egghead.Chat.Coordinator do
             # Each agent runs in its own Task so this process stays free
             # to receive PubSub events for stagger timing
             Task.start(fn ->
-              prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :normal)
+              prompt_agent_in_room(agent_info.id, room_id, "", activation: :normal)
             end)
           end)
         end)
@@ -448,7 +450,7 @@ defmodule Egghead.Chat.Coordinator do
         Task.start(fn ->
           Enum.each(agents_to_prompt, fn agent_info ->
             broadcast_activation(room_id, 1)
-            prompt_agent_in_room(agent_info.id, room_id, msg.content, activation: :normal)
+            prompt_agent_in_room(agent_info.id, room_id, "", activation: :normal)
           end)
         end)
     end
@@ -607,9 +609,7 @@ defmodule Egghead.Chat.Coordinator do
             Room.agent_respond(room_id, agent_id, String.trim(in_progress), usage: usage)
 
           pass? ->
-            Logger.debug(
-              "Coordinator: #{agent_id} passed again in huddle — accepting the yield"
-            )
+            Logger.debug("Coordinator: #{agent_id} passed again in huddle — accepting the yield")
 
             Room.agent_pass(room_id, agent_id)
 
@@ -618,9 +618,7 @@ defmodule Egghead.Chat.Coordinator do
         end
 
       {:error, reason} ->
-        Logger.warning(
-          "Coordinator: #{agent_id} huddle retry failed: #{inspect(reason)}"
-        )
+        Logger.warning("Coordinator: #{agent_id} huddle retry failed: #{inspect(reason)}")
 
         Room.clear_in_progress(room_id, agent_id)
         broadcast_pass(room_id, agent_id)

@@ -403,7 +403,10 @@ defmodule Egghead.TUI.Chat.Update do
   defp handle_room_event({:agent_mentions, _room_id, _from, _to, _content}, model), do: model
 
   defp handle_room_event(:budget_exhausted, model) do
-    %{model | status_message: "budget exhausted — /continue to grant more turns"}
+    %{
+      model
+      | status_message: "We've been chatting for a bit. Anything to add? If not, /continue."
+    }
   end
 
   defp handle_room_event(:continued, model), do: clear_status(model)

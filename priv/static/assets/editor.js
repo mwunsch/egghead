@@ -78,6 +78,81 @@ const urlHighlighter = makeMatchPlugin(new MatchDecorator({
   decoration: () => Decoration.mark({ class: "cm-url" }),
 }));
 
+// --- Markdown link widget: [text](url) → clickable text ---
+
+class LinkWidget extends WidgetType {
+  constructor(text, url) {
+    super();
+    this.text = text;
+    this.url = url;
+  }
+
+  eq(other) { return this.text === other.text && this.url === other.url; }
+
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-md-link";
+
+    const open = document.createElement("span");
+    open.className = "cm-md-link-bracket";
+    open.textContent = "[";
+
+    const a = document.createElement("a");
+    a.className = "cm-md-link-text";
+    a.textContent = this.text;
+    a.title = this.url;
+    a.href = this.url;
+    a.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.open(this.url, "_blank");
+    });
+
+    const close = document.createElement("span");
+    close.className = "cm-md-link-bracket";
+    close.textContent = "]";
+
+    span.append(open, a, close);
+    return span;
+  }
+
+  ignoreEvent() { return false; }
+}
+
+const mdLinkField = StateField.define({
+  create(state) { return buildMdLinkDecos(state); },
+  update(decos, tr) {
+    if (tr.docChanged || tr.selection) return buildMdLinkDecos(tr.state);
+    return decos;
+  },
+  provide(field) { return EditorView.decorations.from(field); },
+});
+
+function buildMdLinkDecos(state) {
+  const builder = new RangeSetBuilder();
+  const sel = state.selection.main;
+  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+
+  for (let i = 1; i <= state.doc.lines; i++) {
+    const line = state.doc.line(i);
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(line.text)) !== null) {
+      const from = line.from + m.index;
+      const to = from + m[0].length;
+      const cursorInside = sel.from >= from && sel.from <= to;
+
+      if (!cursorInside) {
+        builder.add(from, to, Decoration.replace({
+          widget: new LinkWidget(m[1], m[2]),
+        }));
+      }
+    }
+  }
+
+  return builder.finish();
+}
+
 // --- Table widget: render pipe tables as <table> ---
 
 function parseTable(text) {
@@ -242,6 +317,9 @@ function clickableLinks(navigate) {
 
       const target = event.target;
 
+      // Widget link clicks are handled by the widget itself
+      if (target.closest(".cm-md-link")) return false;
+
       // Wikilink click
       const wikilink = target.closest(".cm-wikilink");
       if (wikilink) {
@@ -261,25 +339,25 @@ function clickableLinks(navigate) {
       const col = pos - line.from;
       const text = line.text;
 
-      // Bare URLs
+      // Skip positions inside a markdown [text](url) — the widget handles those
+      const mdSkipRe = /\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;
+      let skip = false;
+      let s;
+      while ((s = mdSkipRe.exec(text)) !== null) {
+        if (col >= s.index && col <= s.index + s[0].length) {
+          skip = true;
+          break;
+        }
+      }
+      if (skip) return false;
+
+      // Bare URLs only (not inside markdown link parens)
       const urlRe = /https?:\/\/[^\s)>\]]+/g;
       let m;
       while ((m = urlRe.exec(text)) !== null) {
         if (col >= m.index && col <= m.index + m[0].length) {
           event.preventDefault();
           window.open(m[0], "_blank");
-          return true;
-        }
-      }
-
-      // Markdown links [text](url) — click on url part
-      const mdLinkRe = /\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;
-      while ((m = mdLinkRe.exec(text)) !== null) {
-        const urlStart = m.index + m[1].length + 3; // [text](
-        const urlEnd = urlStart + m[2].length;
-        if (col >= m.index && col <= urlEnd + 1) {
-          event.preventDefault();
-          window.open(m[2], "_blank");
           return true;
         }
       }
@@ -350,6 +428,7 @@ export function createEditor(element, recordId, { navigate } = {}) {
     syntaxHighlighting(markdownHighlight),
     wikilinkHighlighter,
     urlHighlighter,
+    mdLinkField,
     tableField,
     clickableLinks(nav),
     keymap.of([...defaultKeymap, ...historyKeymap]),

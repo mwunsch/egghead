@@ -858,6 +858,23 @@ details[open] > .properties-summary::before {
   max-width: none;
 }
 
+/* Markdown links — collapsed [text](url) widget */
+.record-editor .cm-md-link {
+  display: inline;
+}
+.record-editor .cm-md-link-bracket {
+  color: var(--syntax);
+  font-family: var(--font-mono);
+}
+.record-editor .cm-md-link-text {
+  color: var(--link);
+  cursor: pointer;
+  text-decoration: none;
+}
+.record-editor .cm-md-link-text:hover {
+  text-decoration: underline;
+}
+
 /* Clickable URLs */
 .record-editor .cm-url {
   cursor: pointer;

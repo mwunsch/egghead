@@ -790,6 +790,158 @@ details[open] > .properties-summary::before {
   content: "~~"; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em;
 }
 
+/* ---- CodeMirror editor (record body) ---- */
+
+.record-editor {
+  flex: 1;
+  overflow: auto;
+  padding: 0 16px;
+}
+
+.record-editor .cm-editor {
+  height: 100%;
+}
+
+.record-editor .cm-scroller {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--fg);
+  overflow: auto;
+}
+
+.record-editor .cm-editor.cm-focused { outline: none; }
+.record-editor .cm-content { padding: 8px 0; max-width: 65ch; }
+.record-editor .cm-line { padding: 0; }
+.record-editor .cm-gutters { display: none; }
+.record-editor .cm-cursor { border-left-color: var(--fg); }
+
+.record-editor .cm-activeLine { background: none; }
+.record-editor .cm-activeLineGutter { background: none; }
+
+/* Reconnecting overlay */
+.record-editor.cm-reconnecting { position: relative; }
+.record-editor.cm-reconnecting::after {
+  content: "Reconnecting…";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--chrome);
+  padding: 2px 8px;
+  border-radius: 2px;
+}
+
+/* Wikilinks — match .markdown-body a.wikilink */
+.record-editor .cm-wikilink {
+  color: var(--wikilink);
+  font-weight: 500;
+  cursor: pointer;
+}
+.record-editor .cm-wikilink:hover {
+  text-decoration: underline;
+}
+
+/* Tables — match .markdown-body table/th/td */
+.record-editor .cm-table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+  font-size: 14px;
+  font-family: var(--font-body);
+}
+.record-editor .cm-table th,
+.record-editor .cm-table td {
+  border: 1px solid var(--chrome-lo);
+  padding: 4px 8px;
+  text-align: left;
+}
+.record-editor .cm-table th {
+  background: var(--chrome);
+  font-family: var(--font-ui);
+  font-weight: 600;
+}
+
+/* Raw table editing — mono so pipe columns align */
+.record-editor .cm-line.cm-table-source {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre;
+  max-width: none;
+}
+
+/* Markdown links — collapsed [text](url) widget */
+.record-editor .cm-md-link {
+  display: inline;
+}
+.record-editor .cm-md-link-bracket {
+  color: var(--syntax);
+  font-family: var(--font-mono);
+}
+.record-editor .cm-md-link-text {
+  color: var(--link);
+  cursor: pointer;
+  text-decoration: none;
+}
+.record-editor .cm-md-link-text:hover {
+  text-decoration: underline;
+}
+
+/* Remote cursors (y-codemirror.next awareness) */
+.cm-ySelectionCaret {
+  position: relative;
+  border-left: 2px solid;
+  margin-left: -1px;
+}
+.cm-ySelectionCaretDot {
+  display: none;
+}
+.cm-ySelectionInfo {
+  position: absolute;
+  top: -1.4em;
+  left: -1px;
+  font-size: 10px;
+  font-family: var(--font-ui);
+  color: #fff;
+  padding: 1px 4px;
+  border-radius: 2px;
+  white-space: nowrap;
+  pointer-events: none;
+  line-height: 1.3;
+  opacity: 1;
+  transition: opacity 0.5s ease 3s;
+}
+.cm-ySelectionCaret:not(:hover) .cm-ySelectionInfo {
+  opacity: 0.7;
+}
+.cm-ySelection {
+  opacity: 0.3;
+}
+
+/* Linger highlight — remote edits fade in the author's color */
+.record-editor .cm-linger {
+  --linger-color: #F0B030;
+  background-color: color-mix(in srgb, var(--linger-color) 30%, transparent);
+  animation: linger-fade 2s ease-out forwards;
+  border-radius: 2px;
+}
+@keyframes linger-fade {
+  0% { background-color: color-mix(in srgb, var(--linger-color) 30%, transparent); }
+  70% { background-color: color-mix(in srgb, var(--linger-color) 15%, transparent); }
+  100% { background-color: transparent; }
+}
+
+/* Clickable URLs */
+.record-editor .cm-url {
+  cursor: pointer;
+}
+.record-editor .cm-url:hover {
+  text-decoration: underline;
+}
+
 .properties-actions {
   margin-top: 8px;
   display: flex;

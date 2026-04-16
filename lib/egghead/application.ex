@@ -59,7 +59,9 @@ defmodule Egghead.Application do
            records_dir: records_dir, skills_dir: skills_dir, db_path: db_path},
           Egghead.MCP.Client.Registry,
           Egghead.MCP.Client.Supervisor,
-          {Egghead.Agent.LayerSupervisor, records_dir: records_dir}
+          {Egghead.Agent.LayerSupervisor, records_dir: records_dir},
+          {Registry, keys: :unique, name: Egghead.Doc.Registry},
+          {Egghead.Doc.Supervisor, []}
         ] ++ web_children()
       else
         []

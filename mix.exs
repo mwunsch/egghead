@@ -253,7 +253,8 @@ defmodule Egghead.MixProject do
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:floki, "~> 0.36"},
-      {:burrito, "~> 1.5"}
+      {:burrito, "~> 1.5"},
+      {:y_ex, "~> 0.10"}
     ]
   end
 

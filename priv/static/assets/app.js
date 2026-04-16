@@ -156,6 +156,25 @@ Hooks.CopyMarkdown = {
   },
 };
 
+// CRDT-backed markdown editor
+Hooks.YjsEditor = {
+  async mounted() {
+    const { createEditor } = await import("./editor.js");
+    const recordId = this.el.dataset.recordId;
+    this._editor = createEditor(this.el, recordId, {
+      navigate: (target) => {
+        window.liveSocket.redirect(`/records/${target}`);
+      },
+    });
+  },
+  destroyed() {
+    if (this._editor) {
+      this._editor.destroy();
+      this._editor = null;
+    }
+  },
+};
+
 // --- Socket ---
 
 const csrfToken = document

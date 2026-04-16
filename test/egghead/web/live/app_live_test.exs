@@ -113,21 +113,23 @@ defmodule Egghead.Web.AppLiveTest do
       assert html =~ "tag-pill"
     end
 
-    test "wikilinks render with brackets", %{conn: conn} do
+    test "editor mount point renders for selected record", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/records/hello-world")
 
-      assert html =~ "data-wikilink=\"link-target\""
-      assert html =~ "wikilink"
+      assert html =~ "phx-hook=\"YjsEditor\""
+      assert html =~ "data-record-id=\"hello-world\""
+      assert html =~ "record-editor"
     end
 
-    test "wikilink click navigates via patch", %{conn: conn} do
+    test "link in properties navigates via patch", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/records/hello-world")
 
-      view |> element("a[data-wikilink=\"link-target\"]") |> render_click()
+      view
+      |> element("li.record-item", "Link Target")
+      |> render_click()
 
       html = render(view)
-      assert html =~ "Link Target"
-      assert html =~ "linked from"
+      assert html =~ "data-record-id=\"link-target\""
     end
 
     test "class filter dropdown opens", %{conn: conn} do

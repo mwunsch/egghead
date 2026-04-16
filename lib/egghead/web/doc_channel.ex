@@ -23,6 +23,20 @@ defmodule Egghead.Web.DocChannel do
     {:noreply, socket}
   end
 
+  def handle_in("sync", %{"data" => encoded_sv}, socket) do
+    sv = Base.decode64!(encoded_sv)
+
+    case Server.sync(socket.assigns.record_id, sv) do
+      {:ok, update} ->
+        push(socket, "sync", %{data: Base.encode64(update)})
+
+      {:error, _} ->
+        :ok
+    end
+
+    {:noreply, socket}
+  end
+
   def handle_in("awareness", %{"data" => encoded}, socket) do
     broadcast_from!(socket, "awareness", %{data: encoded})
     {:noreply, socket}

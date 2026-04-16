@@ -549,8 +549,19 @@ export function createEditor(element, recordId, { navigate } = {}) {
     parent: element,
   });
 
+  // Reconnection: Phoenix channels auto-rejoin on reconnect.
+  // The server's after_join re-attaches and pushes full state via "sync".
+  // If the server restarted (fresh Y.Doc, no shared history), the
+  // applied update will contain the current file content and Yjs
+  // merges it with any local state.
+  channel.onError(() => {
+    element.classList.add("cm-reconnecting");
+  });
+
   channel.join()
-    .receive("ok", () => {})
+    .receive("ok", () => {
+      element.classList.remove("cm-reconnecting");
+    })
     .receive("error", (resp) => {
       console.error("Failed to join doc channel:", resp);
     });

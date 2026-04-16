@@ -59,6 +59,10 @@ defmodule Egghead.Doc.Server do
     GenServer.call(via(record_id), :get_state)
   end
 
+  def sync(record_id, state_vector) do
+    GenServer.call(via(record_id), {:sync, state_vector})
+  end
+
   @doc """
   Check if a Doc.Server is currently running for this record
   (i.e., a browser has the document open).
@@ -129,6 +133,11 @@ defmodule Egghead.Doc.Server do
 
   def handle_call(:get_state, _from, state) do
     {:ok, update} = Yex.encode_state_as_update(state.doc)
+    {:reply, {:ok, update}, state}
+  end
+
+  def handle_call({:sync, client_sv}, _from, state) do
+    {:ok, update} = Yex.encode_state_as_update(state.doc, client_sv)
     {:reply, {:ok, update}, state}
   end
 

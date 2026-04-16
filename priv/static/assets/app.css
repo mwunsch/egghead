@@ -819,6 +819,21 @@ details[open] > .properties-summary::before {
 .record-editor .cm-activeLine { background: none; }
 .record-editor .cm-activeLineGutter { background: none; }
 
+/* Reconnecting overlay */
+.record-editor.cm-reconnecting { position: relative; }
+.record-editor.cm-reconnecting::after {
+  content: "Reconnecting…";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--chrome);
+  padding: 2px 8px;
+  border-radius: 2px;
+}
+
 /* Wikilinks — match .markdown-body a.wikilink */
 .record-editor .cm-wikilink {
   color: var(--wikilink);

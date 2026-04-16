@@ -78,7 +78,7 @@ Egghead.Supervisor (one_for_one)
 │   └── RecordStore     — file watcher, parser, write barrier
 └── Agent.LayerSupervisor (rest_for_one)
     ├── LLM.Registry    — multi-provider, env-var detection
-    ├── Chat.Coordinator — activation gating, [PASS] enforcement
+    ├── Chat.Coordinator — activation gating, /pass enforcement
     └── Agent.Supervisor (DynamicSupervisor)
         ├── index       — built-in store agent (model from config)
         └── agents/*    — defined as records with class: agent
@@ -105,9 +105,12 @@ Log routing happens before the supervision tree starts.
 - **Plain files are the universal interface.** Markdown on a filesystem,
   not a database.
 - **Graph topology, sparse activation.** Agents collaborate through a
-  shared transcript and self-select via @-mentions, [PASS], and tag-based
-  relevance gating. Star/tree delegation patterns are empirically inferior
-  for this kind of work — see `records/design/coordinator.md`.
+  shared transcript and self-select via @-mentions, `/pass`, and tag-based
+  relevance gating. Default activation is serial (each agent reads
+  peers' output before speaking). Three dialogue modes: open messages
+  (serial, strict `/pass`), `@everyone` huddle (serial, must-respond),
+  `@jam` (parallel cacophony). See `records/design/coordinator.md` and
+  `records/research/multi-agent-topology-patterns.md`.
 - **Capability-based mutation control.** Reads are free; writes follow a
   graduated spectrum enforced at the infrastructure level.
 
@@ -133,7 +136,7 @@ library embedding. Prefer reusing these over reinventing.
 | `prompt/3` | 1:1 prompt to a single agent |
 | `list_agents/0`, `agent_usage/1` | Roster + token / context % |
 | `clear_history/1` | Reset session history |
-| `handoff/2` | Summarize + clear, optionally continue with new prompt |
+| `handoff/2` | Summarize + clear, accepts `room_id:` opt for room-targeted handoff |
 | `save_insights/1` | Distill session to a deliberation record |
 
 ### Chat rooms
@@ -141,11 +144,12 @@ library embedding. Prefer reusing these over reinventing.
 | Function | Purpose |
 |---|---|
 | `create_room/1`, `default_room/0` | Lifecycle |
+| `list_rooms/0`, `room_exists?/1` | Discover live rooms |
 | `chat/2` | Send a user message |
 | `chat_continue/1` | Reset turn budget; replay queued mentions |
-| `chat_save/1` | Persist transcript as a deliberation record |
+| `chat_save/1` | Persist transcript as a `class: transcript` record |
 | `chat_transcript/1` | Read full transcript |
-| `set_room_mode/2` | `:staggered` (default) or `:serial` activation |
+| `set_room_mode/2` | `:serial` (default) or `:staggered` activation |
 | `watch/1` | Stream room events to stdout (RoomLogger) |
 
 ### Consultation
@@ -189,17 +193,19 @@ framework documentation. Logs go to `~/.local/state/egghead/egghead.log`
   arrow nav, markdown preview pane (wikilinks/tables/footnotes/task lists),
   Tab cycles links, Enter follows or opens in `$EDITOR`, type a new title
   to create a record (search-as-create phantom row).
-- **Chat mode** (`/chat`) — IRC-style: shared transcript with the swarm,
-  nick-prefixed messages, `/me`-style action lines for tool calls,
-  paragraph-by-paragraph streaming (gated on `\n\n`), ghost-text @-mention
-  autocomplete, mode-aware slash command palette.
+- **Chat mode** (`/chat`) — IRC-style: shared transcript with agents,
+  nick-prefixed messages, `/me`-style action lines for tool calls and
+  `/pass` yields (atmospheric flavor text from `PassActions` pool),
+  paragraph-by-paragraph streaming (gated on `\n\n`), ghost-text
+  @-mention autocomplete (includes `@everyone` huddle, `@jam`
+  cacophony), mode-aware slash command palette.
 
 ### Slash commands per mode
 
 | Mode | Commands |
 |---|---|
 | records | `/quit` `/help` `/new` `/chat` `/system` `/debug` |
-| chat | `/save` `/continue` `/handoff <agent>` `/leave` `/help` `/quit` |
+| chat | `/save` `/continue` `/handoff <agent>` `/join <room-or-transcript>` `/mute <agent>` `/unmute <agent>` `/leave` `/help` `/quit` |
 
 Quit: `Ctrl+Q` (in-app) or `Ctrl+C → a` (BEAM abort). Esc returns from
 chat mode to records mode.
@@ -247,6 +253,101 @@ Tool names are `egghead_*`-namespaced:
 `egghead_consult` is the primary integration for external clients that
 want to ask the swarm a question without managing rooms themselves.
 
+## Versioning & Releases
+
+### Version string
+
+The version is **computed at compile time** in `mix.exs` from the date
+and the current git SHA:
+
+- Clean tree: `2026.4.14+61d171a` (CalVer + 7-char git SHA)
+- Dirty tree: `2026.4.14+dirty`
+- No git: `0.0.0+nogit`
+
+No manual version bumps. Don't edit a `version: "x.y.z"` line — there
+isn't one. The format is `Version.parse/1`-compatible.
+
+### Cutting a release
+
+```bash
+# After your changes are committed and pushed to main:
+git tag -a v2026.4.14 -m "Brief release note"
+git push origin v2026.4.14
+```
+
+GH Actions (`.github/workflows/release.yml`) on a `v*` tag push:
+
+1. **test** (Ubuntu) — installs `inotify-tools`, runs `mix test`
+2. **build** (matrix) — Burrito binaries for `macos_arm64` (macos-latest)
+   and `linux_x64` (ubuntu-latest). Each runner gets `setup-zig@v2`
+   pinned to the version Burrito requires (currently `0.15.2` —
+   check `deps/burrito/lib/burrito.ex` if bumping). Linux gets
+   `xz-utils`. Both run `mix phx.digest` before `mix release`.
+3. **release** — collects artifacts, creates a GitHub Release with
+   auto-generated notes from PRs.
+
+### When a release fails
+
+If the workflow fails before the **release** job publishes, the tag
+exists on GitHub but no GitHub Release does. It's safe to fix and
+retag at the same name:
+
+```bash
+gh release view v2026.4.14   # confirms "release not found"
+git tag -d v2026.4.14
+git push origin :refs/tags/v2026.4.14
+git tag -a v2026.4.14 -m "..." <new-sha>
+git push origin v2026.4.14
+```
+
+If the **release** job already ran and published, **don't** move the
+tag — bump to a new date (`v2026.4.15`) instead. Users may have
+downloaded the published artifacts.
+
+### Burrito cache & version coupling
+
+Burrito unpacks the embedded payload to
+`~/Library/Application Support/.burrito/<app>_erts-<v>_<version>/`
+(macOS path; analogous on Linux/Windows) and **keys the cache on the
+version string**. Two builds with the same version → second one runs
+the first one's unpacked code. The CalVer + SHA scheme auto-busts the
+cache on every commit, so this is invisible during normal development —
+but if you ever pin the version manually, you must bump it for the
+binary to actually reflect your changes.
+
+### Linux runtime dep
+
+The published binary needs `inotify-tools` on Linux for the file
+watcher (records reindex on external edits). `install.sh` warns the
+user with the right apt/dnf/pacman/zypper command if `inotifywait` is
+missing. `egghead doctor` does the same check (Linux-only, skipped
+on macOS). Don't silent-degrade the watcher — it's load-bearing.
+
+### Burrito version pin
+
+`deps/burrito/lib/burrito.ex` enforces an exact Zig version in its
+`pre_check`. When upgrading Burrito, check that constant and update
+`mlugg/setup-zig@v2`'s `version:` in `release.yml` to match. Burrito's
+zig is for compiling its launcher; build_dot_zig has a separate pinned
+zig (in `deps/build_dot_zig/priv/`) for our NIF. Two zigs, no overlap.
+
+### What CI installs that the dev machine has implicitly
+
+| Dep | Why | Where |
+|---|---|---|
+| `inotify-tools` (Linux) | `file_system` runtime backend | test job + user's machine |
+| `xz-utils` (Linux) | Burrito payload compression | build job only |
+| `zig` 0.15.2 | Burrito launcher compile | build job only |
+
+macOS ships `xz` and uses native FSEvents — nothing to install.
+
+### See also
+
+`records/design/cli.md` "Burrito gotchas" section for the war stories
+behind these conventions (cache trap, MIX_ENV=prod requirement,
+phx.digest, build_dot_zig / Zig 0.15 incompatibility, `-noshell`,
+`Burrito.Util.Args.argv()` vs `System.argv()`).
+
 ## Conventions
 
 - **Records**: `~/.egghead/*.md` (Markdown or org-mode, frontmatter optional)
@@ -273,7 +374,9 @@ want to ask the swarm a question without managing rooms themselves.
 | `lib/egghead/agent/session.ex` | Per-room session, tool-use loop, handoff |
 | `lib/egghead/agent/wizard.ex` | Programmatic agent creation API |
 | `lib/egghead/chat/room.ex` | Shared transcript, turn budget, PubSub |
-| `lib/egghead/chat/coordinator.ex` | Activation gating, [PASS] enforcement |
+| `lib/egghead/chat/coordinator.ex` | Activation gating, /pass, mute, dialogue modes |
+| `lib/egghead/chat/pass_actions.ex` | System-wide /pass flavor text pool |
+| `lib/egghead/chat/transcript_parser.ex` | Inverse of format_transcript (for /join rehydrate) |
 | `lib/egghead/agent/tools.ex` | Agent-facing tool implementations |
 | `lib/egghead/mcp/handler.ex` | MCP tool surface for external clients |
 | `lib/egghead/mcp/server.ex` | MCP stdio transport |
@@ -296,9 +399,10 @@ want to ask the swarm a question without managing rooms themselves.
 Egghead.watch()                    # Watch default chat room (stdout)
 Egghead.chat("Roll call!")         # Send to default room
 Egghead.chat("@agents/scout ...")  # Direct address
-Egghead.chat("@everyone ...")      # Broadcast all agents
+Egghead.chat("@everyone ...")      # Huddle: serial, must-respond
+Egghead.chat("@jam ...")           # Cacophony: parallel, low threshold
 Egghead.chat_continue()            # Grant more rounds
-Egghead.chat_save()                # Save transcript as deliberation record
+Egghead.chat_save()                # Save transcript as class:transcript record
 Egghead.consult("What about X?")   # Ephemeral room, swarm responds, returns result
 Egghead.prompt("agents/scout", "direct 1:1 prompt")
 Egghead.handoff("agents/scout")    # Manual context handoff

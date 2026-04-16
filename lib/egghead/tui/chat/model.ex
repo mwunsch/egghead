@@ -31,14 +31,16 @@ defmodule Egghead.TUI.Chat.Model do
             id: String.t(),
             name: String.t(),
             status: :idle | :active,
-            session_tokens: non_neg_integer(),
+            # Current context footprint (last call's input + output tokens).
+            # NOT cumulative lifetime spend.
+            ctx_tokens: non_neg_integer(),
             ctx_window: non_neg_integer(),
             ctx_pct: float()
           }
     defstruct id: nil,
               name: nil,
               status: :idle,
-              session_tokens: 0,
+              ctx_tokens: 0,
               ctx_window: 0,
               ctx_pct: 0.0
   end

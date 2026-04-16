@@ -15,7 +15,12 @@ defmodule Egghead.Chat.Room do
 
   require Logger
 
-  @default_round_budget 5
+  # How many agent messages can land before we ask the human to
+  # /continue. One tick per agent response (not per round or per
+  # mention); passes don't count. Raised from 5 when the tick
+  # semantics shifted to per-message — 5 was effectively nothing
+  # once open-activation rounds (3-4 specialists) counted honestly.
+  @default_round_budget 15
   @idle_timeout :timer.minutes(5)
   @pubsub Egghead.PubSub
 
@@ -45,7 +50,7 @@ defmodule Egghead.Chat.Room do
       :id,
       transcript: [],
       agents: MapSet.new(),
-      round_budget: 5,
+      round_budget: 15,
       rounds_remaining: 0,
       current_round_responded: MapSet.new(),
       pending_mentions: [],
@@ -409,44 +414,57 @@ defmodule Egghead.Chat.Room do
       usage: usage
     }
 
+    # Every agent response ticks the turn budget once. Passes don't
+    # count (handled in agent_pass). This makes open-activation rounds
+    # pay honestly (4 specialists responding → 4 ticks), same as a
+    # chained @-mention cascade (1 tick per hop). Previously the
+    # budget only fired on @-mention cascades, which produced weird
+    # asymmetry between activation modes.
+    new_remaining = state.rounds_remaining - 1
+    exhausted_now? = state.rounds_remaining > 0 and new_remaining <= 0
+
     state = %{
       state
       | transcript: state.transcript ++ [msg],
         current_round_responded: MapSet.put(state.current_round_responded, sender.id),
-        in_progress: Map.delete(state.in_progress, sender.id)
+        in_progress: Map.delete(state.in_progress, sender.id),
+        rounds_remaining: max(new_remaining, 0)
     }
 
     broadcast(state.id, {:agent_message, msg})
 
-    # @-mentions start a new round
+    # @-mentions of specific agents trigger cascading activation.
+    # @everyone / @channel are broadcast mentions handled elsewhere.
     agent_mentions = Enum.filter(mentions, &(&1 != "everyone" and &1 != "channel"))
 
     state =
-      if agent_mentions != [] do
-        # This agent is triggering a new round by @-mentioning others
-        new_remaining = state.rounds_remaining - 1
+      cond do
+        # Budget has room and there are mentions: activate them.
+        agent_mentions != [] and state.rounds_remaining > 0 ->
+          broadcast(state.id, {:agent_mentions, state.id, sender.id, agent_mentions, content})
+          state
 
-        if new_remaining > 0 do
-          state = %{
+        # Budget exhausted with mentions: queue for replay on /continue.
+        agent_mentions != [] ->
+          %{
             state
-            | rounds_remaining: new_remaining,
-              current_round_responded: MapSet.new()
+            | status: :waiting,
+              pending_mentions: state.pending_mentions ++ [{sender.id, agent_mentions, content}]
           }
 
-          broadcast(state.id, {:agent_mentions, state.id, sender.id, agent_mentions})
+        # No mentions; the round finishes naturally.
+        true ->
           state
-        else
-          # Budget exhausted — queue the mentions
-          state = %{
-            state
-            | rounds_remaining: 0,
-              status: :waiting,
-              pending_mentions: state.pending_mentions ++ [{sender.id, agent_mentions}]
-          }
+      end
 
-          broadcast(state.id, :budget_exhausted)
-          state
-        end
+    # Announce budget exhaustion to UI clients the first time we hit
+    # zero, so the "do you have anything to add?" nudge can render.
+    # Fires regardless of whether mentions were queued: the human may
+    # want to chime in even if the conversation would otherwise pause.
+    state =
+      if exhausted_now? do
+        broadcast(state.id, :budget_exhausted)
+        %{state | status: :waiting}
       else
         state
       end
@@ -473,8 +491,11 @@ defmodule Egghead.Chat.Room do
     broadcast(state.id, :continued)
 
     # Replay pending @-mentions that were queued when budget ran out
-    Enum.each(pending, fn {from_agent, mentioned} ->
-      broadcast(state.id, {:agent_mentions, state.id, from_agent, mentioned})
+    Enum.each(pending, fn {from_agent, mentioned, mention_content} ->
+      broadcast(
+        state.id,
+        {:agent_mentions, state.id, from_agent, mentioned, mention_content}
+      )
     end)
 
     reply_with_timeout(:ok, state)

@@ -1080,6 +1080,22 @@ details[open] > .properties-summary::before {
 
 .agent-status-dot { font-size: 12px; color: var(--muted); flex-shrink: 0; }
 .agent-status-dot.active { color: #008000; }
+.agent-status-dot.handoff {
+  color: #b8860b;
+  display: inline-block;
+  animation: agent-handoff-spin 1.4s linear infinite;
+}
+.agent-card.handoff { opacity: 0.75; }
+.agent-status-label {
+  font-size: 10px;
+  color: #b8860b;
+  font-style: italic;
+  margin-left: 4px;
+}
+@keyframes agent-handoff-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 .agent-name { color: var(--fg); font-weight: 600; flex: 1; }
 .agent-ctx {
   color: var(--muted);

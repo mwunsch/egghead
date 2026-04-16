@@ -209,6 +209,8 @@ defmodule Egghead.Agent do
 
   # --- GenServer callbacks ---
 
+  @lifecycle_topic "agents:lifecycle"
+
   @impl true
   def init(record) do
     capabilities = parse_capabilities(record)
@@ -261,10 +263,38 @@ defmodule Egghead.Agent do
       "Agent started: #{state.name} (#{state.id}) model=#{model} capabilities=#{inspect(capabilities)}"
     )
 
+    Process.flag(:trap_exit, true)
     send(self(), :fetch_model_info)
+    broadcast_lifecycle(:started, state.id)
 
     {:ok, state}
   end
+
+  @impl true
+  def terminate(reason, state) do
+    # Fires on graceful stop and on supervisor restart (after a crash,
+    # the supervisor stops the old process before starting a fresh
+    # one). Doesn't fire on raw `:kill`, but neither do supervised
+    # restarts use that. `trap_exit` (set in init) ensures we get
+    # called on shutdown signals from the supervisor.
+    broadcast_lifecycle(:terminated, state.id, reason)
+    :ok
+  end
+
+  defp broadcast_lifecycle(event, agent_id, reason \\ nil) do
+    Phoenix.PubSub.broadcast(
+      Egghead.PubSub,
+      @lifecycle_topic,
+      {:agent_lifecycle, event, agent_id, reason}
+    )
+  end
+
+  @doc """
+  PubSub topic for agent lifecycle events. Subscribe to receive
+  `{:agent_lifecycle, event, agent_id, reason}` messages where event
+  is `:started` or `:terminated`.
+  """
+  def lifecycle_topic, do: @lifecycle_topic
 
   @impl true
   def handle_call({:prompt, message, opts}, _from, state) do

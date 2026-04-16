@@ -387,13 +387,26 @@ defmodule Egghead.Web.AppLive do
     {:noreply, append_entry(socket, entry)}
   end
 
+  def handle_info({:agent_handoff_started, _room_id, agent_id}, socket) do
+    entry =
+      Egghead.TUI.Chat.Entry.system("#{agent_display_name(agent_id)} is summarising context…")
+
+    {:noreply,
+     socket
+     |> append_entry(entry)
+     |> set_agent_status(agent_id, :handoff)}
+  end
+
   def handle_info({:agent_handoff, _room_id, agent_id, delib_id}, socket) do
     entry =
       Egghead.TUI.Chat.Entry.system(
-        "#{agent_display_name(agent_id)} handed off context → [[#{delib_id}]]"
+        "#{agent_display_name(agent_id)} is back with fresh context — saved [[#{delib_id}]]"
       )
 
-    {:noreply, append_entry(socket, entry)}
+    {:noreply,
+     socket
+     |> append_entry(entry)
+     |> set_agent_status(agent_id, :idle)}
   end
 
   def handle_info({:system_notice, text}, socket) do
@@ -401,10 +414,6 @@ defmodule Egghead.Web.AppLive do
   end
 
   def handle_info({:agent_mentions, _room_id, _from, _to}, socket), do: {:noreply, socket}
-
-  def handle_info({:system_notice, text}, socket) do
-    {:noreply, append_entry(socket, Egghead.TUI.Chat.Entry.system(text))}
-  end
 
   def handle_info(_other, socket), do: {:noreply, socket}
 
@@ -1397,11 +1406,25 @@ defmodule Egghead.Web.AppLive do
             <%!-- Agent roster panel --%>
             <div :if={@show_agents} class="agent-roster">
               <div :for={agent <- @agents} class="agent-card-wrap">
-                <div class="agent-card">
-                  <span class={["agent-status-dot", agent.status == :active && "active"]}>
-                    {if agent.status == :active, do: "\u25CF", else: "\u25CB"}
+                <div class={["agent-card", agent.status == :handoff && "handoff"]}>
+                  <span class={[
+                    "agent-status-dot",
+                    agent.status == :active && "active",
+                    agent.status == :handoff && "handoff"
+                  ]}>
+                    <%= case agent.status do %>
+                      <% :active -> %>
+                        ●
+                      <% :handoff -> %>
+                        ↻
+                      <% _ -> %>
+                        ○
+                    <% end %>
                   </span>
                   <span class="agent-name">{agent.name}</span>
+                  <span :if={agent.status == :handoff} class="agent-status-label">
+                    summarising…
+                  </span>
                   <span :if={agent.ctx_window > 0} class="agent-ctx">
                     {format_tokens(agent.session_tokens)}/{format_tokens(agent.ctx_window)}
                   </span>

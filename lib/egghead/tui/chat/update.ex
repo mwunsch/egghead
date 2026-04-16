@@ -426,7 +426,7 @@ defmodule Egghead.TUI.Chat.Update do
     display = display_name(agent_id, model)
 
     msg =
-      Entry.system("#{display} handed off context → [[#{delib_id}]]")
+      Entry.system("#{display} is back with fresh context — saved [[#{delib_id}]]")
 
     Model.append_entry(model, msg)
   end

@@ -83,6 +83,10 @@ defmodule Egghead.Chat.Coordinator do
 
   @impl true
   def init(_opts) do
+    # Subscribe to agent lifecycle events so we can announce
+    # restarts and terminations into the rooms we're watching.
+    Phoenix.PubSub.subscribe(@pubsub, Egghead.Agent.lifecycle_topic())
+
     {:ok, %State{}}
   end
 
@@ -209,10 +213,62 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_tool_denied, _, _, _, _, _}, state), do: {:noreply, state}
   def handle_info({:agent_tool_output, _, _, _, _, _}, state), do: {:noreply, state}
 
-  def handle_info({:agent_handoff, room_id, agent_id, _delib_id}, state) do
+  def handle_info({:agent_lifecycle, event, agent_id, reason}, state) do
+    # Translate global agent lifecycle events into per-room system
+    # notices so users see when an agent restarts or exits. We use
+    # the agent's display name from the registered metadata when
+    # available; otherwise the bare id.
+    display =
+      case Map.get(state.agents, agent_id) do
+        %AgentInfo{name: name} -> name
+        _ -> agent_id
+      end
+
+    text =
+      case {event, reason} do
+        {:started, _} ->
+          "#{display} joined"
+
+        {:terminated, :normal} ->
+          "#{display} left"
+
+        {:terminated, :shutdown} ->
+          "#{display} left"
+
+        {:terminated, {:shutdown, _}} ->
+          "#{display} left"
+
+        {:terminated, reason} ->
+          "#{display} crashed: #{format_lifecycle_reason(reason)}"
+      end
+
+    for room_id <- state.rooms do
+      Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:system_notice, text})
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:agent_handoff_started, room_id, agent_id}, state) do
+    # Mark the agent as in-handoff at the START of summarisation so
+    # we don't activate it during the 30-60s LLM summary window.
+    # Cleared on `:agent_handoff` (complete) below — at which point
+    # the agent has fresh context and is ready to respond again.
     state = %{
       state
       | handoffs_in_progress: MapSet.put(state.handoffs_in_progress, {agent_id, room_id})
+    }
+
+    {:noreply, state}
+  end
+
+  def handle_info({:agent_handoff, room_id, agent_id, _delib_id}, state) do
+    # Handoff complete — the agent's history was summarised into the
+    # deliberation record and cleared. Remove the in-progress marker
+    # so the agent can be activated for the next user message.
+    state = %{
+      state
+      | handoffs_in_progress: MapSet.delete(state.handoffs_in_progress, {agent_id, room_id})
     }
 
     {:noreply, state}
@@ -521,5 +577,13 @@ defmodule Egghead.Chat.Coordinator do
 
   defp broadcast_pass(room_id, agent_id) do
     Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:agent_passed, agent_id})
+  end
+
+  # Trim a terminate reason for display in a single chat line. Erlang
+  # exit reasons can be deeply nested; we keep the head and a short
+  # suffix so the user gets a hint without the line wrapping forever.
+  defp format_lifecycle_reason(reason) do
+    full = inspect(reason, limit: 5, printable_limit: 80)
+    if String.length(full) > 80, do: String.slice(full, 0, 77) <> "...", else: full
   end
 end

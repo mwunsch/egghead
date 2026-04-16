@@ -204,8 +204,27 @@ defmodule Egghead.Agent.Session do
     room_id = Keyword.get(opts, :room_id, state.room_id)
     next_prompt = Keyword.get(opts, :next_prompt)
 
+    Logger.info(
+      "Handoff started: #{state.agent_id} in #{room_id || "default"} " <>
+        "(#{length(state.history)} history messages, #{state.session_tokens} tokens)"
+    )
+
+    started_at = System.monotonic_time(:millisecond)
+
+    # Tell the Coordinator to mark this agent in_progress before we
+    # start the (slow) summarisation — otherwise it can be activated
+    # during the summary window and just /pass on every turn.
+    if room_id, do: broadcast_handoff_started(room_id, state.agent_id)
+
     case do_summarize_to_deliberation(state) do
       {:ok, delib_id, state} ->
+        elapsed = System.monotonic_time(:millisecond) - started_at
+
+        Logger.info(
+          "Handoff complete: #{state.agent_id} in #{room_id || "default"} " <>
+            "→ #{delib_id} (#{elapsed}ms)"
+        )
+
         if room_id, do: broadcast_handoff(room_id, state.agent_id, delib_id)
 
         if next_prompt do
@@ -216,6 +235,10 @@ defmodule Egghead.Agent.Session do
         end
 
       {:error, reason, state} ->
+        Logger.warning(
+          "Handoff failed: #{state.agent_id} in #{room_id || "default"}: #{inspect(reason)}"
+        )
+
         {:reply, {:error, reason}, state}
     end
   end
@@ -444,37 +467,45 @@ defmodule Egghead.Agent.Session do
             |> Enum.filter(&(&1["type"] == "text"))
             |> Enum.map_join("\n", & &1["text"])
 
-          delib_id = "deliberation/#{state.agent_id}/#{timestamp_id()}"
-          ref_ids = MapSet.to_list(state.referenced_records)
+          if String.trim(summary) == "" do
+            Logger.warning(
+              "Agent #{id[:name]}: summary LLM returned empty text — refusing to write blank deliberation"
+            )
 
-          attrs = %{
-            "id" => delib_id,
-            "title" => "Deliberation: #{id[:name]} — #{Date.utc_today()}",
-            "tags" =>
-              ["deliberation", "agent:#{state.agent_id}"] ++
-                if(state.room_id, do: ["room:#{state.room_id}"], else: []),
-            "links" => ref_ids,
-            "class" => "deliberation",
-            "author" => state.agent_id,
-            "body" => summary
-          }
+            {:error, :empty_summary, state}
+          else
+            delib_id = "deliberation/#{state.agent_id}/#{timestamp_id()}"
+            ref_ids = MapSet.to_list(state.referenced_records)
 
-          case Egghead.create_record(attrs) do
-            {:ok, _record} ->
-              Logger.info("Agent #{id[:name]} created deliberation: #{delib_id}")
+            attrs = %{
+              "id" => delib_id,
+              "title" => "Deliberation: #{id[:name]} — #{Date.utc_today()}",
+              "tags" =>
+                ["deliberation", "agent:#{state.agent_id}"] ++
+                  if(state.room_id, do: ["room:#{state.room_id}"], else: []),
+              "links" => ref_ids,
+              "class" => "deliberation",
+              "author" => state.agent_id,
+              "body" => summary
+            }
 
-            {:error, reason} ->
-              Logger.warning("Agent #{id[:name]} deliberation failed: #{inspect(reason)}")
+            case Egghead.create_record(attrs) do
+              {:ok, _record} ->
+                Logger.info("Agent #{id[:name]} created deliberation: #{delib_id}")
+
+              {:error, reason} ->
+                Logger.warning("Agent #{id[:name]} deliberation failed: #{inspect(reason)}")
+            end
+
+            new_state = %{
+              state
+              | history: [],
+                session_tokens: 0,
+                referenced_records: MapSet.new([delib_id])
+            }
+
+            {:ok, delib_id, new_state}
           end
-
-          new_state = %{
-            state
-            | history: [],
-              session_tokens: 0,
-              referenced_records: MapSet.new([delib_id])
-          }
-
-          {:ok, delib_id, new_state}
 
         {:error, reason} ->
           {:error, reason, state}
@@ -847,6 +878,18 @@ defmodule Egghead.Agent.Session do
     )
   end
 
+  # Fired BEFORE summarisation begins so the Coordinator can immediately
+  # mark the agent in `handoffs_in_progress` and skip activating it
+  # during the (often 30-60s) summary window. The matching
+  # `:agent_handoff` event fires when summarisation completes.
+  defp broadcast_handoff_started(room_id, agent_id) do
+    Phoenix.PubSub.broadcast(
+      Egghead.PubSub,
+      Egghead.Chat.Room.topic(room_id),
+      {:agent_handoff_started, room_id, agent_id}
+    )
+  end
+
   defp broadcast_denial(nil, _agent_id, _tool_use, _denial), do: :ok
 
   defp broadcast_denial(room_id, agent_id, tool_use, denial) do
@@ -943,14 +986,17 @@ defmodule Egghead.Agent.Session do
     end
   end
 
+  # Record ids the agent passed as tool inputs (`id` or `ids`).
   defp extract_refs_from_tool_log(tool_log) do
     tool_log
     |> Enum.flat_map(fn entry ->
-      result = entry.result || ""
+      input = entry.input || %{}
 
-      ~r/(?:^- |^id: )([a-zA-Z0-9_\-\/]+)/m
-      |> Regex.scan(result)
-      |> Enum.map(fn [_, id] -> id end)
+      cond do
+        is_binary(input["id"]) -> [input["id"]]
+        is_list(input["ids"]) -> Enum.filter(input["ids"], &is_binary/1)
+        true -> []
+      end
     end)
     |> MapSet.new()
   end

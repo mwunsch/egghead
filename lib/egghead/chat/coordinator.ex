@@ -458,6 +458,37 @@ defmodule Egghead.Chat.Coordinator do
   # The agent handles its own context building, usage tracking, and handoff.
   defp prompt_agent_in_room(agent_id, room_id, message, opts \\ []) do
     activation = Keyword.get(opts, :activation, :normal)
+
+    case run_agent_attempt(agent_id, room_id, message, activation) do
+      {:ok, text, usage} ->
+        handle_agent_result(agent_id, room_id, text, usage, activation)
+
+      {:error, reason} ->
+        Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
+        Room.clear_in_progress(room_id, agent_id)
+        broadcast_pass(room_id, agent_id)
+    end
+  end
+
+  # One LLM attempt: set up streaming accumulator, call the agent, return
+  # the final text + usage. The in-progress buffer is read by the caller
+  # via `Room.get_in_progress/2`.
+  #
+  # Streaming is RAW: every text delta is broadcast immediately to
+  # PubSub subscribers. Display-side buffering (e.g. paragraph batching
+  # for the TUI's IRC view) belongs to the consumer, not here. Other
+  # watchers — RoomLogger, MCP egghead_chat, future Phoenix Channels —
+  # need access to the unbuffered token stream.
+  #
+  # We still need a per-call cumulative accumulator so we can push the
+  # running total to Room.streaming_update (read by the /pass rescue
+  # path and by tools that ask "what has this agent said so far?").
+  # This MUST live in its own process: on_chunk runs inside the Session
+  # GenServer, not in this Task — so the process dictionary cannot be
+  # used here without leaking state across sequential prompts to the
+  # same Session and corrupting later messages with text from earlier
+  # turns.
+  defp run_agent_attempt(agent_id, room_id, message, activation) do
     transcript = Room.get_transcript(room_id)
     room_state = Room.get_state(room_id)
 
@@ -468,26 +499,12 @@ defmodule Egghead.Chat.Coordinator do
       activation: activation
     }
 
-    # Streaming is RAW: every text delta is broadcast immediately to
-    # PubSub subscribers. Display-side buffering (e.g. paragraph batching
-    # for the TUI's IRC view) belongs to the consumer, not here. Other
-    # watchers — RoomLogger, MCP egghead_chat, future Phoenix Channels —
-    # need access to the unbuffered token stream.
-    #
-    # We still need a per-call cumulative accumulator so we can push
-    # the running total to Room.streaming_update (read by the /pass
-    # rescue path below and by tools that ask "what has this agent
-    # said so far?"). This MUST live in its own process: on_chunk runs
-    # inside the Session GenServer (where Req.post executes), not in
-    # this Task — so the process dictionary cannot be used here without
-    # leaking state across sequential prompts to the same Session and
-    # corrupting later messages with text from earlier turns.
     {:ok, buffer_pid} = Agent.start_link(fn -> "" end)
 
     # Belt-and-suspenders: ensure no stale in_progress text from a
     # prior call lingers when this turn begins. Without this, even a
     # transient bug in the accumulator could cause the /pass rescue
-    # path below to commit text from a previous turn.
+    # path to commit text from a previous turn.
     Room.clear_in_progress(room_id, agent_id)
 
     on_chunk = fn
@@ -532,30 +549,79 @@ defmodule Egghead.Chat.Coordinator do
       end
 
     case result do
-      {:ok, %{text: text, usage: usage}} ->
-        if pass_response?(text) do
-          # The agent's final text is a pass. But an agent may have streamed
-          # substantive content DURING tool rounds before deciding to yield
-          # — in that case we commit the substantive part rather than
-          # throwing it away. When the in-progress buffer contains only the
-          # pass token itself, it's a pure pass with no content to rescue.
-          in_progress = Room.get_in_progress(room_id, agent_id)
+      {:ok, %{text: text, usage: usage}} -> {:ok, text, usage}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-          if has_substantive_content?(in_progress) do
-            Logger.debug("Coordinator: #{agent_id} streamed content, committing despite /pass")
+  # Inspect the attempt's result and decide what to commit to the
+  # transcript. Three cases:
+  # - agent streamed substance during tool rounds then said /pass: rescue
+  # - agent said /pass in huddle mode: re-prompt once, then neutral
+  #   acknowledgment fallback (huddle forbids /pass by design)
+  # - agent said /pass normally: commit the pass
+  # - agent said something substantive: commit it
+  defp handle_agent_result(agent_id, room_id, text, usage, activation) do
+    pass? = pass_response?(text)
+    in_progress = Room.get_in_progress(room_id, agent_id)
+
+    cond do
+      pass? and has_substantive_content?(in_progress) ->
+        Logger.debug("Coordinator: #{agent_id} streamed content, committing despite /pass")
+        Room.agent_respond(room_id, agent_id, String.trim(in_progress), usage: usage)
+
+      pass? and activation == :huddle ->
+        Logger.warning("Coordinator: #{agent_id} passed in huddle mode — re-prompting once")
+        retry_huddle_pass(agent_id, room_id)
+
+      pass? ->
+        Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
+        # Room.agent_pass commits `/pass` to transcript AND broadcasts
+        # :agent_passed (in-progress is cleared inside the handler).
+        Room.agent_pass(room_id, agent_id)
+
+      true ->
+        Room.agent_respond(room_id, agent_id, text, usage: usage)
+    end
+  end
+
+  # Huddle mode forbids /pass but agents still try. Re-prompt once with
+  # a stronger nudge. If the retry is also a pass, accept it — we've
+  # applied the social pressure huddle is meant to create, but we won't
+  # force a dishonest contribution. The /pass renders atmospherically
+  # via PassActions (e.g. "Scout shuffles notes, finds nothing new"),
+  # which reads cleaner than a clinical "(no additional input)" line.
+  defp retry_huddle_pass(agent_id, room_id) do
+    nudge =
+      "You passed in huddle mode, which is not allowed. " <>
+        "Offer one honest line — agreement, a reservation, a question, " <>
+        "or something adjacent you noticed. Do not pass."
+
+    case run_agent_attempt(agent_id, room_id, nudge, :huddle) do
+      {:ok, text, usage} ->
+        pass? = pass_response?(text)
+        in_progress = Room.get_in_progress(room_id, agent_id)
+
+        cond do
+          pass? and has_substantive_content?(in_progress) ->
             Room.agent_respond(room_id, agent_id, String.trim(in_progress), usage: usage)
-          else
-            Logger.debug("Coordinator: #{agent_id} passed (nothing to add)")
-            # Room.agent_pass commits `/pass` to transcript AND broadcasts
-            # :agent_passed (in-progress is cleared inside the handler).
+
+          pass? ->
+            Logger.debug(
+              "Coordinator: #{agent_id} passed again in huddle — accepting the yield"
+            )
+
             Room.agent_pass(room_id, agent_id)
-          end
-        else
-          Room.agent_respond(room_id, agent_id, text, usage: usage)
+
+          true ->
+            Room.agent_respond(room_id, agent_id, text, usage: usage)
         end
 
       {:error, reason} ->
-        Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
+        Logger.warning(
+          "Coordinator: #{agent_id} huddle retry failed: #{inspect(reason)}"
+        )
+
         Room.clear_in_progress(room_id, agent_id)
         broadcast_pass(room_id, agent_id)
     end

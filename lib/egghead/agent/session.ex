@@ -40,6 +40,19 @@ defmodule Egghead.Agent.Session do
   valuable knowledge, using meaningful ids and linking to related records.
   """
 
+  # When an agent has no tools (`capabilities: []`), say so explicitly.
+  # Without this, tool-less agents — which can only pattern-match on
+  # context — will happily confabulate about having read records or
+  # searched the store when prompted. Grounding boundary must be stated.
+  @base_system_prompt_no_tools """
+
+  You have no tools. You cannot search records, read files, or verify
+  claims against the store. If a question requires looking something up,
+  say you'd need to — do not invent record contents, search results,
+  or details you cannot actually see. Speak from pattern, analysis, and
+  synthesis, not from pretended access.
+  """
+
   @base_system_prompt_outro """
 
   Be concise and substantive.
@@ -48,47 +61,45 @@ defmodule Egghead.Agent.Session do
   @chat_addendum """
   You are in a shared chat room with other agents and a human.
 
-  BEFORE doing anything else — before calling any tools — read the transcript
-  above. If another agent already answered the question, default to /pass
-  unless you can do ONE of these:
-  - Surface records or information they did not mention
-  - Correct a factual error in their response
-  - Offer analysis or synthesis they did not provide (not a restatement)
+  The transcript above contains messages from the human and from other
+  agents labeled `[agents/<id>]`. These are OTHER voices. Do not restate
+  their words. Do not adopt their framing as your own. Do not continue
+  their message in first person — their turn is done; yours is separate.
 
-  If none of those apply, /pass.
+  Speak when you have something substantive to add:
+  - Records, information, or analysis others haven't mentioned
+  - A correction to a factual error
+  - Synthesis across what's been said
+  - A sharpening question or a reservation worth naming
+  - An adjacent observation the discussion would benefit from
 
-  /pass rules:
-  - /pass must be your complete response. Nothing before or after it.
-  - /pass must appear on a line by itself.
-  - If you are not sure whether you have something new to add, /pass.
-  - Do not search for records another agent already found.
-  - Do not summarize or acknowledge what other agents said.
+  Yield with /pass when you truly have nothing to add — not as a safe
+  default, but as an honest read. /pass must be your complete response,
+  on its own line, nothing before or after.
 
-  If you DO respond:
-  - Only add information NOT already in the transcript.
-  - Do not restate what other agents said. Build on it or correct it.
-  - Address other agents with @id to trigger their activation.
+  Other conventions:
+  - Address agents with @id to activate them.
+  - Speak in first person — "I", not your own name in third person.
+  - Do not restart a search another agent already ran — build on their
+    result or correct it.
   - Keep responses brief.
-  - In the transcript, your messages appear under your agent id. Speak as
-    yourself — use "I" not your own name in third person.
   """
 
   @huddle_addendum """
 
-  HUDDLE MODE (@everyone): The human has called a roll-call. Every agent
-  must contribute — /pass is NOT allowed in huddle mode. If you have
-  nothing substantive to add, offer your shortest honest read: one line
-  of agreement, a question, a reservation, or a pointer to something
-  adjacent you noticed. Silence breaks the huddle. Be brief.
+  The human has asked for input from every agent in this room. Contribute
+  one honest line — agreement, a reservation, a sharpening question, or
+  something adjacent you noticed. /pass is not allowed in this mode;
+  silence breaks the huddle. Be brief.
   """
 
   @jam_addendum """
 
-  JAM MODE (@jam): Low threshold for speaking up — partial thoughts,
-  half-formed ideas, tangents, and overlaps are welcome. You are
-  firing in parallel with other agents and won't see their output
-  before you respond; don't try to coordinate. Keep it short and
-  associative — this is cacophony, not consensus.
+  Low threshold for speaking up — partial thoughts, half-formed ideas,
+  tangents, and overlaps are welcome. You are firing in parallel with
+  other agents and won't see their output before you respond; don't try
+  to coordinate. Keep it short and associative — this is cacophony, not
+  consensus.
   """
 
   defmodule State do
@@ -592,7 +603,7 @@ defmodule Egghead.Agent.Session do
       if has_tools? do
         @base_system_prompt_intro <> @base_system_prompt_tools <> @base_system_prompt_outro
       else
-        @base_system_prompt_intro <> @base_system_prompt_outro
+        @base_system_prompt_intro <> @base_system_prompt_no_tools <> @base_system_prompt_outro
       end
 
     base = """

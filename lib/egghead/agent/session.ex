@@ -100,9 +100,16 @@ defmodule Egghead.Agent.Session do
       :identity,
       history: [],
       usage: %{input_tokens: 0, output_tokens: 0},
+      # Cumulative lifetime API spend for this session (input+output across
+      # all calls, across all prompts). Useful for cost tracking; NOT a
+      # measure of current context footprint.
       session_tokens: 0,
+      # Actual context footprint at end of the last prompt: the last
+      # LLM call's input_tokens + output_tokens. This is what "70% of
+      # the window" should compare against — not the cumulative counter.
+      current_context_tokens: 0,
       context_window: nil,
-      context_threshold: 0.70,
+      context_threshold: 0.80,
       referenced_records: MapSet.new()
     ]
   end
@@ -170,7 +177,7 @@ defmodule Egghead.Agent.Session do
       room_id: room_id,
       identity: identity,
       context_window: identity[:context_window],
-      context_threshold: identity[:context_threshold] || 0.70
+      context_threshold: identity[:context_threshold] || 0.80
     }
 
     Logger.debug("Session started: #{agent_id} in #{room_id || "default"}")
@@ -249,17 +256,25 @@ defmodule Egghead.Agent.Session do
   end
 
   def handle_call(:clear_history, _from, state) do
-    {:reply, :ok, %{state | history: [], session_tokens: 0, referenced_records: MapSet.new()}}
+    {:reply, :ok,
+     %{
+       state
+       | history: [],
+         session_tokens: 0,
+         current_context_tokens: 0,
+         referenced_records: MapSet.new()
+     }}
   end
 
   def handle_call(:usage, _from, state) do
     info = %{
       total_usage: state.usage,
       session_tokens: state.session_tokens,
+      current_context_tokens: state.current_context_tokens,
       context_window: state.context_window,
       context_used_pct:
         if(state.context_window && state.context_window > 0,
-          do: Float.round(state.session_tokens / state.context_window * 100, 1),
+          do: Float.round(state.current_context_tokens / state.context_window * 100, 1),
           else: nil
         ),
       history_turns: length(state.history),
@@ -308,11 +323,14 @@ defmodule Egghead.Agent.Session do
     room_id = if room, do: room.id, else: state.room_id
 
     case agent_loop(state, history, llm_opts, room_id, 0) do
-      {:ok, final_text, history, total_usage, tool_log} ->
+      {:ok, final_text, history, total_usage, last_call_usage, tool_log} ->
         duration = System.monotonic_time(:millisecond) - start_time
 
         {created, updated} = partition_record_mutations(tool_log)
         refs = extract_refs_from_tool_log(tool_log)
+
+        current_context_tokens =
+          last_call_usage.input_tokens + last_call_usage.output_tokens
 
         state = %{
           state
@@ -323,12 +341,16 @@ defmodule Egghead.Agent.Session do
             },
             session_tokens:
               state.session_tokens + total_usage.input_tokens + total_usage.output_tokens,
+            current_context_tokens: current_context_tokens,
             referenced_records: MapSet.union(state.referenced_records, refs)
         }
 
+        # context_pct reflects *current* pressure, not cumulative spend.
+        # This is what agents see in their system prompt and what UIs
+        # should display as "how full is this agent's context."
         context_pct =
           if state.context_window && state.context_window > 0,
-            do: Float.round(state.session_tokens / state.context_window * 100, 1),
+            do: Float.round(current_context_tokens / state.context_window * 100, 1),
             else: nil
 
         response = %Egghead.Agent.Response{
@@ -338,6 +360,7 @@ defmodule Egghead.Agent.Session do
           usage:
             Map.merge(total_usage, %{
               session_tokens: state.session_tokens,
+              current_context_tokens: current_context_tokens,
               context_window: state.context_window,
               context_pct: context_pct
             }),
@@ -365,7 +388,7 @@ defmodule Egghead.Agent.Session do
       {:ok, %{content: content, stop_reason: stop_reason, usage: usage}} ->
         input_tokens = usage[:input_tokens] || 0
         output_tokens = usage[:output_tokens] || 0
-        acc_usage = %{input_tokens: input_tokens, output_tokens: output_tokens}
+        this_call_usage = %{input_tokens: input_tokens, output_tokens: output_tokens}
 
         if stop_reason == "tool_use" do
           tool_uses = Enum.filter(content, &(&1["type"] == "tool_use"))
@@ -398,13 +421,13 @@ defmodule Egghead.Agent.Session do
               ]
 
           case agent_loop(state, history, opts, room_id, round + 1) do
-            {:ok, text, history, more_usage, more_log} ->
+            {:ok, text, history, more_usage, last_call_usage, more_log} ->
               merged_usage = %{
-                input_tokens: acc_usage.input_tokens + more_usage.input_tokens,
-                output_tokens: acc_usage.output_tokens + more_usage.output_tokens
+                input_tokens: this_call_usage.input_tokens + more_usage.input_tokens,
+                output_tokens: this_call_usage.output_tokens + more_usage.output_tokens
               }
 
-              {:ok, text, history, merged_usage, tool_log ++ more_log}
+              {:ok, text, history, merged_usage, last_call_usage, tool_log ++ more_log}
 
             error ->
               error
@@ -417,7 +440,10 @@ defmodule Egghead.Agent.Session do
 
           history = history ++ [%{role: "assistant", content: content}]
 
-          {:ok, text, history, acc_usage, []}
+          # Terminal (non-tool_use) call: its own usage IS the final
+          # context footprint — history + system prompt sent as input,
+          # plus the output just generated.
+          {:ok, text, history, this_call_usage, this_call_usage, []}
         end
 
       {:error, _} = error ->
@@ -431,7 +457,7 @@ defmodule Egghead.Agent.Session do
 
   defp should_summarize?(state) do
     state.context_window != nil and
-      state.session_tokens > state.context_window * state.context_threshold and
+      state.current_context_tokens > state.context_window * state.context_threshold and
       length(state.history) > 0
   end
 
@@ -501,6 +527,7 @@ defmodule Egghead.Agent.Session do
               state
               | history: [],
                 session_tokens: 0,
+                current_context_tokens: 0,
                 referenced_records: MapSet.new([delib_id])
             }
 
@@ -720,7 +747,7 @@ defmodule Egghead.Agent.Session do
   defp cap_large_body(result), do: result
 
   defp format_context_status(state) do
-    case {state.session_tokens, state.context_window} do
+    case {state.current_context_tokens, state.context_window} do
       {_, nil} ->
         ""
 
@@ -774,18 +801,19 @@ defmodule Egghead.Agent.Session do
         first_activation? ->
           transcript
 
+        # Agent has never spoken in this room. Treat like first
+        # activation: show everything. (Previously truncated to last 5,
+        # which hid substantive earlier context.)
         last_own_idx == nil ->
-          Enum.take(transcript, -5)
+          transcript
 
+        # Steady state: show everything since our last turn. No minimum-
+        # size fallback — if only one new message landed, that's all the
+        # agent needs to see. (Previously fell back to last 5 when diff
+        # was <3, which was Rube Goldberg and produced stale windows.)
         true ->
           since_idx = length(transcript) - last_own_idx
-          diff = Enum.drop(transcript, since_idx)
-
-          if length(diff) < 3 do
-            Enum.take(transcript, -5)
-          else
-            diff
-          end
+          Enum.drop(transcript, since_idx)
       end
 
     # In the steady-state diff case, drop the agent's own past
@@ -802,25 +830,40 @@ defmodule Egghead.Agent.Session do
     if messages == [] do
       "(no new messages)"
     else
-      messages
-      |> Enum.map_join("\n", fn m ->
-        label =
-          case m.sender do
-            %{type: :user, name: name} -> "[#{name}]"
-            %{type: :agent, id: id} -> "[#{id}]"
-            _ -> "[unknown]"
-          end
-
-        content =
-          if String.length(m.content) > 300 do
-            String.slice(m.content, 0, 300) <> "..."
-          else
-            m.content
-          end
-
-        "#{label} #{content}"
-      end)
+      render_transcript_messages(messages)
     end
+  end
+
+  # Render messages with tiered truncation: the last two messages render
+  # verbatim (the agent is usually responding to them, so they need to be
+  # complete), older messages in the diff are capped at a generous 2000
+  # chars. Typical diffs are 2-5 messages, so worst case is ~10K chars of
+  # transcript in the system prompt — trivial against any modern window.
+  defp render_transcript_messages(messages) do
+    total = length(messages)
+
+    messages
+    |> Enum.with_index()
+    |> Enum.map_join("\n", fn {m, idx} ->
+      label =
+        case m.sender do
+          %{type: :user, name: name} -> "[#{name}]"
+          %{type: :agent, id: id} -> "[#{id}]"
+          _ -> "[unknown]"
+        end
+
+      # idx counts from 0; the last two messages have idx >= total - 2.
+      verbatim? = idx >= total - 2
+
+      content =
+        cond do
+          verbatim? -> m.content
+          String.length(m.content) > 2000 -> String.slice(m.content, 0, 2000) <> "..."
+          true -> m.content
+        end
+
+      "#{label} #{content}"
+    end)
   end
 
   defp own_message?(%{sender: %{id: id}}, agent_id), do: id == agent_id

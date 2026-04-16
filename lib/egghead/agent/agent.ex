@@ -162,15 +162,20 @@ defmodule Egghead.Agent do
       name = agent_name(id)
       state = :sys.get_state(GenServer.whereis(name))
 
-      # Aggregate usage across all sessions
-      {total_usage, total_session_tokens, total_history} =
+      # Aggregate usage across all sessions. `session_tokens` sums
+      # (cumulative lifetime spend). `current_context_tokens` takes the
+      # MAX across sessions — that's the worst-case current pressure on
+      # this agent. "Total" would be misleading since each session has
+      # its own context window.
+      {total_usage, total_session_tokens, max_current_context, total_history} =
         state.sessions
         |> Map.values()
-        |> Enum.reduce({%{input_tokens: 0, output_tokens: 0}, 0, 0}, fn pid,
-                                                                        {usage, stok, hist} ->
+        |> Enum.reduce({%{input_tokens: 0, output_tokens: 0}, 0, 0, 0}, fn pid,
+                                                                           {usage, stok, maxctx,
+                                                                            hist} ->
           case safe_get_session_state(pid) do
             nil ->
-              {usage, stok, hist}
+              {usage, stok, maxctx, hist}
 
             session_state ->
               {
@@ -179,6 +184,7 @@ defmodule Egghead.Agent do
                   output_tokens: usage.output_tokens + session_state.usage.output_tokens
                 },
                 stok + session_state.session_tokens,
+                max(maxctx, session_state.current_context_tokens),
                 hist + length(session_state.history)
               }
           end
@@ -193,6 +199,7 @@ defmodule Egghead.Agent do
         model: state.model,
         usage: total_usage,
         session_tokens: total_session_tokens,
+        current_context_tokens: max_current_context,
         context_window: state.context_window,
         history_length: total_history
       }

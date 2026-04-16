@@ -422,7 +422,8 @@ defmodule Egghead.MCP.Handler do
 
           ctx_pct =
             if a.context_window,
-              do: " | context: #{Float.round(a.session_tokens / a.context_window * 100, 1)}%",
+              do:
+                " | context: #{Float.round(a.current_context_tokens / a.context_window * 100, 1)}%",
               else: ""
 
           tokens = "#{a.usage.input_tokens + a.usage.output_tokens} tokens"

@@ -400,7 +400,7 @@ defmodule Egghead.TUI.Chat.Update do
     |> set_agent_status(agent_id, :idle)
   end
 
-  defp handle_room_event({:agent_mentions, _room_id, _from, _to}, model), do: model
+  defp handle_room_event({:agent_mentions, _room_id, _from, _to, _content}, model), do: model
 
   defp handle_room_event(:budget_exhausted, model) do
     %{model | status_message: "budget exhausted — /continue to grant more turns"}
@@ -562,17 +562,19 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   # Extract context info from the Message's inline usage field.
-  # The usage map carries :input_tokens, :output_tokens,
-  # :session_tokens, :context_window, and :context_pct directly.
+  # The usage map carries :input_tokens, :output_tokens, :session_tokens
+  # (cumulative lifetime), :current_context_tokens (current footprint),
+  # :context_window, and :context_pct directly. Pressure display uses
+  # current context, not cumulative.
   defp update_agent_ctx(%Model{agents: agents} = model, agent_id, msg) do
     case Map.get(msg, :usage) do
-      %{context_window: cw, session_tokens: st} when is_integer(cw) and cw > 0 ->
-        pct = Float.round(st / cw * 100, 1)
+      %{context_window: cw, current_context_tokens: cct} when is_integer(cw) and cw > 0 ->
+        pct = Float.round(cct / cw * 100, 1)
 
         agents =
           Enum.map(agents, fn
             %Model.AgentPresence{id: ^agent_id} = a ->
-              %{a | ctx_pct: pct, ctx_window: cw, session_tokens: st}
+              %{a | ctx_pct: pct, ctx_window: cw, ctx_tokens: cct}
 
             a ->
               a

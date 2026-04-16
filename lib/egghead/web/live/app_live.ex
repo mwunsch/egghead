@@ -413,7 +413,8 @@ defmodule Egghead.Web.AppLive do
     {:noreply, append_entry(socket, Egghead.TUI.Chat.Entry.system(text))}
   end
 
-  def handle_info({:agent_mentions, _room_id, _from, _to}, socket), do: {:noreply, socket}
+  def handle_info({:agent_mentions, _room_id, _from, _to, _content}, socket),
+    do: {:noreply, socket}
 
   def handle_info(_other, socket), do: {:noreply, socket}
 
@@ -578,7 +579,7 @@ defmodule Egghead.Web.AppLive do
                 status: :idle,
                 ctx_pct: 0.0,
                 ctx_window: 0,
-                session_tokens: 0
+                ctx_tokens: 0
               }
             )
           catch
@@ -1057,13 +1058,13 @@ defmodule Egghead.Web.AppLive do
 
   defp update_agent_ctx(socket, agent_id, msg) do
     case Map.get(msg, :usage) do
-      %{context_window: cw, session_tokens: st} when is_integer(cw) and cw > 0 ->
-        pct = Float.round(st / cw * 100, 1)
+      %{context_window: cw, current_context_tokens: cct} when is_integer(cw) and cw > 0 ->
+        pct = Float.round(cct / cw * 100, 1)
 
         agents =
           Enum.map(socket.assigns.agents, fn
             %{id: ^agent_id} = a ->
-              %{a | ctx_pct: pct, ctx_window: cw, session_tokens: st}
+              %{a | ctx_pct: pct, ctx_window: cw, ctx_tokens: cct}
 
             a ->
               a
@@ -1452,7 +1453,7 @@ defmodule Egghead.Web.AppLive do
                     summarising…
                   </span>
                   <span :if={agent.ctx_window > 0} class="agent-ctx">
-                    {format_tokens(agent.session_tokens)}/{format_tokens(agent.ctx_window)}
+                    {format_tokens(agent.ctx_tokens)}/{format_tokens(agent.ctx_window)}
                   </span>
                 </div>
                 <div :if={agent.ctx_window > 0} class="agent-bar">

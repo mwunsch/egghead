@@ -94,7 +94,7 @@ defmodule Egghead.Chat.RoomLogger do
         Logger.debug("Continued")
         loop(room_id, buffers)
 
-      {:agent_mentions, _room_id, from, mentioned} ->
+      {:agent_mentions, _room_id, from, mentioned, _content} ->
         Logger.debug("#{from} mentioned #{Enum.join(mentioned, ", ")}")
         loop(room_id, buffers)
 

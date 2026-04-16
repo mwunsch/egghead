@@ -155,7 +155,7 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
-  def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids}, state) do
+  def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids, content}, state) do
     agents =
       mentioned_ids
       |> Enum.flat_map(fn id -> find_agent(state.agents, id) end)
@@ -165,9 +165,11 @@ defmodule Egghead.Chat.Coordinator do
 
       broadcast_activation(room_id, length(agents))
 
+      prompt = "@-mentioned by #{from_agent}, who said:\n\n#{content}"
+
       Enum.each(agents, fn agent_info ->
         Task.start(fn ->
-          prompt_agent_in_room(agent_info.id, room_id, "(You were @-mentioned by #{from_agent})")
+          prompt_agent_in_room(agent_info.id, room_id, prompt)
         end)
       end)
     end

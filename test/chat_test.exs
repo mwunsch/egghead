@@ -125,7 +125,7 @@ defmodule Egghead.ChatTest do
 
       # Should receive the continued event and the replayed mention
       assert_receive :continued, 1000
-      assert_receive {:agent_mentions, _, "agents/alpha", ["agents/beta"]}, 1000
+      assert_receive {:agent_mentions, _, "agents/alpha", ["agents/beta"], _content}, 1000
     end
 
     test "agent_respond carries usage info" do

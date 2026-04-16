@@ -433,7 +433,7 @@ defmodule Egghead.Chat.Room do
               current_round_responded: MapSet.new()
           }
 
-          broadcast(state.id, {:agent_mentions, state.id, sender.id, agent_mentions})
+          broadcast(state.id, {:agent_mentions, state.id, sender.id, agent_mentions, content})
           state
         else
           # Budget exhausted — queue the mentions
@@ -441,7 +441,7 @@ defmodule Egghead.Chat.Room do
             state
             | rounds_remaining: 0,
               status: :waiting,
-              pending_mentions: state.pending_mentions ++ [{sender.id, agent_mentions}]
+              pending_mentions: state.pending_mentions ++ [{sender.id, agent_mentions, content}]
           }
 
           broadcast(state.id, :budget_exhausted)
@@ -473,8 +473,11 @@ defmodule Egghead.Chat.Room do
     broadcast(state.id, :continued)
 
     # Replay pending @-mentions that were queued when budget ran out
-    Enum.each(pending, fn {from_agent, mentioned} ->
-      broadcast(state.id, {:agent_mentions, state.id, from_agent, mentioned})
+    Enum.each(pending, fn {from_agent, mentioned, mention_content} ->
+      broadcast(
+        state.id,
+        {:agent_mentions, state.id, from_agent, mentioned, mention_content}
+      )
     end)
 
     reply_with_timeout(:ok, state)

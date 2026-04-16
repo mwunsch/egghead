@@ -601,7 +601,7 @@ defmodule Egghead.TUI.Chat.View do
 
     token_label =
       if a.ctx_window > 0 do
-        "  #{format_tokens(a.session_tokens)}/#{format_tokens(a.ctx_window)}"
+        "  #{format_tokens(a.ctx_tokens)}/#{format_tokens(a.ctx_window)}"
       else
         "  —"
       end
@@ -649,7 +649,7 @@ defmodule Egghead.TUI.Chat.View do
   # summary strip above the input: "3 agents · 4.2k tok · 1.8%"
   defp narrow_strip_node(%Model{agents: agents}, width, 1) do
     active = Enum.count(agents, &(&1.status == :active))
-    total_tok = Enum.reduce(agents, 0, fn a, acc -> acc + a.session_tokens end)
+    total_tok = Enum.reduce(agents, 0, fn a, acc -> acc + a.ctx_tokens end)
 
     parts =
       ["#{length(agents)} agents"] ++

@@ -36,7 +36,7 @@ defmodule Egghead.Skill do
   Validates a record against the Agent Skills spec. Returns `:ok`
   if the record is a conforming skill, `{:error, issues}` otherwise.
 
-  Issues are human-readable strings — `egghead skill list` surfaces
+  Issues are human-readable strings — `egghead skills list` surfaces
   them so the user can see why a record is malformed.
   """
   @spec validate(Record.t()) :: validation()
@@ -121,7 +121,7 @@ defmodule Egghead.Skill do
     }
 
   Unknown tokens don't block — they surface as warnings the user
-  can see in `egghead skill check`, prompting them to either grant
+  can see in `egghead skills check`, prompting them to either grant
   a broader capability or skip the skill.
   """
   @spec derive_requirements(Record.t()) :: %{

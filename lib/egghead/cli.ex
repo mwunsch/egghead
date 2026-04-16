@@ -10,7 +10,7 @@ defmodule Egghead.CLI do
   instead of `Mix.Task.run("app.start")`.
   """
 
-  @commands ~w(init serve mcp llm agent skill tools config doctor logs help tui)
+  @commands ~w(init serve mcp llm agent skills tools config doctor logs help tui)
 
   @doc """
   Main entry point. Parses argv and dispatches to the appropriate
@@ -27,9 +27,14 @@ defmodule Egghead.CLI do
     end
 
     cond do
-      global_opts[:help] == true and is_nil(command) -> print_help()
-      global_opts[:version] == true -> IO.puts("egghead #{version()}")
-      true -> dispatch(command, rest, global_opts)
+      global_opts[:help] == true and is_nil(command) and not has_non_flags?(rest) ->
+        print_help()
+
+      global_opts[:version] == true ->
+        IO.puts("egghead #{version()}")
+
+      true ->
+        dispatch(command, rest, global_opts)
     end
   end
 
@@ -108,6 +113,8 @@ defmodule Egghead.CLI do
     Enum.any?(argv, &(&1 in @commands))
   end
 
+  defp has_non_flags?(args), do: Enum.any?(args, &(not String.starts_with?(&1, "-")))
+
   # --- Dispatch ---
 
   # `egghead help <command>` → show that command's help
@@ -115,8 +122,19 @@ defmodule Egghead.CLI do
     dispatch(String.to_atom(subcmd), ["--help"], [])
   end
 
-  defp dispatch(:help, _, _opts) do
+  defp dispatch(:help, [], _opts) do
     print_help()
+  end
+
+  defp dispatch(:help, [unknown | _], _opts) do
+    IO.puts(:stderr, "egghead: '#{unknown}' is not an egghead command. See 'egghead --help'.")
+
+    case suggest(unknown) do
+      nil -> :ok
+      suggestion -> IO.puts(:stderr, "\nDid you mean this?\n    egghead help #{suggestion}")
+    end
+
+    System.halt(1)
   end
 
   defp dispatch(:init, args, _opts) do
@@ -139,7 +157,7 @@ defmodule Egghead.CLI do
     Egghead.CLI.AgentCmd.run(args)
   end
 
-  defp dispatch(:skill, args, _opts) do
+  defp dispatch(:skills, args, _opts) do
     Egghead.CLI.SkillCmd.run(args)
   end
 
@@ -163,9 +181,22 @@ defmodule Egghead.CLI do
     Egghead.CLI.TUI.run(args)
   end
 
-  defp dispatch(nil, _args, _opts) do
-    # Default: launch the TUI
+  defp dispatch(nil, [], _opts) do
+    # No arguments: launch the TUI
     Egghead.CLI.TUI.run([])
+  end
+
+  defp dispatch(nil, args, _opts) do
+    unknown = Enum.find(args, &(not String.starts_with?(&1, "-")))
+
+    IO.puts(:stderr, "egghead: '#{unknown}' is not an egghead command. See 'egghead --help'.")
+
+    case suggest(unknown) do
+      nil -> :ok
+      suggestion -> IO.puts(:stderr, "\nDid you mean this?\n    #{suggestion}")
+    end
+
+    System.halt(1)
   end
 
   # --- Helpers ---
@@ -182,6 +213,8 @@ defmodule Egghead.CLI do
       mcp           Start the MCP stdio server
       llm           Manage LLM providers
       agent         Manage agents
+      skills        Manage agent skills
+      tools         Inspect agent tools and MCP servers
       config        View/edit configuration
       doctor        Diagnose setup problems
       logs          Tail application logs
@@ -204,6 +237,17 @@ defmodule Egghead.CLI do
     SEE ALSO
       Run `egghead help <command>` for command-specific help.
     """)
+  end
+
+  defp suggest(input) do
+    @commands
+    |> Enum.map(&{&1, String.jaro_distance(input, &1)})
+    |> Enum.filter(fn {_cmd, score} -> score >= 0.8 end)
+    |> Enum.max_by(fn {_cmd, score} -> score end, fn -> nil end)
+    |> case do
+      {cmd, _score} -> cmd
+      nil -> nil
+    end
   end
 
   @version Mix.Project.config()[:version]

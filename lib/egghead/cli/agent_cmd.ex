@@ -38,7 +38,7 @@ defmodule Egghead.CLI.AgentCmd do
         $ egghead agent capabilities agents/scout
 
       SEE ALSO
-        egghead llm models, egghead skill check
+        egghead llm models, egghead skills check
       """)
     else
       {opts, rest, _} =

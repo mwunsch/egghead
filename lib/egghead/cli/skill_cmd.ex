@@ -25,9 +25,9 @@ defmodule Egghead.CLI.SkillCmd do
         ["show", name | _] -> do_show(name)
         ["inspect", name | _] -> do_show(name)
         ["check", name | _] -> do_check(name, opts)
-        ["show" | _] -> IO.puts("Usage: egghead skill show <name>")
-        ["check" | _] -> IO.puts("Usage: egghead skill check <name> --agent <id>")
-        _ -> IO.puts("Usage: egghead skill <command>\nCommands: list, show, check <name>")
+        ["show" | _] -> IO.puts("Usage: egghead skills show <name>")
+        ["check" | _] -> IO.puts("Usage: egghead skills check <name> --agent <id>")
+        _ -> IO.puts("Usage: egghead skills <command>\nCommands: list, show, check <name>")
       end
     end
   end
@@ -35,7 +35,7 @@ defmodule Egghead.CLI.SkillCmd do
   defp print_help do
     IO.puts("""
     USAGE
-      egghead skill <command> [flags]
+      egghead skills <command> [flags]
 
     DESCRIPTION
       List and inspect skills available to Egghead agents. Skills are
@@ -107,7 +107,7 @@ defmodule Egghead.CLI.SkillCmd do
 
       if invalid_count > 0 do
         IO.puts(
-          "  #{invalid_count} with validation issues — run `egghead skill show <name>` for details"
+          "  #{invalid_count} with validation issues — run `egghead skills show <name>` for details"
         )
       end
     end
@@ -119,7 +119,7 @@ defmodule Egghead.CLI.SkillCmd do
     agent_id = opts[:agent]
 
     if is_nil(agent_id) do
-      IO.puts("Usage: egghead skill check <name> --agent <agent_id>")
+      IO.puts("Usage: egghead skills check <name> --agent <agent_id>")
       System.halt(1)
     end
 

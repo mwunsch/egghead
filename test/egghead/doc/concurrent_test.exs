@@ -275,4 +275,97 @@ defmodule Egghead.Doc.ConcurrentTest do
       assert String.trim(text2) == String.trim(disk_body)
     end
   end
+
+  describe "agent CRDT editing" do
+    test "agent_edit applies changes visible to connected client", %{tmp_dir: tmp_dir} do
+      id = create_fixture(tmp_dir, "agent-edit", "Original content")
+
+      {:ok, c1} = YjsClient.start_link(id, self())
+      :ok = YjsClient.connect(c1)
+
+      assert String.trim(YjsClient.read(c1)) == "Original content"
+
+      # Agent edits through the CRDT path
+      :ok = Server.agent_edit(id, "agents/scout", "Modified by agent")
+
+      Process.sleep(1000)
+
+      text = YjsClient.read(c1)
+      assert text =~ "Modified by agent"
+    end
+
+    test "agent_edit sends cursor events to client", %{tmp_dir: tmp_dir} do
+      id = create_fixture(tmp_dir, "agent-cursor", "Some text here")
+
+      # Attach directly to receive raw messages
+      {:ok, _pid} = Server.ensure_started(id)
+      {:ok, _} = Server.attach(id, self())
+
+      Server.agent_edit(id, "agents/scout", "Replaced text here")
+
+      # Should receive agent cursor messages
+      assert_receive {:doc_update, {:agent_cursor, %{agent_id: "agents/scout", active: true}}},
+                     5000
+
+      assert_receive {:doc_update, {:agent_cursor, %{agent_id: "agents/scout", active: false}}},
+                     5000
+    end
+
+    test "agent_edit with no changes is a no-op", %{tmp_dir: tmp_dir} do
+      id = create_fixture(tmp_dir, "agent-noop", "Unchanged")
+
+      {:ok, c1} = YjsClient.start_link(id, self())
+      :ok = YjsClient.connect(c1)
+
+      :ok = Server.agent_edit(id, "agents/scout", YjsClient.read(c1))
+
+      # No update messages should arrive
+      refute_receive {:client_updated, _}, 500
+    end
+
+    test "agent_edit while client is typing merges correctly", %{tmp_dir: tmp_dir} do
+      id = create_fixture(tmp_dir, "agent-merge", "Line one\nLine two\nLine three")
+
+      {:ok, c1} = YjsClient.start_link(id, self())
+      :ok = YjsClient.connect(c1)
+
+      # Client edits beginning — wait for it to reach the server
+      YjsClient.insert(c1, 0, "Prepended! ")
+      Process.sleep(500)
+
+      # Agent edits end (after client edit has been applied)
+      current = "Prepended! Line one\nLine two\nLine three"
+      new_body = current <> "\nLine four from agent"
+      Server.agent_edit(id, "agents/scout", new_body)
+
+      Process.sleep(2000)
+
+      text = YjsClient.read(c1)
+      assert text =~ "Prepended!"
+      assert text =~ "Line four from agent"
+    end
+
+    test "alive?/1 returns false when no Doc.Server running" do
+      refute Server.alive?("nonexistent-record")
+    end
+
+    test "alive?/1 returns true when Doc.Server running", %{tmp_dir: tmp_dir} do
+      id = create_fixture(tmp_dir, "alive-check", "Content")
+
+      {:ok, _} = Server.ensure_started(id)
+      {:ok, _} = Server.attach(id, self())
+
+      assert Server.alive?(id)
+    end
+
+    test "fallback: update_record works when no Doc.Server", %{tmp_dir: tmp_dir} do
+      id = create_fixture(tmp_dir, "fallback", "Before")
+
+      refute Server.alive?(id)
+
+      {:ok, _} = Egghead.update_record(id, %{body: "After"})
+      {:ok, record} = Egghead.get_record(id)
+      assert record.body =~ "After"
+    end
+  end
 end

@@ -10,6 +10,7 @@ import { syntaxHighlighting, HighlightStyle } from "https://esm.sh/@codemirror/l
 import { tags } from "https://esm.sh/@lezer/highlight@1";
 import * as Y from "https://esm.sh/yjs@13";
 import { yCollab } from "https://esm.sh/y-codemirror.next@0.3";
+import * as awarenessProtocol from "https://esm.sh/y-protocols@1/awareness";
 
 // Match the existing .markdown-body CSS exactly.
 const markdownHighlight = HighlightStyle.define([
@@ -369,26 +370,75 @@ function clickableLinks(navigate) {
 
 // --- Phoenix channel-backed Yjs provider ---
 
+// User colors — stable hash of a random session id
+const USER_COLORS = [
+  "#30bced", "#6eeb83", "#ffbc42", "#e84855",
+  "#8b5cf6", "#f472b6", "#34d399", "#fb923c",
+];
+
+function pickColor(id) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
+}
+
 class PhoenixProvider {
   constructor(ydoc, channel) {
     this.ydoc = ydoc;
     this.channel = channel;
     this.synced = false;
 
+    // Awareness
+    this.awareness = new awarenessProtocol.Awareness(ydoc);
+    const userId = `user-${Math.floor(Math.random() * 1e9)}`;
+    const color = pickColor(userId);
+    this.awareness.setLocalStateField("user", {
+      name: "You",
+      color: color,
+      colorLight: color + "40",
+    });
+
+    // Doc sync
     channel.on("sync", ({ data }) => {
-      const update = this._decode(data);
-      Y.applyUpdate(this.ydoc, update);
+      Y.applyUpdate(this.ydoc, this._decode(data));
       this.synced = true;
     });
 
     channel.on("update", ({ data }) => {
-      const update = this._decode(data);
-      Y.applyUpdate(this.ydoc, update, "remote");
+      Y.applyUpdate(this.ydoc, this._decode(data), "remote");
     });
 
     this.ydoc.on("update", (update, origin) => {
       if (origin === "remote") return;
       channel.push("update", { data: this._encode(update) });
+    });
+
+    // Awareness sync
+    channel.on("awareness", ({ data }) => {
+      awarenessProtocol.applyAwarenessUpdate(
+        this.awareness, this._decode(data), "remote"
+      );
+    });
+
+    // Agent cursor tracking
+    this.agentCursors = new Map(); // agent_id → {name, color, pos, active}
+    this._agentCursorListeners = [];
+
+    channel.on("agent_cursor", (cursor) => {
+      if (cursor.active) {
+        this.agentCursors.set(cursor.agent_id, cursor);
+      } else {
+        this.agentCursors.delete(cursor.agent_id);
+      }
+      for (const fn of this._agentCursorListeners) fn();
+    });
+
+    this.awareness.on("update", ({ added, updated, removed }) => {
+      const changed = added.concat(updated).concat(removed);
+      const encoded = awarenessProtocol.encodeAwarenessUpdate(
+        this.awareness, changed
+      );
+      channel.push("awareness", { data: this._encode(encoded) });
     });
   }
 
@@ -402,8 +452,80 @@ class PhoenixProvider {
   }
 
   destroy() {
-    this.ydoc.off("update", this._updateHandler);
+    awarenessProtocol.removeAwarenessStates(
+      this.awareness, [this.ydoc.clientID], null
+    );
+    this.awareness.destroy();
   }
+}
+
+// --- Agent cursor decorations ---
+
+class AgentCursorWidget extends WidgetType {
+  constructor(name, color) {
+    super();
+    this.name = name;
+    this.color = color;
+  }
+
+  eq(other) { return this.name === other.name && this.color === other.color; }
+
+  toDOM() {
+    const wrap = document.createElement("span");
+    wrap.className = "cm-agent-cursor";
+    wrap.style.borderLeftColor = this.color;
+
+    const label = document.createElement("span");
+    label.className = "cm-agent-cursor-label";
+    label.style.backgroundColor = this.color;
+    label.textContent = this.name;
+    wrap.appendChild(label);
+
+    return wrap;
+  }
+
+  ignoreEvent() { return true; }
+}
+
+function agentCursorPlugin(provider) {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = this.build(view);
+        provider._agentCursorListeners.push(() => {
+          this.decorations = this.build(view);
+          view.dispatch(); // trigger re-render
+        });
+      }
+
+      build(view) {
+        const builder = new RangeSetBuilder();
+        const cursors = [...provider.agentCursors.values()]
+          .filter((c) => c.active)
+          .sort((a, b) => a.pos - b.pos);
+
+        for (const cursor of cursors) {
+          const pos = Math.min(cursor.pos, view.state.doc.length);
+          builder.add(
+            pos, pos,
+            Decoration.widget({
+              widget: new AgentCursorWidget(cursor.name, cursor.color),
+              side: 1,
+            })
+          );
+        }
+
+        return builder.finish();
+      }
+
+      update(update) {
+        if (update.docChanged) {
+          this.decorations = this.build(update.view);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
 }
 
 // --- Editor factory ---
@@ -434,7 +556,8 @@ export function createEditor(element, recordId, { navigate } = {}) {
     keymap.of([...defaultKeymap, ...historyKeymap]),
     history(),
     drawSelection(),
-    yCollab(ytext),
+    yCollab(ytext, provider.awareness),
+    agentCursorPlugin(provider),
     EditorView.lineWrapping,
   ];
 

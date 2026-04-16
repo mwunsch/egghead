@@ -46,6 +46,16 @@ defmodule Egghead.Web.DocChannel do
     {:noreply, socket}
   end
 
+  def handle_info({:doc_update, {:awareness, update}}, socket) do
+    push(socket, "awareness", %{data: Base.encode64(update)})
+    {:noreply, socket}
+  end
+
+  def handle_info({:doc_update, {:agent_cursor, cursor_state}}, socket) do
+    push(socket, "agent_cursor", cursor_state)
+    {:noreply, socket}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true

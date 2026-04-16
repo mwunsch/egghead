@@ -664,17 +664,28 @@ defmodule Egghead.Agent.Tools do
     Egghead.Tool.FS.grep(input)
   end
 
-  defp do_execute("update_record", %{"id" => id} = input, _ctx) do
+  defp do_execute("update_record", %{"id" => id} = input, ctx) do
     attrs =
       input
       |> Map.delete("id")
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
 
-    case Egghead.update_record(id, attrs) do
-      {:ok, record} -> {:ok, "Updated record: #{record.id}"}
-      {:error, :not_found} -> {:error, "Record not found: #{id}"}
-      {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
+    # If a browser has this doc open and we're changing the body,
+    # stream the edit through the CRDT so the user sees live typing.
+    agent_id = ctx[:agent_id]
+
+    if agent_id && Map.has_key?(attrs, "body") && Egghead.Doc.Server.alive?(id) do
+      case Egghead.Doc.Server.agent_edit(id, agent_id, attrs["body"]) do
+        :ok -> {:ok, "Updated record: #{id}"}
+        {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
+      end
+    else
+      case Egghead.update_record(id, attrs) do
+        {:ok, record} -> {:ok, "Updated record: #{record.id}"}
+        {:error, :not_found} -> {:error, "Record not found: #{id}"}
+        {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
+      end
     end
   end
 

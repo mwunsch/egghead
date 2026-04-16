@@ -875,6 +875,27 @@ details[open] > .properties-summary::before {
   text-decoration: underline;
 }
 
+/* Agent cursors */
+.cm-agent-cursor {
+  border-left: 2px solid;
+  margin-left: -1px;
+  position: relative;
+  display: inline;
+}
+.cm-agent-cursor-label {
+  position: absolute;
+  top: -1.4em;
+  left: -1px;
+  font-size: 10px;
+  font-family: var(--font-ui);
+  color: #fff;
+  padding: 1px 4px;
+  border-radius: 2px;
+  white-space: nowrap;
+  pointer-events: none;
+  line-height: 1.3;
+}
+
 /* Clickable URLs */
 .record-editor .cm-url {
   cursor: pointer;

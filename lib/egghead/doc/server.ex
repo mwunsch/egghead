@@ -59,6 +59,27 @@ defmodule Egghead.Doc.Server do
     GenServer.call(via(record_id), :get_state)
   end
 
+  @doc """
+  Check if a Doc.Server is currently running for this record
+  (i.e., a browser has the document open).
+  """
+  def alive?(record_id) do
+    Registry.lookup(Egghead.Doc.Registry, record_id) != []
+  end
+
+  @doc """
+  Apply an agent's edit through the CRDT, with visible cursor movement.
+
+  Diffs the current body against `new_body`, applies ops in chunks
+  so connected browsers see the agent "typing". Broadcasts agent
+  cursor position between chunks.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  def agent_edit(record_id, agent_id, new_body) do
+    GenServer.call(via(record_id), {:agent_edit, agent_id, new_body}, 30_000)
+  end
+
   defp via(record_id) do
     {:via, Registry, {Egghead.Doc.Registry, record_id}}
   end
@@ -111,6 +132,17 @@ defmodule Egghead.Doc.Server do
     {:reply, {:ok, update}, state}
   end
 
+  def handle_call({:agent_edit, agent_id, new_body}, _from, state) do
+    current_body = Yex.Text.to_string(state.text)
+
+    if current_body == new_body do
+      {:reply, :ok, state}
+    else
+      state = perform_agent_edit(state, agent_id, current_body, new_body)
+      {:reply, :ok, state}
+    end
+  end
+
   @impl true
   def handle_cast({:detach, client_pid}, state) do
     state = %{state | clients: MapSet.delete(state.clients, client_pid)}
@@ -129,6 +161,11 @@ defmodule Egghead.Doc.Server do
   def handle_info({:update_v1, update, :external, _meta}, state) do
     broadcast_to_clients(state, {:yjs_update, update})
     {:noreply, mark_dirty(state)}
+  end
+
+  def handle_info({:update_v1, update, :agent, _meta}, state) do
+    broadcast_to_clients(state, {:yjs_update, update})
+    {:noreply, state}
   end
 
   def handle_info({:update_v1, _update, _origin, _meta}, state) do
@@ -223,6 +260,110 @@ defmodule Egghead.Doc.Server do
     str = :binary.list_to_bin(bytes)
     Yex.Text.insert(text, pos, str)
     apply_diff_ops(text, rest, pos + length(bytes))
+  end
+
+  # --- Agent CRDT editing ---
+
+  @agent_chunk_delay_ms 150
+
+  defp perform_agent_edit(state, agent_id, current_body, new_body) do
+    # Resolve agent name and color from record frontmatter
+    {name, color} = agent_display(agent_id)
+
+    # Broadcast agent cursor appearance
+    broadcast_to_clients(state, {:agent_cursor, %{
+      agent_id: agent_id, name: name, color: color, pos: 0, active: true
+    }})
+
+    # Diff current Y.Text content against new body (byte-level)
+    old_bytes = :binary.bin_to_list(current_body)
+    new_bytes = :binary.bin_to_list(new_body)
+    ops = List.myers_difference(old_bytes, new_bytes)
+
+    # Apply ops in chunks with cursor position updates
+    apply_agent_ops(state, agent_id, name, color, ops, 0)
+
+    # Mark dirty so debounce flushes to disk
+    state = mark_dirty(state)
+
+    # Broadcast agent cursor removal
+    broadcast_to_clients(state, {:agent_cursor, %{
+      agent_id: agent_id, name: name, color: color, pos: 0, active: false
+    }})
+
+    state
+  end
+
+  defp apply_agent_ops(_state, _agent_id, _name, _color, [], _pos), do: :ok
+
+  defp apply_agent_ops(state, agent_id, name, color, [{:eq, bytes} | rest], pos) do
+    apply_agent_ops(state, agent_id, name, color, rest, pos + length(bytes))
+  end
+
+  defp apply_agent_ops(state, agent_id, name, color, [{:del, bytes} | rest], pos) do
+    Yex.Doc.transaction(state.doc, :agent, fn ->
+      Yex.Text.delete(state.text, pos, length(bytes))
+    end)
+
+    broadcast_cursor(state, agent_id, name, color, pos)
+    Process.sleep(@agent_chunk_delay_ms)
+    apply_agent_ops(state, agent_id, name, color, rest, pos)
+  end
+
+  defp apply_agent_ops(state, agent_id, name, color, [{:ins, bytes} | rest], pos) do
+    str = :binary.list_to_bin(bytes)
+
+    # Split large inserts into lines for visible animation
+    lines = split_keeping_newlines(str)
+
+    pos =
+      Enum.reduce(lines, pos, fn line, pos ->
+        Yex.Doc.transaction(state.doc, :agent, fn ->
+          Yex.Text.insert(state.text, pos, line)
+        end)
+
+        new_pos = pos + byte_size(line)
+        broadcast_cursor(state, agent_id, name, color, new_pos)
+        Process.sleep(@agent_chunk_delay_ms)
+        new_pos
+      end)
+
+    apply_agent_ops(state, agent_id, name, color, rest, pos)
+  end
+
+  defp broadcast_cursor(state, agent_id, name, color, pos) do
+    broadcast_to_clients(state, {:agent_cursor, %{
+      agent_id: agent_id, name: name, color: color, pos: pos, active: true
+    }})
+  end
+
+  defp split_keeping_newlines(str) do
+    # "foo\nbar\nbaz" → ["foo\n", "bar\n", "baz"]
+    str
+    |> String.split(~r/(?<=\n)/)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp agent_display(agent_id) do
+    case Egghead.get_record(agent_id) do
+      {:ok, record} ->
+        name = record.title || agent_id
+        color = get_in(record.meta, ["color"]) || agent_color(agent_id)
+        {name, color}
+
+      _ ->
+        {agent_id, agent_color(agent_id)}
+    end
+  end
+
+  @agent_colors [
+    "#e84855", "#30bced", "#6eeb83", "#ffbc42",
+    "#8b5cf6", "#f472b6", "#34d399", "#fb923c"
+  ]
+
+  defp agent_color(agent_id) do
+    hash = :erlang.phash2(agent_id)
+    Enum.at(@agent_colors, rem(hash, length(@agent_colors)))
   end
 
   defp mark_dirty(state) do

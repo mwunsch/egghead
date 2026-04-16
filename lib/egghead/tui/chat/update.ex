@@ -29,6 +29,8 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
     %{name: "join", description: "Enter a different room by id"},
+    %{name: "mute", description: "Mute an agent"},
+    %{name: "unmute", description: "Unmute a muted agent"},
     %{name: "tools", description: "Summary of tools available to agents"},
     %{name: "mcp", description: "Summary of MCP servers"},
     %{name: "leave", description: "Return to records (F1)"},
@@ -46,6 +48,8 @@ defmodule Egghead.TUI.Chat.Update do
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
     "join" => :cmd_join,
+    "mute" => :cmd_mute,
+    "unmute" => :cmd_unmute,
     "tools" => :cmd_tools,
     "mcp" => :cmd_mcp,
     "help" => :cmd_help
@@ -842,10 +846,45 @@ defmodule Egghead.TUI.Chat.Update do
     end
   end
 
+  defp apply_command(:cmd_mute, arg, model) do
+    target = String.trim(arg)
+
+    if target == "" do
+      {Model.append_entry(Model.clear_input(model), Entry.system("Usage: /mute <agent>")), :none}
+    else
+      cmd =
+        {:exec,
+         fn ->
+           Egghead.Chat.Room.mute(model.room_id, target)
+           :no_msg
+         end}
+
+      {Model.clear_input(model), cmd}
+    end
+  end
+
+  defp apply_command(:cmd_unmute, arg, model) do
+    target = String.trim(arg)
+
+    if target == "" do
+      {Model.append_entry(Model.clear_input(model), Entry.system("Usage: /unmute <agent>")),
+       :none}
+    else
+      cmd =
+        {:exec,
+         fn ->
+           Egghead.Chat.Room.unmute(model.room_id, target)
+           :no_msg
+         end}
+
+      {Model.clear_input(model), cmd}
+    end
+  end
+
   defp apply_command(:cmd_help, _arg, model) do
     help_text = """
     Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
-    Commands: /save /copy /continue /handoff <agent> /join <room> /tools /mcp /leave /help /quit
+    Commands: /save /copy /continue /handoff <agent> /join <room> /mute /unmute /tools /mcp /leave /help /quit
     Navigation: F1 records │ F2 chat │ Esc dismiss
     Copy: hold Shift + drag to select text\
     """

@@ -691,6 +691,8 @@ defmodule Egghead.Web.AppLive do
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
     "join" => :cmd_join,
+    "mute" => :cmd_mute,
+    "unmute" => :cmd_unmute,
     "help" => :cmd_help
   }
 
@@ -699,6 +701,8 @@ defmodule Egghead.Web.AppLive do
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
     %{name: "join", description: "Enter a different room by id"},
+    %{name: "mute", description: "Mute an agent"},
+    %{name: "unmute", description: "Unmute a muted agent"},
     %{name: "help", description: "Show keybindings & commands"}
   ]
 
@@ -816,10 +820,32 @@ defmodule Egghead.Web.AppLive do
             end
         end
 
+      :cmd_mute ->
+        target = String.trim(arg)
+
+        if target == "" do
+          append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /mute <agent>"))
+        else
+          Egghead.Chat.Room.mute(socket.assigns.room_id, target)
+          socket
+        end
+
+      :cmd_unmute ->
+        target = String.trim(arg)
+
+        if target == "" do
+          append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /unmute <agent>"))
+        else
+          Egghead.Chat.Room.unmute(socket.assigns.room_id, target)
+          socket
+        end
+
       :cmd_help ->
         socket
         |> append_entry(
-          Egghead.TUI.Chat.Entry.system("Commands: /save /continue /handoff <agent> /help")
+          Egghead.TUI.Chat.Entry.system(
+            "Commands: /save /continue /handoff <agent> /join <room> /mute /unmute /help"
+          )
         )
         |> append_entry(
           Egghead.TUI.Chat.Entry.system(

@@ -306,6 +306,10 @@ defmodule Egghead.Chat.Coordinator do
     Enum.any?(mentions, &(&1 in ["everyone", "channel", "jam"]))
   end
 
+  defp direct_mention?(mentions) do
+    mentions != [] and not Enum.any?(mentions, &(&1 in ["everyone", "channel", "jam"]))
+  end
+
   # Which activation mode should we use for this message?
   #
   # - `:huddle` — `@everyone` / `@channel`: serial, every agent must respond
@@ -352,15 +356,29 @@ defmodule Egghead.Chat.Coordinator do
     mentions = msg.mentions || []
     mode = activation_mode(mentions)
 
-    # Filter out agents mid-handoff, order by TF-IDF relevance score
-    # (highest score first). Index is always last when present: infrastructure
-    # rounds out the room after specialists, never leads.
+    # Filter out agents mid-handoff and muted, order by TF-IDF relevance
+    # score (highest first). Index is always last when present:
+    # infrastructure rounds out the room after specialists, never leads.
     scores = Egghead.Chat.Relevance.score(msg.content, state.corpus)
+
+    {room_mode, muted_set} =
+      try do
+        rs = Room.get_state(room_id)
+        {rs.mode, MapSet.new(rs.muted || [])}
+      rescue
+        _ -> {:serial, MapSet.new()}
+      end
+
+    # Filter out agents mid-handoff and muted agents. Muted agents
+    # are skipped on open messages and @jam, but NOT on @everyone
+    # (explicit intent) or direct @agent (explicit override).
+    skip_muted? = mode != :huddle and not direct_mention?(mentions)
 
     agents_to_prompt =
       agents
       |> Enum.reject(fn info ->
-        MapSet.member?(state.handoffs_in_progress, {info.id, room_id})
+        MapSet.member?(state.handoffs_in_progress, {info.id, room_id}) or
+          (skip_muted? and MapSet.member?(muted_set, info.id))
       end)
       |> Enum.sort_by(fn info ->
         index_rank = if info.id == "index", do: 1, else: 0
@@ -369,13 +387,6 @@ defmodule Egghead.Chat.Coordinator do
 
     agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)
     Logger.info("Coordinator: activating agents (#{mode}): #{agent_names}")
-
-    room_mode =
-      try do
-        Room.get_state(room_id).mode
-      rescue
-        _ -> :serial
-      end
 
     case mode do
       :jam ->

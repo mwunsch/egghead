@@ -51,6 +51,7 @@ defmodule Egghead.Chat.Room do
       pending_mentions: [],
       # %{agent_id => %Message{}} — provisional streaming messages
       in_progress: %{},
+      muted: MapSet.new(),
       idle_timeout: nil,
       mode: :serial,
       status: :waiting
@@ -138,6 +139,21 @@ defmodule Egghead.Chat.Room do
   @spec set_mode(String.t(), :staggered | :serial) :: :ok
   def set_mode(room_id, mode) when mode in [:staggered, :serial] do
     GenServer.call(room_name(room_id), {:set_mode, mode})
+  end
+
+  @spec mute(String.t(), String.t()) :: :ok
+  def mute(room_id, agent_id) do
+    GenServer.call(room_name(room_id), {:mute, agent_id})
+  end
+
+  @spec unmute(String.t(), String.t()) :: :ok
+  def unmute(room_id, agent_id) do
+    GenServer.call(room_name(room_id), {:unmute, agent_id})
+  end
+
+  @spec muted(String.t()) :: [String.t()]
+  def muted(room_id) do
+    GenServer.call(room_name(room_id), :muted)
   end
 
   @doc """
@@ -503,6 +519,7 @@ defmodule Egghead.Chat.Room do
     info = %{
       id: state.id,
       agents: MapSet.to_list(state.agents),
+      muted: MapSet.to_list(state.muted),
       status: state.status,
       rounds_remaining: state.rounds_remaining,
       round_budget: state.round_budget,
@@ -516,6 +533,22 @@ defmodule Egghead.Chat.Room do
 
   def handle_call({:set_mode, mode}, _from, state) do
     {:reply, :ok, %{state | mode: mode}}
+  end
+
+  def handle_call({:mute, agent_id}, _from, state) do
+    state = %{state | muted: MapSet.put(state.muted, agent_id)}
+    broadcast(state.id, {:system_notice, "#{agent_display_name(agent_id)} muted"})
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:unmute, agent_id}, _from, state) do
+    state = %{state | muted: MapSet.delete(state.muted, agent_id)}
+    broadcast(state.id, {:system_notice, "#{agent_display_name(agent_id)} unmuted"})
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:muted, _from, state) do
+    {:reply, MapSet.to_list(state.muted), state}
   end
 
   def handle_call({:get_in_progress, agent_id}, _from, state) do
@@ -642,6 +675,10 @@ defmodule Egghead.Chat.Room do
     ~r/@([\w][\w\/\-]*)/
     |> Regex.scan(content)
     |> Enum.map(fn [_, name] -> name end)
+  end
+
+  defp agent_display_name(agent_id) do
+    agent_id |> String.split("/") |> List.last() |> String.capitalize()
   end
 
   defp generate_id do

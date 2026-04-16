@@ -790,6 +790,82 @@ details[open] > .properties-summary::before {
   content: "~~"; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em;
 }
 
+/* ---- CodeMirror editor (record body) ---- */
+
+.record-editor {
+  flex: 1;
+  overflow: auto;
+  padding: 0 16px;
+}
+
+.record-editor .cm-editor {
+  height: 100%;
+}
+
+.record-editor .cm-scroller {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--fg);
+  overflow: auto;
+}
+
+.record-editor .cm-editor.cm-focused { outline: none; }
+.record-editor .cm-content { padding: 8px 0; max-width: 65ch; }
+.record-editor .cm-line { padding: 0; }
+.record-editor .cm-gutters { display: none; }
+.record-editor .cm-cursor { border-left-color: var(--fg); }
+
+.record-editor .cm-activeLine { background: none; }
+.record-editor .cm-activeLineGutter { background: none; }
+
+/* Wikilinks — match .markdown-body a.wikilink */
+.record-editor .cm-wikilink {
+  color: var(--wikilink);
+  font-weight: 500;
+  cursor: pointer;
+}
+.record-editor .cm-wikilink:hover {
+  text-decoration: underline;
+}
+
+/* Tables — match .markdown-body table/th/td */
+.record-editor .cm-table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+  font-size: 14px;
+  font-family: var(--font-body);
+}
+.record-editor .cm-table th,
+.record-editor .cm-table td {
+  border: 1px solid var(--chrome-lo);
+  padding: 4px 8px;
+  text-align: left;
+}
+.record-editor .cm-table th {
+  background: var(--chrome);
+  font-family: var(--font-ui);
+  font-weight: 600;
+}
+
+/* Raw table editing — mono so pipe columns align */
+.record-editor .cm-line.cm-table-source {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre;
+  max-width: none;
+}
+
+/* Clickable URLs */
+.record-editor .cm-url {
+  cursor: pointer;
+}
+.record-editor .cm-url:hover {
+  text-decoration: underline;
+}
+
 .properties-actions {
   margin-top: 8px;
   display: flex;

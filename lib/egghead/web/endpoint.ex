@@ -9,6 +9,7 @@ defmodule Egghead.Web.Endpoint do
   ]
 
   socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
+  socket("/yjs", Egghead.Web.DocSocket, websocket: true)
 
   if code_reloading? do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)

@@ -1400,9 +1400,14 @@ defmodule Egghead.Web.AppLive do
                 <% end %>
               </dl>
             </details>
-            <article class="record-body markdown-body">
-              {Phoenix.HTML.raw(@selected_body_html)}
-            </article>
+            <div
+              id={"editor-#{@selected_record.id}"}
+              phx-hook="YjsEditor"
+              phx-update="ignore"
+              data-record-id={@selected_record.id}
+              class="record-editor"
+            >
+            </div>
           </div>
           <div :if={!@selected_record} class="empty-state">
             <p>Select a record to begin.</p>

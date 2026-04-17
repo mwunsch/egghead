@@ -74,7 +74,7 @@ defmodule Egghead.LLM.Registry do
   @spec resolve(GenServer.server(), String.t(), String.t() | nil) ::
           {:ok, {module(), keyword()}} | {:error, term()}
   def resolve(server \\ __MODULE__, model_str, fallback_provider \\ nil) do
-    GenServer.call(server, {:resolve, model_str, fallback_provider})
+    Egghead.Node.call(server, {:resolve, model_str, fallback_provider})
   end
 
   @doc """
@@ -82,7 +82,7 @@ defmodule Egghead.LLM.Registry do
   """
   @spec list_providers(GenServer.server()) :: [map()]
   def list_providers(server \\ __MODULE__) do
-    GenServer.call(server, :list_providers)
+    Egghead.Node.call(server, :list_providers)
   end
 
   @doc """
@@ -90,7 +90,7 @@ defmodule Egghead.LLM.Registry do
   """
   @spec list_models(GenServer.server()) :: [map()]
   def list_models(server \\ __MODULE__) do
-    GenServer.call(server, :list_models)
+    Egghead.Node.call(server, :list_models)
   end
 
   @doc """
@@ -98,7 +98,7 @@ defmodule Egghead.LLM.Registry do
   """
   @spec default_model(GenServer.server()) :: String.t()
   def default_model(server \\ __MODULE__) do
-    GenServer.call(server, :default_model)
+    Egghead.Node.call(server, :default_model)
   end
 
   @doc """
@@ -106,7 +106,7 @@ defmodule Egghead.LLM.Registry do
   """
   @spec get_model_info(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_model_info(server \\ __MODULE__, model_str) do
-    GenServer.call(server, {:get_model_info, model_str})
+    Egghead.Node.call(server, {:get_model_info, model_str})
   end
 
   @doc """
@@ -118,7 +118,7 @@ defmodule Egghead.LLM.Registry do
   """
   @spec await_discovery(GenServer.server(), timeout()) :: :ok
   def await_discovery(server \\ __MODULE__, timeout \\ 10_000) do
-    GenServer.call(server, :await_discovery, timeout)
+    Egghead.Node.call(server, :await_discovery, timeout)
   end
 
   # --- GenServer callbacks ---

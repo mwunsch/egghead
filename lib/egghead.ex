@@ -177,6 +177,14 @@ defmodule Egghead do
   """
   @spec create_room(keyword()) :: {:ok, String.t()} | {:error, term()}
   def create_room(opts \\ []) do
+    case Egghead.Node.server_node() do
+      nil -> create_room_local(opts)
+      node -> :rpc.call(node, __MODULE__, :create_room_local, [opts])
+    end
+  end
+
+  @doc false
+  def create_room_local(opts) do
     id =
       Keyword.get(
         opts,
@@ -222,10 +230,16 @@ defmodule Egghead do
   """
   @spec default_room() :: String.t() | nil
   def default_room do
-    try do
-      :persistent_term.get(:egghead_default_room)
-    rescue
-      ArgumentError -> nil
+    case Egghead.Node.server_node() do
+      nil ->
+        try do
+          :persistent_term.get(:egghead_default_room)
+        rescue
+          ArgumentError -> nil
+        end
+
+      node ->
+        :rpc.call(node, :persistent_term, :get, [:egghead_default_room, nil])
     end
   end
 
@@ -328,7 +342,11 @@ defmodule Egghead do
           end
 
         Egghead.Chat.ToolCache.invalidate(room_id)
-        GenServer.stop(:"egghead_room_#{room_id}", :normal, 5_000)
+
+        case Egghead.Node.server_node() do
+          nil -> GenServer.stop(:"egghead_room_#{room_id}", :normal, 5_000)
+          node -> :rpc.call(node, GenServer, :stop, [:"egghead_room_#{room_id}", :normal, 5_000])
+        end
 
         {:ok, %{responses: responses, room_id: room_id, transcript_id: transcript_id}}
 

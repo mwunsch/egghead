@@ -51,12 +51,24 @@ defmodule Egghead.CLI.Serve do
 
     Egghead.CLI.start_app(:console)
 
+    if Egghead.Node.connected?() do
+      IO.puts("Another Egghead instance is already running (#{Egghead.Node.server_node()}).")
+      IO.puts("Stop it first, or run `egghead` to connect as a client.")
+      System.halt(1)
+    end
+
     port = get_port()
     IO.puts("Egghead running on http://localhost:#{port}")
     IO.puts("MCP endpoint at http://localhost:#{port}/mcp")
+
+    if node() != :nonode@nohost do
+      IO.puts("Node: #{node()}")
+    end
+
     IO.puts("")
     IO.puts("Stop the server with Ctrl+C then 'a' (BEAM break menu),")
     IO.puts("or send SIGTERM: kill #{System.pid()}")
+
     Process.sleep(:infinity)
   end
 

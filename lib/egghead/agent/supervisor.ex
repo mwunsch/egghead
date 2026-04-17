@@ -92,6 +92,14 @@ defmodule Egghead.Agent.Supervisor do
   """
   @spec sync_agents(GenServer.server(), keyword()) :: :ok
   def sync_agents(supervisor \\ __MODULE__, opts \\ []) do
+    case Egghead.Node.server_node() do
+      nil -> sync_agents_local(supervisor, opts)
+      node -> :rpc.call(node, __MODULE__, :sync_agents_local, [supervisor, opts])
+    end
+  end
+
+  @doc false
+  def sync_agents_local(supervisor \\ __MODULE__, opts \\ []) do
     store = Keyword.get(opts, :store, Egghead.RecordStore)
     agent_records = Egghead.RecordStore.search_by_class(store, :agent)
 
@@ -149,6 +157,14 @@ defmodule Egghead.Agent.Supervisor do
   @spec start_agent(GenServer.server(), Egghead.Record.t(), keyword()) ::
           {:ok, pid()} | {:error, term()}
   def start_agent(supervisor \\ __MODULE__, record, opts \\ []) do
+    case Egghead.Node.server_node() do
+      nil -> start_agent_local(supervisor, record, opts)
+      node -> :rpc.call(node, __MODULE__, :start_agent_local, [supervisor, record, opts])
+    end
+  end
+
+  @doc false
+  def start_agent_local(supervisor \\ __MODULE__, record, opts \\ []) do
     store = Keyword.get(opts, :store, Egghead.RecordStore)
 
     # If already running, restart it
@@ -191,6 +207,14 @@ defmodule Egghead.Agent.Supervisor do
   """
   @spec stop_agent(GenServer.server(), String.t()) :: :ok | {:error, :not_found}
   def stop_agent(supervisor \\ __MODULE__, agent_id) do
+    case Egghead.Node.server_node() do
+      nil -> stop_agent_local(supervisor, agent_id)
+      node -> :rpc.call(node, __MODULE__, :stop_agent_local, [supervisor, agent_id])
+    end
+  end
+
+  @doc false
+  def stop_agent_local(supervisor \\ __MODULE__, agent_id) do
     name = Egghead.Agent.agent_name(agent_id)
 
     case GenServer.whereis(name) do

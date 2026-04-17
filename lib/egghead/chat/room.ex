@@ -81,7 +81,7 @@ defmodule Egghead.Chat.Room do
   def send_message(room_id, content) do
     user = Egghead.User.current()
     sender = %Sender{type: :user, id: user.id, name: user.name}
-    GenServer.call(room_name(room_id), {:send_message, sender, content})
+    Egghead.Node.call(room_name(room_id), {:send_message, sender, content})
   end
 
   @doc """
@@ -95,7 +95,7 @@ defmodule Egghead.Chat.Room do
     name = agent_id |> String.split("/") |> List.last() |> String.capitalize()
     sender = %Sender{type: :agent, id: agent_id, name: name}
     usage = Keyword.get(opts, :usage)
-    GenServer.call(room_name(room_id), {:agent_respond, sender, content, usage})
+    Egghead.Node.call(room_name(room_id), {:agent_respond, sender, content, usage})
   end
 
   @doc """
@@ -110,7 +110,7 @@ defmodule Egghead.Chat.Room do
   def agent_pass(room_id, agent_id) do
     name = agent_id |> String.split("/") |> List.last() |> String.capitalize()
     sender = %Sender{type: :agent, id: agent_id, name: name}
-    GenServer.call(room_name(room_id), {:agent_pass, sender})
+    Egghead.Node.call(room_name(room_id), {:agent_pass, sender})
   end
 
   @doc """
@@ -119,7 +119,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec streaming_update(String.t(), String.t(), String.t()) :: :ok
   def streaming_update(room_id, agent_id, partial_text) do
-    GenServer.cast(room_name(room_id), {:streaming_update, agent_id, partial_text})
+    Egghead.Node.cast(room_name(room_id), {:streaming_update, agent_id, partial_text})
   end
 
   @doc """
@@ -127,7 +127,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec get_in_progress(String.t(), String.t()) :: String.t() | nil
   def get_in_progress(room_id, agent_id) do
-    GenServer.call(room_name(room_id), {:get_in_progress, agent_id})
+    Egghead.Node.call(room_name(room_id), {:get_in_progress, agent_id})
   end
 
   @doc """
@@ -135,7 +135,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec clear_in_progress(String.t(), String.t()) :: :ok
   def clear_in_progress(room_id, agent_id) do
-    GenServer.cast(room_name(room_id), {:clear_in_progress, agent_id})
+    Egghead.Node.cast(room_name(room_id), {:clear_in_progress, agent_id})
   end
 
   @doc """
@@ -143,22 +143,22 @@ defmodule Egghead.Chat.Room do
   """
   @spec set_mode(String.t(), :staggered | :serial) :: :ok
   def set_mode(room_id, mode) when mode in [:staggered, :serial] do
-    GenServer.call(room_name(room_id), {:set_mode, mode})
+    Egghead.Node.call(room_name(room_id), {:set_mode, mode})
   end
 
   @spec mute(String.t(), String.t()) :: :ok
   def mute(room_id, agent_id) do
-    GenServer.call(room_name(room_id), {:mute, agent_id})
+    Egghead.Node.call(room_name(room_id), {:mute, agent_id})
   end
 
   @spec unmute(String.t(), String.t()) :: :ok
   def unmute(room_id, agent_id) do
-    GenServer.call(room_name(room_id), {:unmute, agent_id})
+    Egghead.Node.call(room_name(room_id), {:unmute, agent_id})
   end
 
   @spec muted(String.t()) :: [String.t()]
   def muted(room_id) do
-    GenServer.call(room_name(room_id), :muted)
+    Egghead.Node.call(room_name(room_id), :muted)
   end
 
   @doc """
@@ -166,7 +166,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec continue(String.t()) :: :ok
   def continue(room_id) do
-    GenServer.call(room_name(room_id), :continue)
+    Egghead.Node.call(room_name(room_id), :continue)
   end
 
   @doc """
@@ -175,7 +175,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec save_transcript(String.t()) :: {:ok, String.t()} | {:error, term()}
   def save_transcript(room_id) do
-    GenServer.call(room_name(room_id), :save_transcript)
+    Egghead.Node.call(room_name(room_id), :save_transcript)
   end
 
   @doc """
@@ -183,7 +183,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec join(String.t(), String.t()) :: :ok
   def join(room_id, agent_id) do
-    GenServer.call(room_name(room_id), {:join, agent_id})
+    Egghead.Node.call(room_name(room_id), {:join, agent_id})
   end
 
   @doc """
@@ -191,7 +191,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec leave(String.t(), String.t()) :: :ok
   def leave(room_id, agent_id) do
-    GenServer.call(room_name(room_id), {:leave, agent_id})
+    Egghead.Node.call(room_name(room_id), {:leave, agent_id})
   end
 
   @doc """
@@ -199,7 +199,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec get_transcript(String.t()) :: [map()]
   def get_transcript(room_id) do
-    GenServer.call(room_name(room_id), :get_transcript)
+    Egghead.Node.call(room_name(room_id), :get_transcript)
   end
 
   @doc """
@@ -217,6 +217,15 @@ defmodule Egghead.Chat.Room do
   @spec from_transcript(String.t()) ::
           {:ok, String.t()} | {:error, :not_found | :wrong_class | :parse_failed | term()}
   def from_transcript(record_id) when is_binary(record_id) do
+    # Room creation must happen on the node that owns the supervision tree
+    case Egghead.Node.server_node() do
+      nil -> from_transcript_local(record_id)
+      node -> :rpc.call(node, __MODULE__, :from_transcript_local, [record_id])
+    end
+  end
+
+  @doc false
+  def from_transcript_local(record_id) do
     with {:ok, record} <- Egghead.get_record(record_id),
          :transcript <- record.class || :unknown,
          room_id <- derive_room_id(record_id),
@@ -226,12 +235,6 @@ defmodule Egghead.Chat.Room do
           {:ok, room_id}
 
         true ->
-          # Start a fresh room, seed the transcript, then ask the
-          # Coordinator to watch it. The order matters: seeding before
-          # `watch_room` means any peer-visible state is in place
-          # before the coordinator starts dispatching activations.
-          # Without `watch_room`, the coordinator never receives
-          # `:user_message` events from this room and no agents fire.
           case start_link(id: room_id) do
             {:ok, _pid} ->
               GenServer.call(room_name(room_id), {:seed_transcript, messages})
@@ -261,9 +264,15 @@ defmodule Egghead.Chat.Room do
   """
   @spec exists?(String.t()) :: boolean()
   def exists?(room_id) do
-    case Process.whereis(room_name(room_id)) do
-      nil -> false
-      pid -> Process.alive?(pid)
+    case Egghead.Node.server_node() do
+      nil ->
+        case Process.whereis(room_name(room_id)) do
+          nil -> false
+          pid -> Process.alive?(pid)
+        end
+
+      node ->
+        :rpc.call(node, Process, :whereis, [room_name(room_id)]) not in [nil, :undefined]
     end
   end
 
@@ -274,7 +283,13 @@ defmodule Egghead.Chat.Room do
   """
   @spec list_ids() :: [String.t()]
   def list_ids do
-    Process.registered()
+    registered =
+      case Egghead.Node.server_node() do
+        nil -> Process.registered()
+        node -> :rpc.call(node, Process, :registered, [])
+      end
+
+    registered
     |> Enum.flat_map(fn name ->
       case Atom.to_string(name) do
         "egghead_room_" <> id -> [id]
@@ -289,7 +304,7 @@ defmodule Egghead.Chat.Room do
   """
   @spec get_state(String.t()) :: map()
   def get_state(room_id) do
-    GenServer.call(room_name(room_id), :get_state)
+    Egghead.Node.call(room_name(room_id), :get_state)
   end
 
   @doc """

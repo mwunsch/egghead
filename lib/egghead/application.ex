@@ -40,46 +40,55 @@ defmodule Egghead.Application do
     end
 
     apply_config()
+    configure_distribution()
     configure_logging()
 
     children =
-      if Application.get_env(:egghead, :start_record_store, true) do
-        records_dir =
-          Application.get_env(:egghead, :records_dir, Path.expand("~/.egghead"))
+      cond do
+        # Connected to a remote server — only start PubSub for cluster fan-out
+        Egghead.Node.connected?() ->
+          [{Phoenix.PubSub, name: Egghead.PubSub}]
 
-        skills_dir =
-          Application.get_env(:egghead, :skills_dir, Path.expand("~/.agents/skills"))
+        # Standalone mode — start the full supervision tree
+        Application.get_env(:egghead, :start_record_store, true) ->
+          records_dir =
+            Application.get_env(:egghead, :records_dir, Path.expand("~/.egghead"))
 
-        db_path = Path.join(records_dir, ".egghead/index.db")
+          skills_dir =
+            Application.get_env(:egghead, :skills_dir, Path.expand("~/.agents/skills"))
 
-        [
-          {Phoenix.PubSub, name: Egghead.PubSub},
-          {Task.Supervisor, name: Egghead.Tool.TaskSupervisor},
-          {Egghead.RecordSupervisor,
-           records_dir: records_dir, skills_dir: skills_dir, db_path: db_path},
-          Egghead.MCP.Client.Registry,
-          Egghead.MCP.Client.Supervisor,
-          {Egghead.Agent.LayerSupervisor, records_dir: records_dir},
-          {Registry, keys: :unique, name: Egghead.Doc.Registry},
-          {Egghead.Doc.Supervisor, []}
-        ] ++ web_children()
-      else
-        []
+          db_path = Path.join(records_dir, ".egghead/index.db")
+
+          [
+            {Phoenix.PubSub, name: Egghead.PubSub},
+            {Task.Supervisor, name: Egghead.Tool.TaskSupervisor},
+            {Egghead.RecordSupervisor,
+             records_dir: records_dir, skills_dir: skills_dir, db_path: db_path},
+            Egghead.MCP.Client.Registry,
+            Egghead.MCP.Client.Supervisor,
+            {Egghead.Agent.LayerSupervisor, records_dir: records_dir},
+            {Registry, keys: :unique, name: Egghead.Doc.Registry},
+            {Egghead.Doc.Supervisor, []}
+          ] ++ web_children()
+
+        # Commands that don't need the app (--help, config, etc.)
+        true ->
+          []
       end
 
     opts = [strategy: :one_for_one, name: Egghead.Supervisor]
     result = Supervisor.start_link(children, opts)
 
-    if Application.get_env(:egghead, :start_record_store, true) do
-      Task.start(fn ->
-        Egghead.Agent.Supervisor.sync_agents()
-        start_configured_mcp_servers()
+    # Post-startup setup only when running our own supervision tree
+    if not Egghead.Node.connected?() and
+         Application.get_env(:egghead, :start_record_store, true) do
+      Egghead.Agent.Supervisor.sync_agents()
+      start_configured_mcp_servers()
 
-        room_id =
-          "chat-#{Date.to_iso8601(Date.utc_today())}-#{:erlang.unique_integer([:positive])}"
+      room_id =
+        "chat-#{Date.to_iso8601(Date.utc_today())}-#{:erlang.unique_integer([:positive])}"
 
-        Egghead.create_room(id: room_id, default: true)
-      end)
+      Egghead.create_room_local(id: room_id, default: true)
     end
 
     if release_mode?() do
@@ -161,6 +170,10 @@ defmodule Egghead.Application do
         Application.put_env(:egghead, :records_dir, Egghead.Config.records_dir(config))
         Application.put_env(:egghead, :skills_dir, Egghead.Config.skills_dir(config))
         Application.put_env(:egghead, :mcp_servers, config.mcp_servers)
+
+        if config.server do
+          Application.put_env(:egghead, :server, config.server)
+        end
 
         bind =
           case config.web.bind do
@@ -271,6 +284,26 @@ defmodule Egghead.Application do
           Logger.warning("MCP server #{inspect(server.name)} failed to start: #{inspect(reason)}")
       end
     end)
+  end
+
+  # --- Erlang distribution ---
+
+  defp configure_distribution do
+    # Only relevant for processes that start the full app
+    unless Application.get_env(:egghead, :start_record_store, true) do
+      :ok
+    else
+      # Try to connect to an already-running server.
+      # If one exists, we become a client. If not, we start as the
+      # server and broadcast our presence via the connection file.
+      case Egghead.Node.maybe_connect() do
+        :connected ->
+          :ok
+
+        :standalone ->
+          Egghead.Node.start_server()
+      end
+    end
   end
 
   # --- Logging ---

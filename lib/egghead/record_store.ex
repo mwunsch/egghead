@@ -62,7 +62,7 @@ defmodule Egghead.RecordStore do
   """
   @spec create_record(GenServer.server(), map()) :: {:ok, Record.t()} | {:error, term()}
   def create_record(server \\ __MODULE__, attrs) do
-    GenServer.call(server, {:create_record, attrs})
+    Egghead.Node.call(server, {:create_record, attrs})
   end
 
   @doc """
@@ -73,7 +73,7 @@ defmodule Egghead.RecordStore do
   @spec update_record(GenServer.server(), String.t(), map()) ::
           {:ok, Record.t()} | {:error, term()}
   def update_record(server \\ __MODULE__, id, attrs) do
-    GenServer.call(server, {:update_record, id, attrs})
+    Egghead.Node.call(server, {:update_record, id, attrs})
   end
 
   @doc """
@@ -83,7 +83,7 @@ defmodule Egghead.RecordStore do
   """
   @spec get_record(GenServer.server(), String.t()) :: {:ok, Record.t()} | {:error, :not_found}
   def get_record(server \\ __MODULE__, id) do
-    GenServer.call(server, {:get_record, id})
+    Egghead.Node.call(server, {:get_record, id})
   end
 
   @doc """
@@ -91,7 +91,7 @@ defmodule Egghead.RecordStore do
   """
   @spec list_records(GenServer.server()) :: [Record.t()]
   def list_records(server \\ __MODULE__) do
-    GenServer.call(server, :list_records)
+    Egghead.Node.call(server, :list_records)
   end
 
   @doc """
@@ -99,7 +99,7 @@ defmodule Egghead.RecordStore do
   """
   @spec search_by_tag(GenServer.server(), String.t()) :: [Record.t()]
   def search_by_tag(server \\ __MODULE__, tag) do
-    GenServer.call(server, {:search_by_tag, tag})
+    Egghead.Node.call(server, {:search_by_tag, tag})
   end
 
   @doc """
@@ -107,7 +107,7 @@ defmodule Egghead.RecordStore do
   """
   @spec search_by_class(GenServer.server(), Record.class()) :: [Record.t()]
   def search_by_class(server \\ __MODULE__, class) do
-    GenServer.call(server, {:search_by_class, class})
+    Egghead.Node.call(server, {:search_by_class, class})
   end
 
   @doc """
@@ -115,7 +115,7 @@ defmodule Egghead.RecordStore do
   """
   @spec find_links(GenServer.server(), String.t(), non_neg_integer()) :: [Record.t()]
   def find_links(server \\ __MODULE__, id, depth \\ 1) do
-    GenServer.call(server, {:find_links, id, depth})
+    Egghead.Node.call(server, {:find_links, id, depth})
   end
 
   @doc """
@@ -123,7 +123,7 @@ defmodule Egghead.RecordStore do
   """
   @spec find_backlinks(GenServer.server(), String.t()) :: [Record.t()]
   def find_backlinks(server \\ __MODULE__, id) do
-    GenServer.call(server, {:find_backlinks, id})
+    Egghead.Node.call(server, {:find_backlinks, id})
   end
 
   @doc """
@@ -131,7 +131,7 @@ defmodule Egghead.RecordStore do
   """
   @spec search(GenServer.server(), String.t(), keyword()) :: [Record.t()]
   def search(server \\ __MODULE__, query, opts \\ []) do
-    GenServer.call(server, {:search, query, opts})
+    Egghead.Node.call(server, {:search, query, opts})
   end
 
   @doc """
@@ -139,7 +139,7 @@ defmodule Egghead.RecordStore do
   """
   @spec recent(GenServer.server(), keyword()) :: [Record.t()]
   def recent(server \\ __MODULE__, opts \\ []) do
-    GenServer.call(server, {:recent, opts})
+    Egghead.Node.call(server, {:recent, opts})
   end
 
   @doc """
@@ -147,7 +147,7 @@ defmodule Egghead.RecordStore do
   """
   @spec reload(GenServer.server()) :: :ok
   def reload(server \\ __MODULE__) do
-    GenServer.call(server, :reload, :infinity)
+    Egghead.Node.call(server, :reload, :infinity)
   end
 
   # --- GenServer callbacks ---

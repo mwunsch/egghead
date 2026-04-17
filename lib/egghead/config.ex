@@ -35,7 +35,8 @@ defmodule Egghead.Config do
             llm: [],
             default_model: nil,
             web: %{port: 4000, host: "localhost", bind: "127.0.0.1"},
-            mcp_servers: []
+            mcp_servers: [],
+            server: nil
 
   @type llm_entry :: %{
           provider: String.t(),
@@ -257,7 +258,8 @@ defmodule Egghead.Config do
       llm: parse_llm(data["llm"]),
       default_model: data["default_model"],
       web: parse_web(data["web"]),
-      mcp_servers: parse_mcp_servers(data["mcp_servers"])
+      mcp_servers: parse_mcp_servers(data["mcp_servers"]),
+      server: parse_server(data["server"])
     }
   end
 
@@ -334,6 +336,15 @@ defmodule Egghead.Config do
       }
     end)
   end
+
+  defp parse_server(nil), do: nil
+
+  defp parse_server(%{"node" => node, "cookie" => cookie})
+       when is_binary(node) and is_binary(cookie) do
+    %{node: node, cookie: cookie}
+  end
+
+  defp parse_server(_), do: nil
 
   defp parse_web(nil), do: %{port: 4000, host: "localhost", bind: "127.0.0.1"}
 

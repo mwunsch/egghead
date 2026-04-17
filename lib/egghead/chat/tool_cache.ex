@@ -70,7 +70,11 @@ defmodule Egghead.Chat.ToolCache do
   """
   @spec invalidate(String.t()) :: :ok
   def invalidate(room_id) do
-    :ets.match_delete(@table, {{room_id, :_, :_}, :_, :_})
+    case Egghead.Node.server_node() do
+      nil -> :ets.match_delete(@table, {{room_id, :_, :_}, :_, :_})
+      node -> :rpc.call(node, :ets, :match_delete, [@table, {{room_id, :_, :_}, :_, :_}])
+    end
+
     :ok
   end
 

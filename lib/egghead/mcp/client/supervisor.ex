@@ -27,13 +27,25 @@ defmodule Egghead.MCP.Client.Supervisor do
 
   @doc "Start a client server under this supervisor."
   def start_server(config) do
-    DynamicSupervisor.start_child(__MODULE__, {Server, config})
+    case Egghead.Node.server_node() do
+      nil -> DynamicSupervisor.start_child(__MODULE__, {Server, config})
+      node -> :rpc.call(node, DynamicSupervisor, :start_child, [__MODULE__, {Server, config}])
+    end
   end
 
   @doc "List configured server names (based on registered processes)."
   def list_running do
-    Registry.select(Egghead.MCP.Client.Registry, [
-      {{:"$1", :_, :_}, [], [:"$1"]}
-    ])
+    case Egghead.Node.server_node() do
+      nil ->
+        Registry.select(Egghead.MCP.Client.Registry, [
+          {{:"$1", :_, :_}, [], [:"$1"]}
+        ])
+
+      node ->
+        :rpc.call(node, Registry, :select, [
+          Egghead.MCP.Client.Registry,
+          [{{:"$1", :_, :_}, [], [:"$1"]}]
+        ])
+    end
   end
 end

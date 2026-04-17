@@ -74,9 +74,18 @@ defmodule Egghead.MCP.Client.Server do
   defp via(name), do: {:via, Registry, {MCPRegistry, name}}
 
   defp lookup(name) do
-    case Registry.lookup(MCPRegistry, name) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> :error
+    case Egghead.Node.server_node() do
+      nil ->
+        case Registry.lookup(MCPRegistry, name) do
+          [{pid, _}] -> {:ok, pid}
+          [] -> :error
+        end
+
+      node ->
+        case :rpc.call(node, Registry, :lookup, [MCPRegistry, name]) do
+          [{pid, _}] -> {:ok, pid}
+          _ -> :error
+        end
     end
   end
 

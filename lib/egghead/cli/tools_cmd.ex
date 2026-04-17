@@ -631,6 +631,20 @@ defmodule Egghead.CLI.ToolsCmd do
   end
 
   defp stop_running(name) do
+    case Egghead.Node.server_node() do
+      nil ->
+        case Registry.lookup(Egghead.MCP.Client.Registry, name) do
+          [{pid, _}] -> DynamicSupervisor.terminate_child(Egghead.MCP.Client.Supervisor, pid)
+          [] -> :ok
+        end
+
+      node ->
+        :rpc.call(node, __MODULE__, :stop_running_local, [name])
+    end
+  end
+
+  @doc false
+  def stop_running_local(name) do
     case Registry.lookup(Egghead.MCP.Client.Registry, name) do
       [{pid, _}] -> DynamicSupervisor.terminate_child(Egghead.MCP.Client.Supervisor, pid)
       [] -> :ok

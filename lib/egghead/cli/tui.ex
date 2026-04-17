@@ -40,7 +40,15 @@ defmodule Egghead.CLI.TUI do
     :os.set_signal(:sigterm, :default)
 
     # Run the TUI — blocks until exit
-    Egghead.tui()
+    try do
+      Egghead.tui()
+    catch
+      :exit, {:exit, {:disconnected, _}} ->
+        IO.puts("\nServer disconnected. Restart egghead to continue.")
+
+      :exit, {reason, _} when reason in [:nodedown, :noproc] ->
+        IO.puts("\nServer disconnected. Restart egghead to continue.")
+    end
 
     System.halt(0)
   end

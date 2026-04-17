@@ -52,7 +52,7 @@ defmodule Egghead.Chat.Coordinator do
   """
   @spec register_agent(GenServer.server(), String.t(), map()) :: :ok
   def register_agent(server \\ __MODULE__, agent_id, metadata) do
-    GenServer.cast(server, {:register_agent, agent_id, metadata})
+    Egghead.Node.cast(server, {:register_agent, agent_id, metadata})
   end
 
   @doc """
@@ -60,7 +60,7 @@ defmodule Egghead.Chat.Coordinator do
   """
   @spec unregister_agent(GenServer.server(), String.t()) :: :ok
   def unregister_agent(server \\ __MODULE__, agent_id) do
-    GenServer.cast(server, {:unregister_agent, agent_id})
+    Egghead.Node.cast(server, {:unregister_agent, agent_id})
   end
 
   @doc """
@@ -68,7 +68,7 @@ defmodule Egghead.Chat.Coordinator do
   """
   @spec watch_room(GenServer.server(), String.t()) :: :ok
   def watch_room(server \\ __MODULE__, room_id) do
-    GenServer.cast(server, {:watch_room, room_id})
+    Egghead.Node.cast(server, {:watch_room, room_id})
   end
 
   @doc """
@@ -76,7 +76,7 @@ defmodule Egghead.Chat.Coordinator do
   """
   @spec list_registered(GenServer.server()) :: [map()]
   def list_registered(server \\ __MODULE__) do
-    GenServer.call(server, :list_registered)
+    Egghead.Node.call(server, :list_registered)
   end
 
   # --- GenServer callbacks ---

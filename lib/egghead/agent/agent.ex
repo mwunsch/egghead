@@ -77,9 +77,9 @@ defmodule Egghead.Agent do
   def prompt(agent_id, message, opts \\ []) do
     name = agent_name(agent_id)
 
-    case GenServer.whereis(name) do
+    case whereis_node_aware(name) do
       nil -> {:error, :agent_not_found}
-      _pid -> GenServer.call(name, {:prompt, message, opts}, 300_000)
+      _pid -> Egghead.Node.call(name, {:prompt, message, opts}, 300_000)
     end
   end
 
@@ -95,9 +95,9 @@ defmodule Egghead.Agent do
   def handoff(agent_id, opts) when is_list(opts) do
     name = agent_name(agent_id)
 
-    case GenServer.whereis(name) do
+    case whereis_node_aware(name) do
       nil -> {:error, :agent_not_found}
-      _pid -> GenServer.call(name, {:handoff, opts}, 300_000)
+      _pid -> Egghead.Node.call(name, {:handoff, opts}, 300_000)
     end
   end
 
@@ -113,9 +113,9 @@ defmodule Egghead.Agent do
   def save(agent_id) do
     name = agent_name(agent_id)
 
-    case GenServer.whereis(name) do
+    case whereis_node_aware(name) do
       nil -> {:error, :agent_not_found}
-      _pid -> GenServer.call(name, :save, 300_000)
+      _pid -> Egghead.Node.call(name, :save, 300_000)
     end
   end
 
@@ -126,9 +126,9 @@ defmodule Egghead.Agent do
   def clear_history(agent_id) do
     name = agent_name(agent_id)
 
-    case GenServer.whereis(name) do
+    case whereis_node_aware(name) do
       nil -> {:error, :agent_not_found}
-      _pid -> GenServer.call(name, :clear_history)
+      _pid -> Egghead.Node.call(name, :clear_history)
     end
   end
 
@@ -139,9 +139,9 @@ defmodule Egghead.Agent do
   def usage(agent_id) do
     name = agent_name(agent_id)
 
-    case GenServer.whereis(name) do
+    case whereis_node_aware(name) do
       nil -> {:error, :agent_not_found}
-      _pid -> GenServer.call(name, :usage)
+      _pid -> Egghead.Node.call(name, :usage)
     end
   end
 
@@ -150,6 +150,16 @@ defmodule Egghead.Agent do
   """
   @spec list_agents() :: [map()]
   def list_agents do
+    # When connected to a remote server, delegate the whole operation
+    # since GenServer.whereis and :sys.get_state are node-local.
+    case Egghead.Node.server_node() do
+      nil -> list_agents_local()
+      node -> :rpc.call(node, __MODULE__, :list_agents_local, [])
+    end
+  end
+
+  @doc false
+  def list_agents_local do
     store_agents =
       Egghead.search_by_class(:agent)
       |> Enum.map(& &1.id)
@@ -212,6 +222,14 @@ defmodule Egghead.Agent do
   @spec agent_name(String.t()) :: atom()
   def agent_name(id) do
     :"egghead_agent_#{id}"
+  end
+
+  # Node-aware process lookup. Checks remote node when connected.
+  defp whereis_node_aware(name) do
+    case Egghead.Node.server_node() do
+      nil -> GenServer.whereis(name)
+      node -> :rpc.call(node, GenServer, :whereis, [name])
+    end
   end
 
   # --- GenServer callbacks ---

@@ -37,6 +37,14 @@ defmodule Egghead.Doc.Server do
   end
 
   def ensure_started(record_id) do
+    case Egghead.Node.server_node() do
+      nil -> ensure_started_local(record_id)
+      node -> :rpc.call(node, __MODULE__, :ensure_started_local, [record_id])
+    end
+  end
+
+  @doc false
+  def ensure_started_local(record_id) do
     case Registry.lookup(Egghead.Doc.Registry, record_id) do
       [{pid, _}] -> {:ok, pid}
       [] -> Egghead.Doc.Supervisor.start_server(record_id)
@@ -44,23 +52,38 @@ defmodule Egghead.Doc.Server do
   end
 
   def attach(record_id, client_pid) do
-    GenServer.call(via(record_id), {:attach, client_pid})
+    case Egghead.Node.server_node() do
+      nil -> GenServer.call(via(record_id), {:attach, client_pid})
+      node -> :rpc.call(node, GenServer, :call, [via(record_id), {:attach, client_pid}])
+    end
   end
 
   def detach(record_id, client_pid) do
-    GenServer.cast(via(record_id), {:detach, client_pid})
+    case Egghead.Node.server_node() do
+      nil -> GenServer.cast(via(record_id), {:detach, client_pid})
+      node -> :rpc.call(node, GenServer, :cast, [via(record_id), {:detach, client_pid}])
+    end
   end
 
   def apply_update(record_id, update) do
-    GenServer.cast(via(record_id), {:yjs_update, update})
+    case Egghead.Node.server_node() do
+      nil -> GenServer.cast(via(record_id), {:yjs_update, update})
+      node -> :rpc.call(node, GenServer, :cast, [via(record_id), {:yjs_update, update}])
+    end
   end
 
   def get_state(record_id) do
-    GenServer.call(via(record_id), :get_state)
+    case Egghead.Node.server_node() do
+      nil -> GenServer.call(via(record_id), :get_state)
+      node -> :rpc.call(node, GenServer, :call, [via(record_id), :get_state])
+    end
   end
 
   def sync(record_id, state_vector) do
-    GenServer.call(via(record_id), {:sync, state_vector})
+    case Egghead.Node.server_node() do
+      nil -> GenServer.call(via(record_id), {:sync, state_vector})
+      node -> :rpc.call(node, GenServer, :call, [via(record_id), {:sync, state_vector}])
+    end
   end
 
   @doc """
@@ -68,7 +91,10 @@ defmodule Egghead.Doc.Server do
   (i.e., a browser has the document open).
   """
   def alive?(record_id) do
-    Registry.lookup(Egghead.Doc.Registry, record_id) != []
+    case Egghead.Node.server_node() do
+      nil -> Registry.lookup(Egghead.Doc.Registry, record_id) != []
+      node -> :rpc.call(node, Registry, :lookup, [Egghead.Doc.Registry, record_id]) != []
+    end
   end
 
   @doc """
@@ -81,7 +107,13 @@ defmodule Egghead.Doc.Server do
   Returns `:ok` or `{:error, reason}`.
   """
   def agent_edit(record_id, agent_id, new_body) do
-    GenServer.cast(via(record_id), {:agent_edit, agent_id, new_body})
+    case Egghead.Node.server_node() do
+      nil ->
+        GenServer.cast(via(record_id), {:agent_edit, agent_id, new_body})
+
+      node ->
+        :rpc.call(node, GenServer, :cast, [via(record_id), {:agent_edit, agent_id, new_body}])
+    end
   end
 
   defp via(record_id) do

@@ -87,7 +87,24 @@ defmodule Egghead.Chat.Coordinator do
     # restarts and terminations into the rooms we're watching.
     Phoenix.PubSub.subscribe(@pubsub, Egghead.Agent.lifecycle_topic())
 
-    {:ok, %State{}}
+    # Rebuild state from whatever agents and rooms are already running.
+    # On initial boot this is a no-op (supervision order starts us
+    # before Agent.Supervisor), but after a crash-restart the agent
+    # processes and rooms are still alive — we need to pick them back
+    # up so activation works without waiting for agents to re-register.
+    state =
+      %State{}
+      |> rebuild_from_running_agents()
+      |> rebuild_room_subscriptions()
+
+    if map_size(state.agents) > 0 or MapSet.size(state.rooms) > 0 do
+      Logger.info(
+        "Coordinator: rebuilt state from #{map_size(state.agents)} agent(s), " <>
+          "#{MapSet.size(state.rooms)} room(s)"
+      )
+    end
+
+    {:ok, state}
   end
 
   @impl true
@@ -170,7 +187,7 @@ defmodule Egghead.Chat.Coordinator do
       # call is a pure "take your turn" signal — an empty message
       # tells do_prompt not to append another user turn.
       Enum.each(agents, fn agent_info ->
-        Task.start(fn ->
+        Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
           prompt_agent_in_room(agent_info.id, room_id, "")
         end)
       end)
@@ -216,17 +233,12 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_tool_call, _, _, _, _}, state), do: {:noreply, state}
   def handle_info({:agent_tool_denied, _, _, _, _, _}, state), do: {:noreply, state}
   def handle_info({:agent_tool_output, _, _, _, _, _}, state), do: {:noreply, state}
+  def handle_info({:system_notice, _text}, state), do: {:noreply, state}
 
   def handle_info({:agent_lifecycle, event, agent_id, reason}, state) do
     # Translate global agent lifecycle events into per-room system
-    # notices so users see when an agent restarts or exits. We use
-    # the agent's display name from the registered metadata when
-    # available; otherwise the bare id.
-    display =
-      case Map.get(state.agents, agent_id) do
-        %AgentInfo{name: name} -> name
-        _ -> agent_id
-      end
+    # notices so users see when an agent restarts or exits.
+    display = display_name(state, agent_id)
 
     text =
       case {event, reason} do
@@ -243,11 +255,11 @@ defmodule Egghead.Chat.Coordinator do
           "#{display} left"
 
         {:terminated, reason} ->
-          "#{display} crashed: #{format_lifecycle_reason(reason)}"
+          "#{display} crashed: #{format_reason(reason)}"
       end
 
     for room_id <- state.rooms do
-      Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:system_notice, text})
+      broadcast_system_notice(room_id, text)
     end
 
     {:noreply, state}
@@ -275,6 +287,16 @@ defmodule Egghead.Chat.Coordinator do
       | handoffs_in_progress: MapSet.delete(state.handoffs_in_progress, {agent_id, room_id})
     }
 
+    {:noreply, state}
+  end
+
+  # Catch-all: every new PubSub event type flows here first until a
+  # matching clause is added above. Don't crash the Coordinator on
+  # unknown messages — it's subscribed to every room topic and to
+  # agent lifecycle events; a missing clause would cascade-restart
+  # the whole agent layer. Log and ignore instead.
+  def handle_info(msg, state) do
+    Logger.debug("Coordinator: ignoring unknown message #{inspect(msg, limit: 5)}")
     {:noreply, state}
   end
 
@@ -400,7 +422,7 @@ defmodule Egghead.Chat.Coordinator do
         broadcast_activation(room_id, length(agents_to_prompt))
 
         Enum.each(agents_to_prompt, fn agent_info ->
-          Task.start(fn ->
+          Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
             prompt_agent_in_room(agent_info.id, room_id, "", activation: :jam)
           end)
         end)
@@ -408,7 +430,7 @@ defmodule Egghead.Chat.Coordinator do
       :huddle ->
         # Serial roll-call. Every agent must respond; `/pass` is not allowed
         # (the Session prompt enforces this via the `:huddle` addendum).
-        Task.start(fn ->
+        Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
           Enum.each(agents_to_prompt, fn agent_info ->
             broadcast_activation(room_id, 1)
             prompt_agent_in_room(agent_info.id, room_id, "", activation: :huddle)
@@ -418,7 +440,7 @@ defmodule Egghead.Chat.Coordinator do
       :normal when room_mode == :staggered and length(agents_to_prompt) > 1 ->
         # Staggered (opt-in): each agent runs in its own Task. A coordinator
         # Task subscribes to PubSub and spawns agents with stagger delays.
-        Task.start(fn ->
+        Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
           Phoenix.PubSub.subscribe(@pubsub, Room.topic(room_id))
 
           agents_to_prompt
@@ -439,7 +461,7 @@ defmodule Egghead.Chat.Coordinator do
 
             # Each agent runs in its own Task so this process stays free
             # to receive PubSub events for stagger timing
-            Task.start(fn ->
+            Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
               prompt_agent_in_room(agent_info.id, room_id, "", activation: :normal)
             end)
           end)
@@ -447,7 +469,7 @@ defmodule Egghead.Chat.Coordinator do
 
       :normal ->
         # Serial (default): strict A-finishes-then-B in one Task
-        Task.start(fn ->
+        Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
           Enum.each(agents_to_prompt, fn agent_info ->
             broadcast_activation(room_id, 1)
             prompt_agent_in_room(agent_info.id, room_id, "", activation: :normal)
@@ -467,6 +489,7 @@ defmodule Egghead.Chat.Coordinator do
 
       {:error, reason} ->
         Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
+        broadcast_agent_error(room_id, agent_id, reason)
         Room.clear_in_progress(room_id, agent_id)
         broadcast_pass(room_id, agent_id)
     end
@@ -620,6 +643,7 @@ defmodule Egghead.Chat.Coordinator do
       {:error, reason} ->
         Logger.warning("Coordinator: #{agent_id} huddle retry failed: #{inspect(reason)}")
 
+        broadcast_agent_error(room_id, agent_id, reason)
         Room.clear_in_progress(room_id, agent_id)
         broadcast_pass(room_id, agent_id)
     end
@@ -656,11 +680,105 @@ defmodule Egghead.Chat.Coordinator do
     Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:agent_passed, agent_id})
   end
 
-  # Trim a terminate reason for display in a single chat line. Erlang
-  # exit reasons can be deeply nested; we keep the head and a short
-  # suffix so the user gets a hint without the line wrapping forever.
-  defp format_lifecycle_reason(reason) do
+  # Trim a terminate or error reason for display in a single chat line.
+  # Erlang exit reasons can be deeply nested; we keep the head and a
+  # short suffix so the user gets a hint without the line wrapping
+  # forever.
+  defp format_reason(reason) when is_binary(reason) do
+    if String.length(reason) > 80, do: String.slice(reason, 0, 77) <> "...", else: reason
+  end
+
+  defp format_reason(reason) do
     full = inspect(reason, limit: 5, printable_limit: 80)
     if String.length(full) > 80, do: String.slice(full, 0, 77) <> "...", else: full
+  end
+
+  defp display_name(state, agent_id) do
+    case Map.get(state.agents, agent_id) do
+      %AgentInfo{name: name} -> name
+      _ -> agent_id
+    end
+  end
+
+  defp broadcast_system_notice(room_id, text) do
+    Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:system_notice, text})
+  end
+
+  # After a crash-restart, walk the live Agent.Supervisor children and
+  # repopulate agent metadata. Defensive: on initial boot,
+  # Agent.Supervisor hasn't started yet (we come up first under the
+  # layer supervisor), so `whereis` returns nil and we no-op. Agents
+  # will register normally as they start.
+  defp rebuild_from_running_agents(state) do
+    case GenServer.whereis(Egghead.Agent.Supervisor) do
+      nil ->
+        state
+
+      _pid ->
+        agents =
+          Egghead.Agent.Supervisor
+          |> DynamicSupervisor.which_children()
+          |> Enum.reduce(%{}, fn {_, pid, _, _}, acc ->
+            if is_pid(pid) and Process.alive?(pid) do
+              case safe_agent_info(pid) do
+                nil -> acc
+                info -> Map.put(acc, info.id, info)
+              end
+            else
+              acc
+            end
+          end)
+
+        corpus = Egghead.Chat.Relevance.build_corpus(agents)
+        %{state | agents: agents, corpus: corpus}
+    end
+  end
+
+  defp safe_agent_info(pid) do
+    try do
+      case :sys.get_state(pid, 100) do
+        %{id: id, name: name, capabilities: caps, tags: tags, disposition: disp} ->
+          %AgentInfo{
+            id: id,
+            name: name,
+            capabilities: caps,
+            tags: tags,
+            disposition: disp
+          }
+
+        _ ->
+          nil
+      end
+    catch
+      :exit, _ -> nil
+    end
+  end
+
+  # Re-subscribe to every live room on restart. The `watch_room/1`
+  # cast only fires once (from Egghead.create_room); after a crash
+  # no one re-invokes it, so we have to rediscover rooms ourselves.
+  defp rebuild_room_subscriptions(state) do
+    try do
+      Egghead.Chat.Room.list_ids()
+      |> Enum.reduce(state, fn room_id, acc ->
+        Phoenix.PubSub.subscribe(@pubsub, Room.topic(room_id))
+        %{acc | rooms: MapSet.put(acc.rooms, room_id)}
+      end)
+    catch
+      :exit, _ -> state
+    end
+  end
+
+  # Visible error notice: an agent that was summoned but failed to
+  # produce a response. Pairs with `broadcast_pass/2` (which commits
+  # the transcript placeholder) so users see both "Scout errored: …"
+  # and the atmospheric pass line, rather than just silence.
+  defp broadcast_agent_error(room_id, agent_id, reason) do
+    # We can't resolve the display name without access to state.agents,
+    # and this is called from a Task that doesn't carry state. Fall
+    # back to the basename of the id, which matches the format Room
+    # uses for Sender.name.
+    display = agent_id |> String.split("/") |> List.last() |> String.capitalize()
+    broadcast_system_notice(room_id, "#{display} errored: #{format_reason(reason)}")
   end
 end

@@ -131,7 +131,20 @@ defmodule Egghead.Agent.Session do
       current_context_tokens: 0,
       context_window: nil,
       context_threshold: 0.80,
-      referenced_records: MapSet.new()
+      referenced_records: MapSet.new(),
+      # Async machinery — LLM work runs in a supervised Task, not
+      # inside handle_call. While a task is in flight, the GenServer
+      # mailbox keeps draining: peer messages, /user messages, and
+      # quick queries (usage, clear_history) continue to work.
+      #
+      # pending_task: %{ref: ref, from: from, kind: :prompt/:handoff/:save,
+      #                 input_history_len: n} | nil
+      # queued_calls: list of {from, call_tuple} waiting for the
+      #               current task to finish. One LLM-driving call at
+      #               a time per session, preserving the prior
+      #               behaviour of serial prompts per agent-in-room.
+      pending_task: nil,
+      queued_calls: []
     ]
   end
 
@@ -231,73 +244,16 @@ defmodule Egghead.Agent.Session do
   end
 
   @impl true
-  def handle_call({:prompt, message, opts}, _from, state) do
-    room = Keyword.get(opts, :room)
-
-    state =
-      if should_summarize?(state) do
-        case do_summarize_to_deliberation(state) do
-          {:ok, delib_id, new_state} ->
-            if room, do: broadcast_handoff(room.id, state.agent_id, delib_id)
-            new_state
-
-          {:error, _, state} ->
-            state
-        end
-      else
-        state
-      end
-
-    {result, state} = do_prompt(state, message, opts)
-    {:reply, result, state}
+  def handle_call({:prompt, message, opts}, from, state) do
+    dispatch_or_queue(state, from, {:prompt, message, opts})
   end
 
-  def handle_call({:handoff, opts}, _from, state) do
-    room_id = Keyword.get(opts, :room_id, state.room_id)
-    next_prompt = Keyword.get(opts, :next_prompt)
-
-    Logger.info(
-      "Handoff started: #{state.agent_id} in #{room_id || "default"} " <>
-        "(#{length(state.history)} history messages, #{state.session_tokens} tokens)"
-    )
-
-    started_at = System.monotonic_time(:millisecond)
-
-    # Tell the Coordinator to mark this agent in_progress before we
-    # start the (slow) summarisation — otherwise it can be activated
-    # during the summary window and just /pass on every turn.
-    if room_id, do: broadcast_handoff_started(room_id, state.agent_id)
-
-    case do_summarize_to_deliberation(state) do
-      {:ok, delib_id, state} ->
-        elapsed = System.monotonic_time(:millisecond) - started_at
-
-        Logger.info(
-          "Handoff complete: #{state.agent_id} in #{room_id || "default"} " <>
-            "→ #{delib_id} (#{elapsed}ms)"
-        )
-
-        if room_id, do: broadcast_handoff(room_id, state.agent_id, delib_id)
-
-        if next_prompt do
-          {result, state} = do_prompt(state, next_prompt, [])
-          {:reply, {:ok, delib_id, result}, state}
-        else
-          {:reply, {:ok, delib_id}, state}
-        end
-
-      {:error, reason, state} ->
-        Logger.warning(
-          "Handoff failed: #{state.agent_id} in #{room_id || "default"}: #{inspect(reason)}"
-        )
-
-        {:reply, {:error, reason}, state}
-    end
+  def handle_call({:handoff, opts}, from, state) do
+    dispatch_or_queue(state, from, {:handoff, opts})
   end
 
-  def handle_call(:save, _from, state) do
-    {result, state} = do_save(state)
-    {:reply, result, state}
+  def handle_call(:save, from, state) do
+    dispatch_or_queue(state, from, :save)
   end
 
   def handle_call(:clear_history, _from, state) do
@@ -339,6 +295,31 @@ defmodule Egghead.Agent.Session do
   end
 
   @impl true
+  # Task finished normally — apply its result to state, reply to
+  # whoever was waiting, then dispatch the next queued call (if any).
+  def handle_info({ref, task_result}, %{pending_task: %{ref: ref} = pt} = state) do
+    Process.demonitor(ref, [:flush])
+    {reply, state} = apply_task_result(state, pt, task_result)
+    GenServer.reply(pt.from, reply)
+    dispatch_queue(%{state | pending_task: nil})
+  end
+
+  # Task crashed — reply with an error so the caller isn't stuck, then
+  # drain the queue. Matches on the pending_task ref so we don't
+  # conflict with the room-monitor DOWN handler below.
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{pending_task: %{ref: ref} = pt} = state
+      ) do
+    Logger.warning(
+      "Session #{state.agent_id}/#{state.room_id}: #{pt.kind} task crashed: #{inspect(reason)}"
+    )
+
+    GenServer.reply(pt.from, {:error, {:task_crashed, reason}})
+    dispatch_queue(%{state | pending_task: nil})
+  end
+
+  # Room process died — stop the session.
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     Logger.debug("Session #{state.agent_id}/#{state.room_id}: room process died, stopping")
     {:stop, :normal, state}
@@ -376,25 +357,324 @@ defmodule Egghead.Agent.Session do
   # for commits (agent_message / user_message).
   def handle_info(_event, state), do: {:noreply, state}
 
-  # --- Prompt execution ---
+  # --- Async dispatch machinery ---
 
-  defp do_prompt(state, message, opts) do
-    id = state.identity
+  # Route an LLM-driving call (prompt / handoff / save) either to a
+  # fresh task if nothing is in flight, or onto the queue. Callers
+  # block on `GenServer.call`; we reply via `GenServer.reply` when
+  # the task eventually finishes. From the caller's perspective
+  # nothing changes — it's still a synchronous `GenServer.call` that
+  # eventually returns the result.
+  defp dispatch_or_queue(%{pending_task: nil} = state, from, call) do
+    start_task(state, from, call)
+  end
+
+  defp dispatch_or_queue(state, from, call) do
+    {:noreply, %{state | queued_calls: state.queued_calls ++ [{from, call}]}}
+  end
+
+  defp dispatch_queue(%{queued_calls: []} = state), do: {:noreply, state}
+
+  defp dispatch_queue(%{queued_calls: [{from, call} | rest]} = state) do
+    start_task(%{state | queued_calls: rest}, from, call)
+  end
+
+  defp start_task(state, from, call) do
+    snapshot = snapshot_for_task(state)
+    input_history_len = length(state.history)
+
+    {kind, task_fn} =
+      case call do
+        {:prompt, message, opts} ->
+          {:prompt, fn -> run_prompt_task(snapshot, message, opts) end}
+
+        {:handoff, opts} ->
+          # Coordinator watches for this to avoid activating the agent
+          # during the summary window. Must fire BEFORE the task
+          # starts — fire it inline here, not inside the task.
+          room_id = Keyword.get(opts, :room_id, state.room_id)
+          if room_id, do: broadcast_handoff_started(room_id, state.agent_id)
+
+          Logger.info(
+            "Handoff started: #{state.agent_id} in #{room_id || "default"} " <>
+              "(#{length(state.history)} history messages, #{state.session_tokens} tokens)"
+          )
+
+          {:handoff, fn -> run_handoff_task(snapshot, opts) end}
+
+        :save ->
+          {:save, fn -> run_save_task(snapshot) end}
+      end
+
+    task = Task.Supervisor.async_nolink(Egghead.Tool.TaskSupervisor, task_fn)
+
+    pending = %{
+      ref: task.ref,
+      from: from,
+      kind: kind,
+      input_history_len: input_history_len,
+      call: call
+    }
+
+    {:noreply, %{state | pending_task: pending}}
+  end
+
+  # Fields the task needs; passed by value so task mutations don't
+  # race with handle_info mutating state.history on peer broadcasts.
+  defp snapshot_for_task(state) do
+    %{
+      agent_id: state.agent_id,
+      room_id: state.room_id,
+      identity: state.identity,
+      history: state.history,
+      usage: state.usage,
+      session_tokens: state.session_tokens,
+      current_context_tokens: state.current_context_tokens,
+      context_window: state.context_window,
+      context_threshold: state.context_threshold,
+      referenced_records: state.referenced_records
+    }
+  end
+
+  # --- Task result application ---
+
+  # Prompt finished. Compute the delta (turns the LLM added beyond
+  # what it saw as input) and append them to the CURRENT state.history
+  # — which may have grown while the task ran, because peer messages
+  # were appended in handle_info. That's the whole point: the agent's
+  # next prompt sees the current room, not a frozen-in-time snapshot.
+  defp apply_task_result(
+         state,
+         %{kind: :prompt, input_history_len: input_len},
+         {:ok, result}
+       ) do
+    summary_info = result.summary
+
+    # If summarization happened mid-task, re-rehydrate from the live
+    # transcript so we capture peers that spoke during both the
+    # summary AND prompt phases. The task rehydrated once, but that
+    # snapshot was taken mid-work; the current transcript is newer.
+    state =
+      case summary_info do
+        nil ->
+          state
+
+        %{delib_id: delib_id} ->
+          rehydrated =
+            if state.room_id,
+              do: rehydrate_history_from_transcript(state.room_id, state.agent_id),
+              else: []
+
+          %{
+            state
+            | history: rehydrated,
+              session_tokens: 0,
+              current_context_tokens: 0,
+              referenced_records: MapSet.new([delib_id])
+          }
+      end
+
+    # Delta = turns the task's LLM loop added beyond its input.
+    # `result.task_input_history_len` tells us how long the task's
+    # input was (which may differ from state.history because of
+    # summarization inside the task).
+    delta = Enum.drop(result.final_history, result.task_input_history_len)
+    _ = input_len
+
+    total_usage = result.total_usage
+    last_call_usage = result.last_call_usage
+    current_context_tokens = last_call_usage.input_tokens + last_call_usage.output_tokens
+
+    state = %{
+      state
+      | history: state.history ++ delta,
+        usage: %{
+          input_tokens: state.usage.input_tokens + total_usage.input_tokens,
+          output_tokens: state.usage.output_tokens + total_usage.output_tokens
+        },
+        session_tokens:
+          state.session_tokens + total_usage.input_tokens + total_usage.output_tokens,
+        current_context_tokens: current_context_tokens,
+        referenced_records: MapSet.union(state.referenced_records, result.refs)
+    }
+
+    context_pct =
+      if state.context_window && state.context_window > 0,
+        do: Float.round(current_context_tokens / state.context_window * 100, 1),
+        else: nil
+
+    response = %Egghead.Agent.Response{
+      text: result.final_text,
+      agent_id: state.agent_id,
+      model: state.identity[:model],
+      usage:
+        Map.merge(total_usage, %{
+          session_tokens: state.session_tokens,
+          current_context_tokens: current_context_tokens,
+          context_window: state.context_window,
+          context_pct: context_pct
+        }),
+      tool_calls: result.tool_log,
+      records_created: result.created,
+      records_updated: result.updated,
+      duration_ms: result.duration_ms
+    }
+
+    {{:ok, response}, state}
+  end
+
+  defp apply_task_result(state, %{kind: :prompt}, {:error, reason}) do
+    {{:error, reason}, state}
+  end
+
+  # Handoff finished. On success, clear state and re-rehydrate from the
+  # transcript (captures peers that arrived during the summary window).
+  defp apply_task_result(
+         state,
+         %{kind: :handoff, call: {:handoff, opts}},
+         {:ok, %{delib_id: delib_id, duration_ms: elapsed} = result}
+       ) do
+    room_id = Keyword.get(opts, :room_id, state.room_id)
+
+    Logger.info(
+      "Handoff complete: #{state.agent_id} in #{room_id || "default"} " <>
+        "→ #{delib_id} (#{elapsed}ms)"
+    )
+
+    if room_id, do: broadcast_handoff(room_id, state.agent_id, delib_id)
+
+    rehydrated =
+      if state.room_id,
+        do: rehydrate_history_from_transcript(state.room_id, state.agent_id),
+        else: []
+
+    state = %{
+      state
+      | history: rehydrated,
+        session_tokens: 0,
+        current_context_tokens: 0,
+        referenced_records: MapSet.new([delib_id])
+    }
+
+    reply =
+      case result do
+        %{next_prompt_response: resp} when resp != nil -> {:ok, delib_id, resp}
+        _ -> {:ok, delib_id}
+      end
+
+    {reply, state}
+  end
+
+  defp apply_task_result(state, %{kind: :handoff}, {:error, reason}) do
+    Logger.warning(
+      "Handoff failed: #{state.agent_id} in #{state.room_id || "default"}: #{inspect(reason)}"
+    )
+
+    {{:error, reason}, state}
+  end
+
+  # Save is a read-only operation from the state's perspective — the
+  # LLM may have written records via tools, but session state doesn't
+  # change. Just reply with the response.
+  defp apply_task_result(state, %{kind: :save}, {:ok, response}) do
+    {{:ok, response}, state}
+  end
+
+  defp apply_task_result(state, %{kind: :save}, {:error, reason}) do
+    {{:error, reason}, state}
+  end
+
+  # --- Task bodies (run in a spawned process, not in the GenServer) ---
+
+  defp run_prompt_task(snapshot, message, opts) do
+    # Decide if auto-summarization is needed BEFORE the prompt.
+    # Both phases happen inside the same task so the caller sees
+    # one reply for the whole operation.
+    {snapshot, summary_info} =
+      if should_summarize?(snapshot) do
+        case do_summarize_to_deliberation_snapshot(snapshot) do
+          {:ok, delib_id, new_snapshot} ->
+            if room_id = snapshot.room_id do
+              broadcast_handoff(room_id, snapshot.agent_id, delib_id)
+            end
+
+            {new_snapshot, %{delib_id: delib_id}}
+
+          {:error, _reason, snapshot} ->
+            {snapshot, nil}
+        end
+      else
+        {snapshot, nil}
+      end
+
+    case do_prompt_snapshot(snapshot, message, opts) do
+      {:ok, prompt_result} ->
+        {:ok, Map.put(prompt_result, :summary, summary_info)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp run_handoff_task(snapshot, opts) do
+    started_at = System.monotonic_time(:millisecond)
+    next_prompt = Keyword.get(opts, :next_prompt)
+
+    case do_summarize_to_deliberation_snapshot(snapshot) do
+      {:ok, delib_id, new_snapshot} ->
+        elapsed = System.monotonic_time(:millisecond) - started_at
+
+        next_response =
+          if next_prompt do
+            case do_prompt_snapshot(new_snapshot, next_prompt, []) do
+              {:ok, %{final_text: text}} -> text
+              _ -> nil
+            end
+          end
+
+        {:ok,
+         %{
+           delib_id: delib_id,
+           duration_ms: elapsed,
+           next_prompt_response: next_response
+         }}
+
+      {:error, reason, _} ->
+        {:error, reason}
+    end
+  end
+
+  defp run_save_task(snapshot) do
+    do_save_snapshot(snapshot)
+  end
+
+  # --- Prompt execution (snapshot-based; runs inside a task) ---
+  #
+  # Returns a map of everything the GenServer needs to merge back
+  # into its live state — deliberately stateless so the task doesn't
+  # race with handle_info mutations on state.history. The caller
+  # (apply_task_result) computes delta vs. its live history and
+  # appends, so peers who spoke during the task aren't lost.
+
+  defp do_prompt_snapshot(snapshot, message, opts) do
+    id = snapshot.identity
     room = Keyword.get(opts, :room)
-    system_prompt = build_system_prompt(state, room)
+    system_prompt = build_system_prompt(snapshot, room)
 
-    compacted = compact_history(state.history)
+    compacted = compact_history(snapshot.history)
 
     # In rooms, the coordinator calls with an empty message — the
-    # triggering user/peer turn is already in state.history via the
+    # triggering user/peer turn is already in snapshot.history via the
     # broadcast subscription. For non-room 1:1 prompts, the message
-    # is the user turn and gets appended as before.
+    # is the user turn and gets appended.
     history =
       case message do
         "" -> compacted
         nil -> compacted
         _ -> compacted ++ [%{role: "user", content: message}]
       end
+
+    task_input_history_len = length(history)
 
     tools = Egghead.Agent.Tools.definitions_for(id[:capabilities] || [])
 
@@ -416,60 +696,31 @@ defmodule Egghead.Agent.Session do
       end
 
     start_time = System.monotonic_time(:millisecond)
-    room_id = if room, do: room.id, else: state.room_id
+    room_id = if room, do: room.id, else: snapshot.room_id
 
-    case agent_loop(state, history, llm_opts, room_id, 0) do
-      {:ok, final_text, history, total_usage, last_call_usage, tool_log} ->
-        duration = System.monotonic_time(:millisecond) - start_time
+    case agent_loop(snapshot, history, llm_opts, room_id, 0) do
+      {:ok, final_text, final_history, total_usage, last_call_usage, tool_log} ->
+        duration_ms = System.monotonic_time(:millisecond) - start_time
 
         {created, updated} = partition_record_mutations(tool_log)
         refs = extract_refs_from_tool_log(tool_log)
 
-        current_context_tokens =
-          last_call_usage.input_tokens + last_call_usage.output_tokens
-
-        state = %{
-          state
-          | history: history,
-            usage: %{
-              input_tokens: state.usage.input_tokens + total_usage.input_tokens,
-              output_tokens: state.usage.output_tokens + total_usage.output_tokens
-            },
-            session_tokens:
-              state.session_tokens + total_usage.input_tokens + total_usage.output_tokens,
-            current_context_tokens: current_context_tokens,
-            referenced_records: MapSet.union(state.referenced_records, refs)
-        }
-
-        # context_pct reflects *current* pressure, not cumulative spend.
-        # This is what agents see in their system prompt and what UIs
-        # should display as "how full is this agent's context."
-        context_pct =
-          if state.context_window && state.context_window > 0,
-            do: Float.round(current_context_tokens / state.context_window * 100, 1),
-            else: nil
-
-        response = %Egghead.Agent.Response{
-          text: final_text,
-          agent_id: state.agent_id,
-          model: id[:model],
-          usage:
-            Map.merge(total_usage, %{
-              session_tokens: state.session_tokens,
-              current_context_tokens: current_context_tokens,
-              context_window: state.context_window,
-              context_pct: context_pct
-            }),
-          tool_calls: tool_log,
-          records_created: created,
-          records_updated: updated,
-          duration_ms: duration
-        }
-
-        {{:ok, response}, state}
+        {:ok,
+         %{
+           final_text: final_text,
+           final_history: final_history,
+           task_input_history_len: task_input_history_len,
+           total_usage: total_usage,
+           last_call_usage: last_call_usage,
+           tool_log: tool_log,
+           created: created,
+           updated: updated,
+           refs: refs,
+           duration_ms: duration_ms
+         }}
 
       {:error, _} = error ->
-        {error, state}
+        error
     end
   end
 
@@ -557,11 +808,11 @@ defmodule Egghead.Agent.Session do
       length(state.history) > 0
   end
 
-  defp do_summarize_to_deliberation(state) do
-    if state.history == [] do
-      {:error, :no_history, state}
+  defp do_summarize_to_deliberation_snapshot(snapshot) do
+    if snapshot.history == [] do
+      {:error, :no_history, snapshot}
     else
-      id = state.identity
+      id = snapshot.identity
 
       summary_prompt = """
       Summarize this conversation for your own future reference. Include:
@@ -574,11 +825,11 @@ defmodule Egghead.Agent.Session do
       record and used as context for future conversations.
       """
 
-      messages = state.history ++ [%{role: "user", content: summary_prompt}]
+      messages = snapshot.history ++ [%{role: "user", content: summary_prompt}]
 
       llm_opts = [
         model: id[:model],
-        system: build_system_prompt(state),
+        system: build_system_prompt(snapshot),
         max_tokens: id[:max_tokens] || 4096
       ]
 
@@ -594,20 +845,20 @@ defmodule Egghead.Agent.Session do
               "Agent #{id[:name]}: summary LLM returned empty text — refusing to write blank deliberation"
             )
 
-            {:error, :empty_summary, state}
+            {:error, :empty_summary, snapshot}
           else
-            delib_id = "deliberation/#{state.agent_id}/#{timestamp_id()}"
-            ref_ids = MapSet.to_list(state.referenced_records)
+            delib_id = "deliberation/#{snapshot.agent_id}/#{timestamp_id()}"
+            ref_ids = MapSet.to_list(snapshot.referenced_records)
 
             attrs = %{
               "id" => delib_id,
               "title" => "Deliberation: #{id[:name]} — #{Date.utc_today()}",
               "tags" =>
-                ["deliberation", "agent:#{state.agent_id}"] ++
-                  if(state.room_id, do: ["room:#{state.room_id}"], else: []),
+                ["deliberation", "agent:#{snapshot.agent_id}"] ++
+                  if(snapshot.room_id, do: ["room:#{snapshot.room_id}"], else: []),
               "links" => ref_ids,
               "class" => "deliberation",
-              "author" => state.agent_id,
+              "author" => snapshot.agent_id,
               "body" => summary
             }
 
@@ -619,41 +870,39 @@ defmodule Egghead.Agent.Session do
                 Logger.warning("Agent #{id[:name]} deliberation failed: #{inspect(reason)}")
             end
 
-            # Rehydrate history from the room after the handoff
-            # clears state. The deliberation record is the long-term
-            # memory; the rehydrated recent transcript is the short-
-            # term conversational floor. Without this, an agent that
-            # handed off mid-conversation would next activate with
-            # zero peer context and feel amnesiac to collaborators.
+            # Rehydrate from the room so the subsequent prompt (inside
+            # the same task) sees the short-term conversational floor.
+            # The GenServer will re-rehydrate again in apply_task_result
+            # to capture anything that arrived during the task.
             rehydrated =
-              if state.room_id do
-                rehydrate_history_from_transcript(state.room_id, state.agent_id)
+              if snapshot.room_id do
+                rehydrate_history_from_transcript(snapshot.room_id, snapshot.agent_id)
               else
                 []
               end
 
-            new_state = %{
-              state
+            new_snapshot = %{
+              snapshot
               | history: rehydrated,
                 session_tokens: 0,
                 current_context_tokens: 0,
                 referenced_records: MapSet.new([delib_id])
             }
 
-            {:ok, delib_id, new_state}
+            {:ok, delib_id, new_snapshot}
           end
 
         {:error, reason} ->
-          {:error, reason, state}
+          {:error, reason, snapshot}
       end
     end
   end
 
-  defp do_save(state) do
-    if state.history == [] do
-      {{:error, :no_history}, state}
+  defp do_save_snapshot(snapshot) do
+    if snapshot.history == [] do
+      {:error, :no_history}
     else
-      id = state.identity
+      id = snapshot.identity
 
       save_prompt = """
       Review this conversation and identify any insights, decisions, or
@@ -669,23 +918,23 @@ defmodule Egghead.Agent.Session do
       If nothing is worth saving as a permanent record, say so.
       """
 
-      messages = state.history ++ [%{role: "user", content: save_prompt}]
+      messages = snapshot.history ++ [%{role: "user", content: save_prompt}]
 
       llm_opts = [
         model: id[:model],
-        system: build_system_prompt(state),
+        system: build_system_prompt(snapshot),
         max_tokens: id[:max_tokens] || 4096
       ]
 
       tools = Egghead.Agent.Tools.definitions_for(id[:capabilities] || [])
       llm_opts = maybe_opt(llm_opts, :tools, if(tools != [], do: tools))
 
-      case agent_loop(state, messages, llm_opts, nil, 0) do
+      case agent_loop(snapshot, messages, llm_opts, nil, 0) do
         {:ok, response, _history, _usage, _last_call, _tool_log} ->
-          {{:ok, response}, state}
+          {:ok, response}
 
         {:error, _} = error ->
-          {error, state}
+          error
       end
     end
   end

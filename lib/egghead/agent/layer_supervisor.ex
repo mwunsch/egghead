@@ -3,7 +3,21 @@ defmodule Egghead.Agent.LayerSupervisor do
   Supervisor for the agent layer: LLM Registry, Coordinator, Agent DynamicSupervisor.
 
   Independent of the record store layer. If this crashes, the record
-  store keeps running. When Registry restarts, agents re-sync.
+  store keeps running.
+
+  ## Strategy: `one_for_one`
+
+  Each child is independently restartable. A Coordinator crash does
+  NOT take agents down, because:
+
+    * Agents look up the Coordinator by registered name, not cached
+      pid — a new Coordinator answers to the same name.
+    * The Coordinator rehydrates its state (agent registry + room
+      subscriptions) from the live system on `init/1`, so a restart
+      picks up where the previous instance left off.
+
+  LLM.Registry crashes also don't cascade — agents read model config
+  through the registry lazily, so a restarted registry is transparent.
   """
 
   use Supervisor
@@ -23,6 +37,6 @@ defmodule Egghead.Agent.LayerSupervisor do
       {Egghead.Agent.Supervisor, []}
     ]
 
-    Supervisor.init(children, strategy: :rest_for_one)
+    Supervisor.init(children, strategy: :one_for_one)
   end
 end

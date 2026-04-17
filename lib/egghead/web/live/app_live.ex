@@ -632,6 +632,14 @@ defmodule Egghead.Web.AppLive do
     assign(socket, transcript: socket.assigns.transcript ++ [entry])
   end
 
+  defp broadcast_system_notice(room_id, text) do
+    Phoenix.PubSub.broadcast(
+      Egghead.PubSub,
+      Egghead.Chat.Room.topic(room_id),
+      {:system_notice, text}
+    )
+  end
+
   defp append_entries(socket, []), do: socket
 
   defp append_entries(socket, entries) do
@@ -724,16 +732,30 @@ defmodule Egghead.Web.AppLive do
 
       :cmd_save ->
         if socket.assigns.room_id do
-          case Egghead.chat_save(socket.assigns.room_id) do
-            {:ok, record_id} ->
-              append_entry(
-                socket,
-                Egghead.TUI.Chat.Entry.system("Transcript saved \u2192 [[#{record_id}]]")
-              )
+          # `Egghead.chat_save/1` hits the Room GenServer and writes the
+          # transcript to disk. Disk I/O is usually fast but can stall;
+          # run it on a supervised Task so the LiveView process stays
+          # free for input and PubSub events. Outcome broadcasts as a
+          # `:system_notice` — the existing PubSub handler renders it.
+          room_id = socket.assigns.room_id
 
-            _ ->
-              append_entry(socket, Egghead.TUI.Chat.Entry.system("Save failed"))
-          end
+          Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+            case Egghead.chat_save(room_id) do
+              {:ok, record_id} ->
+                broadcast_system_notice(
+                  room_id,
+                  "Transcript saved \u2192 [[#{record_id}]]"
+                )
+
+              {:error, reason} ->
+                broadcast_system_notice(room_id, "Save failed: #{inspect(reason)}")
+
+              _ ->
+                broadcast_system_notice(room_id, "Save failed")
+            end
+          end)
+
+          socket
         else
           socket
         end
@@ -772,24 +794,30 @@ defmodule Egghead.Web.AppLive do
                 Egghead.TUI.Chat.Entry.system("Handoff initiated for #{target}…")
               )
 
-            # Run in a Task so the LiveView stays responsive while
-            # the agent summarises. The Coordinator broadcasts
-            # `:agent_handoff` to the room topic on success — the
-            # existing handler renders that as a system line.
-            socket_pid = self()
-
-            Task.start(fn ->
+            # Run under Task.Supervisor so crashes log via OTP instead
+            # of vanishing. Outcome broadcasts as a `:system_notice` on
+            # the room topic so every subscriber (this LiveView, the
+            # TUI, MCP watchers) sees the same result — and this
+            # LiveView receives it via its PubSub subscription, not a
+            # direct `send/2`.
+            Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
               case Egghead.handoff(target, room_id: room_id) do
-                {:ok, _delib_id} ->
-                  :ok
+                {:ok, delib_id} ->
+                  broadcast_system_notice(
+                    room_id,
+                    "Handoff complete for #{target} \u2014 saved [[#{delib_id}]]"
+                  )
 
-                {:ok, _delib_id, _response} ->
-                  :ok
+                {:ok, delib_id, _response} ->
+                  broadcast_system_notice(
+                    room_id,
+                    "Handoff complete for #{target} \u2014 saved [[#{delib_id}]]"
+                  )
 
                 {:error, reason} ->
-                  send(
-                    socket_pid,
-                    {:system_notice, "Handoff failed: #{inspect(reason)}"}
+                  broadcast_system_notice(
+                    room_id,
+                    "Handoff failed for #{target}: #{inspect(reason)}"
                   )
               end
             end)

@@ -303,18 +303,24 @@ defmodule Egghead.Agent do
   """
   def lifecycle_topic, do: @lifecycle_topic
 
+  # Forward a long-running Session call via a supervised Task so the
+  # Agent GenServer's mailbox keeps draining. The Task blocks on the
+  # Session call, then uses `GenServer.reply/2` to respond to the
+  # original caller — which is still waiting on its `GenServer.call`.
+  # From the outside, nothing looks different; internally, the Agent
+  # process isn't held hostage by the LLM's wall-clock.
   @impl true
-  def handle_call({:prompt, message, opts}, _from, state) do
+  def handle_call({:prompt, message, opts}, from, state) do
     room = Keyword.get(opts, :room)
     room_id = if room, do: room.id
     room_pid = if room_id, do: room_process(room_id)
 
     {session_pid, state} = ensure_session(state, room_id, room_pid)
-    result = Session.prompt(session_pid, message, opts)
-    {:reply, result, state}
+    forward_async(from, fn -> Session.prompt(session_pid, message, opts) end)
+    {:noreply, state}
   end
 
-  def handle_call({:handoff, opts}, _from, state) when is_list(opts) do
+  def handle_call({:handoff, opts}, from, state) when is_list(opts) do
     room_id = Keyword.get(opts, :room_id)
     session_key = room_id || :default
 
@@ -323,15 +329,19 @@ defmodule Egghead.Agent do
         {:reply, {:error, :no_history}, state}
 
       pid ->
-        result = Session.handoff(pid, opts)
-        {:reply, result, state}
+        forward_async(from, fn -> Session.handoff(pid, opts) end)
+        {:noreply, state}
     end
   end
 
-  def handle_call(:save, _from, state) do
+  def handle_call(:save, from, state) do
     case Map.get(state.sessions, :default) do
-      nil -> {:reply, {:error, :no_history}, state}
-      pid -> {:reply, Session.save(pid), state}
+      nil ->
+        {:reply, {:error, :no_history}, state}
+
+      pid ->
+        forward_async(from, fn -> Session.save(pid) end)
+        {:noreply, state}
     end
   end
 
@@ -359,6 +369,28 @@ defmodule Egghead.Agent do
       pid ->
         {:reply, Session.usage(pid), state}
     end
+  end
+
+  # Run `fun` in a supervised Task and forward its result to `from`
+  # via GenServer.reply. Crashes are converted to `{:error, {:task_crashed, reason}}`
+  # so the caller never hangs indefinitely. The Agent GenServer's
+  # handle_call returned :noreply before this runs, so the caller is
+  # still parked in GenServer.call waiting for a reply.
+  defp forward_async(from, fun) do
+    Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+      result =
+        try do
+          fun.()
+        rescue
+          e -> {:error, {:task_crashed, Exception.message(e)}}
+        catch
+          :exit, reason -> {:error, {:task_crashed, reason}}
+        end
+
+      GenServer.reply(from, result)
+    end)
+
+    :ok
   end
 
   @impl true

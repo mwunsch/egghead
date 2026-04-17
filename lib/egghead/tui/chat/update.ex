@@ -69,17 +69,6 @@ defmodule Egghead.TUI.Chat.Update do
     {handle_room_event(event, model), :none}
   end
 
-  # Injected after /save completes — append a system line with
-  # a wikilink so the user can Tab→Enter to navigate to it.
-  def update({:saved_record, record_id}, %Model{} = model) do
-    entry = Entry.system("Transcript saved → [[#{record_id}]]")
-    {Model.append_entry(model, entry), :none}
-  end
-
-  def update({:save_failed, reason}, %Model{} = model) do
-    {Model.append_entry(model, Entry.system(reason)), :none}
-  end
-
   # An unwrapped mailbox message — the Runtime tags anything it
   # can't classify as `{:unknown_msg, raw}`. We just ignore.
   def update({:unknown_msg, _}, %Model{} = model), do: {model, :none}
@@ -718,20 +707,18 @@ defmodule Egghead.TUI.Chat.Update do
     room_id = model.room_id
 
     cmd =
-      {:exec,
-       fn ->
-         try do
-           case Egghead.chat_save(room_id) do
-             {:ok, record_id} ->
-               {:saved_record, record_id}
+      exec_async(room_id, fn ->
+        case Egghead.chat_save(room_id) do
+          {:ok, record_id} ->
+            broadcast_system_notice(room_id, "Transcript saved → [[#{record_id}]]")
 
-             _ ->
-               {:save_failed, "Save failed"}
-           end
-         catch
-           _, _ -> {:save_failed, "Save failed"}
-         end
-       end}
+          {:error, reason} ->
+            broadcast_system_notice(room_id, "Save failed: #{inspect(reason)}")
+
+          _ ->
+            broadcast_system_notice(room_id, "Save failed")
+        end
+      end)
 
     {Model.clear_input(model), cmd}
   end
@@ -792,26 +779,38 @@ defmodule Egghead.TUI.Chat.Update do
         {Model.append_entry(Model.clear_input(model), msg), :none}
 
       true ->
-        # Run the handoff in the background — `Egghead.handoff/2` is a
-        # GenServer.call that summarises the agent's session via the
-        # LLM and can take a few seconds. The Coordinator broadcasts
-        # `:agent_handoff` on success, which the UI renders below.
+        # Run the handoff off the runtime process — `Egghead.handoff/2`
+        # is a `GenServer.call` with a 300s timeout that summarises the
+        # agent's session via the LLM. If we ran it inside `:exec`, the
+        # runtime loop would be blocked for the full summary duration
+        # and no input would be processed. `exec_async/2` fires a
+        # supervised Task and returns immediately; the outcome
+        # broadcasts back as a `:system_notice` on the room topic, which
+        # the chat screen already renders via its PubSub subscription.
         room_id = model.room_id
 
         cmd =
-          {:exec,
-           fn ->
-             case Egghead.handoff(target, room_id: room_id) do
-               {:ok, _delib_id} ->
-                 :no_msg
+          exec_async(room_id, fn ->
+            case Egghead.handoff(target, room_id: room_id) do
+              {:ok, delib_id} ->
+                broadcast_system_notice(
+                  room_id,
+                  "Handoff complete for #{target} — saved [[#{delib_id}]]"
+                )
 
-               {:ok, _delib_id, _response} ->
-                 :no_msg
+              {:ok, delib_id, _response} ->
+                broadcast_system_notice(
+                  room_id,
+                  "Handoff complete for #{target} — saved [[#{delib_id}]]"
+                )
 
-               {:error, reason} ->
-                 {:room_event, {:system_notice, "Handoff failed: #{inspect(reason)}"}}
-             end
-           end}
+              {:error, reason} ->
+                broadcast_system_notice(
+                  room_id,
+                  "Handoff failed for #{target}: #{inspect(reason)}"
+                )
+            end
+          end)
 
         model =
           model
@@ -918,6 +917,40 @@ defmodule Egghead.TUI.Chat.Update do
       |> Model.append_entry(Entry.system(Egghead.TUI.ToolCatalog.mcp_summary()))
 
     {model, :none}
+  end
+
+  # Fire a side-effectful function off the runtime process. The
+  # `:exec` body spawns a supervised Task and returns immediately so
+  # the runtime loop stays free to process input, PubSub events, and
+  # redraws. Progress and outcomes are delivered back via
+  # `broadcast_system_notice/2`, which the chat screen receives via
+  # its subscription to the room's PubSub topic.
+  defp exec_async(room_id, fun) do
+    {:exec,
+     fn ->
+       Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+         try do
+           fun.()
+         rescue
+           e -> broadcast_system_notice(room_id, "Command failed: #{Exception.message(e)}")
+         catch
+           :exit, reason ->
+             broadcast_system_notice(room_id, "Command failed: #{inspect(reason)}")
+         end
+       end)
+
+       :no_msg
+     end}
+  end
+
+  defp broadcast_system_notice(nil, _text), do: :ok
+
+  defp broadcast_system_notice(room_id, text) do
+    Phoenix.PubSub.broadcast(
+      Egghead.PubSub,
+      Egghead.Chat.Room.topic(room_id),
+      {:system_notice, text}
+    )
   end
 
   # Resolve a `/join` argument to a room id. Tries, in order:

@@ -8,6 +8,8 @@ defmodule Egghead.LLM.Anthropic do
 
   @behaviour Egghead.LLM.Provider
 
+  require Logger
+
   @api_url "https://api.anthropic.com/v1/messages"
   @models_url "https://api.anthropic.com/v1/models"
   @default_model "claude-sonnet-4-6"
@@ -140,13 +142,26 @@ defmodule Egghead.LLM.Anthropic do
       on_chunk: on_chunk
     }
 
+    # `into:` runs for every chunk regardless of status code. For 200s
+    # we parse SSE; for non-200s (4xx / 5xx) Anthropic sends a plain
+    # JSON error body, not SSE — if we fed it to the SSE parser we'd
+    # silently drop it, and the outer case would see an empty body.
+    # Branch on status inside the callback so the error body survives
+    # for diagnostic reporting (matches OpenAI/Google behaviour).
     case Req.post(@api_url,
            json: body,
            headers: headers(api_key, "application/json"),
            receive_timeout: 300_000,
            into: fn {:data, data}, {req, resp} ->
-             acc = process_sse_chunk(data, resp.private[:acc] || acc)
-             resp = put_in(resp.private[:acc], acc)
+             resp =
+               if resp.status == 200 do
+                 acc = process_sse_chunk(data, resp.private[:acc] || acc)
+                 put_in(resp.private[:acc], acc)
+               else
+                 prev = resp.private[:error_body] || ""
+                 put_in(resp.private[:error_body], prev <> data)
+               end
+
              {:cont, {req, resp}}
            end
          ) do
@@ -163,11 +178,30 @@ defmodule Egghead.LLM.Anthropic do
            ]
          }}
 
-      {:ok, %{status: status, body: body}} ->
+      {:ok, %{status: status} = resp} ->
+        raw = resp.private[:error_body] || ""
+        body = decode_error_body(raw)
+
+        Logger.warning(
+          "Anthropic API #{status}: #{inspect(body, limit: 10, printable_limit: 400)}"
+        )
+
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->
         {:error, {:request_error, reason}}
+    end
+  end
+
+  # Try to decode as JSON to match what non-streaming responses look
+  # like (Req auto-decodes JSON bodies). If it isn't JSON, return the
+  # raw string — still more useful than the empty string we had before.
+  defp decode_error_body(""), do: ""
+
+  defp decode_error_body(raw) do
+    case Jason.decode(raw) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> raw
     end
   end
 

@@ -202,26 +202,44 @@ defmodule Egghead.OpenTUI.Runtime do
     {head, %{state | inbox: tail}}
   end
 
+  # Short nonblocking-ish input poll. Per `Bridge.read_key/1` docs,
+  # `timeout_ms = 0` means BLOCK FOREVER (not nonblocking!), so 1ms
+  # is the shortest way to probe the tty without parking the loop.
+  @input_probe_ms 1
+
   defp next_msg(behaviour, %{inbox: []} = state) do
     subs = behaviour.subscriptions(state.model)
+    keys? = :keys in subs
 
     cond do
-      # Process-mailbox messages always win — these come from
-      # PubSub broadcasts (and, later, interval timers). Drained
-      # one per loop iteration so the screen sees them in arrival
-      # order. We use `receive after 0` so the loop never blocks
-      # here; blocking happens in the input read below.
-      msg = drain_mailbox(state) ->
-        msg
-
-      :keys in subs ->
-        case Input.read_one_key(@input_poll_ms) do
+      # Keyboard ALWAYS gets probed first. Without this, a flooded
+      # mailbox (streaming deltas against a long transcript) starves
+      # input: drain_mailbox keeps returning work, so the input reader
+      # is never called and keystrokes pile up in the terminal buffer
+      # until the stream ends.
+      keys? ->
+        case Input.read_one_key(@input_probe_ms) do
           :timeout ->
-            {:no_msg, state}
+            case drain_mailbox(state) do
+              nil ->
+                # Nothing queued anywhere — block up to @input_poll_ms
+                # so the loop doesn't busy-spin.
+                case Input.read_one_key(@input_poll_ms) do
+                  :timeout -> {:no_msg, state}
+                  key -> handle_key(key, state)
+                end
+
+              msg_tuple ->
+                msg_tuple
+            end
 
           key ->
             handle_key(key, state)
         end
+
+      # No keyboard subscription — just drain mailbox / wait on it.
+      msg = drain_mailbox(state) ->
+        msg
 
       true ->
         # No active subscription; nothing to wait on. Bail out.

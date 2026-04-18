@@ -309,6 +309,23 @@ defmodule Egghead do
   @spec room_exists?(String.t()) :: boolean()
   def room_exists?(room_id), do: Egghead.Chat.Room.exists?(room_id)
 
+  @doc """
+  Stops a room. Auto-saves transcript first unless `no_save: true`.
+  Refuses to stop the default room.
+  """
+  @spec stop_room(String.t(), keyword()) :: :ok | {:error, term()}
+  def stop_room(room_id, opts \\ []) do
+    if room_id == default_room() do
+      {:error, :is_default_room}
+    else
+      unless Keyword.get(opts, :no_save, false) do
+        Egghead.Chat.Room.save_transcript(room_id)
+      end
+
+      Egghead.Chat.Room.stop(room_id)
+    end
+  end
+
   # --- Consultation API ---
 
   @doc """
@@ -342,11 +359,7 @@ defmodule Egghead do
           end
 
         Egghead.Chat.ToolCache.invalidate(room_id)
-
-        case Egghead.Node.server_node() do
-          nil -> GenServer.stop(:"egghead_room_#{room_id}", :normal, 5_000)
-          node -> :rpc.call(node, GenServer, :stop, [:"egghead_room_#{room_id}", :normal, 5_000])
-        end
+        Egghead.Chat.Room.stop(room_id)
 
         {:ok, %{responses: responses, room_id: room_id, transcript_id: transcript_id}}
 

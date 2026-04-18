@@ -446,6 +446,16 @@ defmodule Egghead.Agent do
     {:noreply, %{state | sessions: sessions}}
   end
 
+  def handle_info({:EXIT, pid, _reason}, state) do
+    # A linked session exited (e.g. room was stopped). Clean up.
+    sessions =
+      state.sessions
+      |> Enum.reject(fn {_key, session_pid} -> session_pid == pid end)
+      |> Map.new()
+
+    {:noreply, %{state | sessions: sessions}}
+  end
+
   # --- Session management ---
 
   @max_sessions 10

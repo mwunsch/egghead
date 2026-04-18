@@ -418,6 +418,14 @@ defmodule Egghead.Web.AppLive do
   def handle_info({:agent_mentions, _room_id, _from, _to, _content}, socket),
     do: {:noreply, socket}
 
+  def handle_info({:room_stopped, room_id}, socket) do
+    if room_id == socket.assigns.room_id do
+      {:noreply, push_patch(socket, to: ~p"/chat/#{Egghead.default_room()}")}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info(_other, socket), do: {:noreply, socket}
 
   # --- Private: records ---
@@ -674,10 +682,11 @@ defmodule Egghead.Web.AppLive do
     MarkdownHTML.render(text)
   end
 
+  @valid_room_name ~r/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+
   # Resolve a `/join` argument to a room id. Tries, in order:
-  # (1) a live room with that exact id; (2) a saved transcript record
-  # with id `chat/<id>` (or the literal id if it already starts with
-  # `chat/`).
+  # (1) a live room with that exact id; (2) a saved transcript record;
+  # (3) create a new room with that name (IRC semantics).
   defp resolve_join_target(target) do
     cond do
       Egghead.room_exists?(target) ->
@@ -687,10 +696,33 @@ defmodule Egghead.Web.AppLive do
         candidate = if String.starts_with?(target, "chat/"), do: target, else: "chat/#{target}"
 
         case Egghead.Chat.Room.from_transcript(candidate) do
+          {:ok, room_id} ->
+            {:ok, room_id}
+
+          {:error, :not_found} ->
+            create_room_if_valid(target)
+
+          {:error, :wrong_class} ->
+            {:error, "record exists but is not a transcript"}
+
+          {:error, reason} ->
+            {:error, inspect(reason)}
+        end
+    end
+  end
+
+  defp create_room_if_valid(name) do
+    cond do
+      String.length(name) > 64 ->
+        {:error, "room name too long (max 64 characters)"}
+
+      not Regex.match?(@valid_room_name, name) ->
+        {:error, "room name must be alphanumeric (hyphens and underscores allowed)"}
+
+      true ->
+        case Egghead.create_room(id: name) do
           {:ok, room_id} -> {:ok, room_id}
-          {:error, :not_found} -> {:error, "no live room or transcript record found"}
-          {:error, :wrong_class} -> {:error, "record exists but is not a transcript"}
-          {:error, reason} -> {:error, inspect(reason)}
+          {:error, reason} -> {:error, "could not create room: #{inspect(reason)}"}
         end
     end
   end
@@ -702,6 +734,9 @@ defmodule Egghead.Web.AppLive do
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
     "join" => :cmd_join,
+    "list" => :cmd_list,
+    "rooms" => :cmd_list,
+    "drop" => :cmd_drop,
     "mute" => :cmd_mute,
     "unmute" => :cmd_unmute,
     "help" => :cmd_help
@@ -711,7 +746,9 @@ defmodule Egghead.Web.AppLive do
     %{name: "save", description: "Save transcript as a record"},
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
-    %{name: "join", description: "Enter a different room by id"},
+    %{name: "join", description: "Join or create a room"},
+    %{name: "list", description: "List all open rooms"},
+    %{name: "drop", description: "Drop the current room"},
     %{name: "mute", description: "Mute an agent"},
     %{name: "unmute", description: "Unmute a muted agent"},
     %{name: "help", description: "Show keybindings & commands"}
@@ -851,6 +888,53 @@ defmodule Egghead.Web.AppLive do
             end
         end
 
+      :cmd_list ->
+        rooms = Egghead.list_rooms()
+        default = Egghead.default_room()
+
+        lines =
+          if rooms == [] do
+            ["No rooms open."]
+          else
+            Enum.map(rooms, fn id ->
+              marker = if id == default, do: " (default)", else: ""
+
+              info =
+                try do
+                  state = Egghead.Chat.Room.get_state(id)
+                  agents = length(state.agents || [])
+                  msgs = state.message_count || 0
+                  " — #{agents} agents, #{msgs} messages"
+                catch
+                  _, _ -> ""
+                end
+
+              "  #{id}#{marker}#{info}"
+            end)
+          end
+
+        text = ["Rooms:" | lines] |> Enum.join("\n")
+        append_entry(socket, Egghead.TUI.Chat.Entry.system(text))
+
+      :cmd_drop ->
+        no_save = String.contains?(arg, "--no-save")
+        room_id = socket.assigns.room_id
+
+        cond do
+          room_id == Egghead.default_room() ->
+            append_entry(
+              socket,
+              Egghead.TUI.Chat.Entry.system("Cannot drop the default room.")
+            )
+
+          true ->
+            Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+              Egghead.stop_room(room_id, no_save: no_save)
+            end)
+
+            push_patch(socket, to: ~p"/chat/#{Egghead.default_room()}")
+        end
+
       :cmd_mute ->
         target = String.trim(arg)
 
@@ -875,7 +959,7 @@ defmodule Egghead.Web.AppLive do
         socket
         |> append_entry(
           Egghead.TUI.Chat.Entry.system(
-            "Commands: /save /continue /handoff <agent> /join <room> /mute /unmute /help"
+            "Commands: /save /continue /handoff <agent> /join <room> /list /drop /mute /unmute /help"
           )
         )
         |> append_entry(

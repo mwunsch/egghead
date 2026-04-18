@@ -85,10 +85,20 @@ defmodule Egghead.Application do
       Egghead.Agent.Supervisor.sync_agents()
       start_configured_mcp_servers()
 
-      room_id =
+      # Always create a dated room as fallback
+      fallback_id =
         "chat-#{Date.to_iso8601(Date.utc_today())}-#{:erlang.unique_integer([:positive])}"
 
-      Egghead.create_room_local(id: room_id, default: true)
+      Egghead.create_room_local(id: fallback_id, default: true)
+
+      # If config specifies a default_room, rehydrate or create it and
+      # promote it to the default. The fallback room stays alive but
+      # is no longer the default.
+      with %{default_room: name} when is_binary(name) and name != "" <-
+             Application.get_env(:egghead, :config),
+           {:ok, room_id} <- ensure_room(name) do
+        :persistent_term.put(:egghead_default_room, room_id)
+      end
     end
 
     if release_mode?() do
@@ -167,6 +177,7 @@ defmodule Egghead.Application do
   defp apply_config do
     case Egghead.Config.load() do
       {:ok, config} ->
+        Application.put_env(:egghead, :config, config)
         Application.put_env(:egghead, :records_dir, Egghead.Config.records_dir(config))
         Application.put_env(:egghead, :skills_dir, Egghead.Config.skills_dir(config))
         Application.put_env(:egghead, :mcp_servers, config.mcp_servers)
@@ -331,6 +342,21 @@ defmodule Egghead.Application do
   end
 
   # --- Helpers ---
+
+  # Ensure a room exists by name — check live, rehydrate from transcript,
+  # or create fresh.
+  defp ensure_room(name) do
+    cond do
+      Egghead.room_exists?(name) ->
+        {:ok, name}
+
+      match?({:ok, _}, Egghead.Chat.Room.from_transcript_local("chat/#{name}")) ->
+        {:ok, name}
+
+      true ->
+        Egghead.create_room_local(id: name)
+    end
+  end
 
   defp web_children do
     if Application.get_env(:egghead, :start_web, true) do

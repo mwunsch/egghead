@@ -34,6 +34,7 @@ defmodule Egghead.Config do
             skills_dir: "~/.agents/skills",
             llm: [],
             default_model: nil,
+            default_room: nil,
             web: %{port: 4000, host: "localhost", bind: "127.0.0.1"},
             mcp_servers: [],
             server: nil
@@ -60,6 +61,7 @@ defmodule Egghead.Config do
           skills_dir: String.t(),
           llm: [llm_entry()],
           default_model: String.t() | nil,
+          default_room: String.t() | nil,
           web: %{port: non_neg_integer(), host: String.t(), bind: String.t()},
           mcp_servers: [mcp_server()]
         }
@@ -257,6 +259,7 @@ defmodule Egghead.Config do
       skills_dir: data["skills_dir"] || "~/.agents/skills",
       llm: parse_llm(data["llm"]),
       default_model: data["default_model"],
+      default_room: data["default_room"],
       web: parse_web(data["web"]),
       mcp_servers: parse_mcp_servers(data["mcp_servers"]),
       server: parse_server(data["server"])
@@ -366,6 +369,7 @@ defmodule Egghead.Config do
       emit_field("skills_dir", config.skills_dir),
       emit_llm(config.llm),
       emit_field("default_model", config.default_model),
+      emit_field("default_room", config.default_room),
       emit_web(config.web),
       emit_mcp_servers(config.mcp_servers)
     ]

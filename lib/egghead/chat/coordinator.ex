@@ -290,6 +290,10 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
+  def handle_info({:room_stopped, room_id}, state) do
+    {:noreply, %{state | rooms: MapSet.delete(state.rooms, room_id)}}
+  end
+
   # Catch-all: every new PubSub event type flows here first until a
   # matching clause is added above. Don't crash the Coordinator on
   # unknown messages — it's subscribed to every room topic and to

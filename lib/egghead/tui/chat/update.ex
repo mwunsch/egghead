@@ -28,7 +28,9 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context"},
-    %{name: "join", description: "Enter a different room by id"},
+    %{name: "join", description: "Join or create a room"},
+    %{name: "list", description: "List all open rooms"},
+    %{name: "drop", description: "Drop the current room"},
     %{name: "mute", description: "Mute an agent"},
     %{name: "unmute", description: "Unmute a muted agent"},
     %{name: "tools", description: "Summary of tools available to agents"},
@@ -48,6 +50,9 @@ defmodule Egghead.TUI.Chat.Update do
     "continue" => :cmd_continue,
     "handoff" => :cmd_handoff,
     "join" => :cmd_join,
+    "list" => :cmd_list,
+    "rooms" => :cmd_list,
+    "drop" => :cmd_drop,
     "mute" => :cmd_mute,
     "unmute" => :cmd_unmute,
     "tools" => :cmd_tools,
@@ -425,6 +430,18 @@ defmodule Egghead.TUI.Chat.Update do
       Entry.system("#{display} is back with fresh context — saved [[#{delib_id}]]")
 
     Model.append_entry(model, msg)
+  end
+
+  defp handle_room_event({:room_stopped, room_id}, model) do
+    if room_id == model.room_id do
+      default = Egghead.default_room()
+
+      model
+      |> Model.append_entry(Entry.system("Room #{room_id} was dropped."))
+      |> Model.switch_room(default)
+    else
+      model
+    end
   end
 
   defp handle_room_event(_other, model), do: model
@@ -850,6 +867,59 @@ defmodule Egghead.TUI.Chat.Update do
     end
   end
 
+  defp apply_command(:cmd_list, _arg, model) do
+    rooms = Egghead.list_rooms()
+    default = Egghead.default_room()
+
+    lines =
+      if rooms == [] do
+        ["No rooms open."]
+      else
+        Enum.map(rooms, fn id ->
+          marker = if id == default, do: " (default)", else: ""
+
+          info =
+            try do
+              state = Egghead.Chat.Room.get_state(id)
+              agents = length(state.agents || [])
+              msgs = state.message_count || 0
+              " — #{agents} agents, #{msgs} messages"
+            catch
+              _, _ -> ""
+            end
+
+          "  #{id}#{marker}#{info}"
+        end)
+      end
+
+    text = ["Rooms:" | lines] |> Enum.join("\n")
+    msg = Entry.system(text)
+    {Model.append_entry(Model.clear_input(model), msg), :none}
+  end
+
+  defp apply_command(:cmd_drop, arg, model) do
+    no_save = String.contains?(arg, "--no-save")
+
+    cond do
+      model.room_id == Egghead.default_room() ->
+        msg = Entry.system("Cannot drop the default room.")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      true ->
+        room_id = model.room_id
+        default = Egghead.default_room()
+
+        cmd =
+          {:exec,
+           fn ->
+             Egghead.stop_room(room_id, no_save: no_save)
+             :no_msg
+           end}
+
+        {Model.switch_room(Model.clear_input(model), default), cmd}
+    end
+  end
+
   defp apply_command(:cmd_mute, arg, model) do
     target = String.trim(arg)
 
@@ -888,7 +958,7 @@ defmodule Egghead.TUI.Chat.Update do
   defp apply_command(:cmd_help, _arg, model) do
     help_text = """
     Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
-    Commands: /save /copy /continue /handoff <agent> /join <room> /mute /unmute /tools /mcp /leave /help /quit
+    Commands: /save /copy /continue /handoff <agent> /join <room> /list /drop /mute /unmute /tools /mcp /leave /help /quit
     Navigation: F1 records │ F2 chat │ Esc dismiss
     Copy: hold Shift + drag to select text\
     """
@@ -953,9 +1023,11 @@ defmodule Egghead.TUI.Chat.Update do
     )
   end
 
+  @valid_room_name ~r/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+
   # Resolve a `/join` argument to a room id. Tries, in order:
-  # (1) a live room with that exact id; (2) a saved transcript record
-  # with that id; (3) `chat/<id>` as a transcript record id.
+  # (1) a live room with that exact id; (2) a saved transcript record;
+  # (3) create a new room with that name (IRC semantics).
   defp resolve_join_target(target) do
     cond do
       Egghead.room_exists?(target) ->
@@ -965,10 +1037,33 @@ defmodule Egghead.TUI.Chat.Update do
         candidate = if String.starts_with?(target, "chat/"), do: target, else: "chat/#{target}"
 
         case Egghead.Chat.Room.from_transcript(candidate) do
+          {:ok, room_id} ->
+            {:ok, room_id}
+
+          {:error, :not_found} ->
+            create_room_if_valid(target)
+
+          {:error, :wrong_class} ->
+            {:error, "record exists but is not a transcript"}
+
+          {:error, reason} ->
+            {:error, inspect(reason)}
+        end
+    end
+  end
+
+  defp create_room_if_valid(name) do
+    cond do
+      String.length(name) > 64 ->
+        {:error, "room name too long (max 64 characters)"}
+
+      not Regex.match?(@valid_room_name, name) ->
+        {:error, "room name must be alphanumeric (hyphens and underscores allowed)"}
+
+      true ->
+        case Egghead.create_room(id: name) do
           {:ok, room_id} -> {:ok, room_id}
-          {:error, :not_found} -> {:error, "no live room or transcript record found"}
-          {:error, :wrong_class} -> {:error, "record exists but is not a transcript"}
-          {:error, reason} -> {:error, inspect(reason)}
+          {:error, reason} -> {:error, "could not create room: #{inspect(reason)}"}
         end
     end
   end

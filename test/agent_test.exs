@@ -138,6 +138,39 @@ defmodule Egghead.AgentTest do
       assert Agent.agent_name("agents/scout") == :"egghead_agent_agents/scout"
       assert Agent.agent_name("test") == :egghead_agent_test
     end
+
+    test "agent survives linked session exit" do
+      record = %Record{
+        id: "exit-test",
+        title: "Exit Test Agent",
+        class: :agent,
+        tags: ["agent"],
+        meta: %{},
+        body: "You are a test agent.",
+        source_path: "/tmp/exit-test.md"
+      }
+
+      {:ok, pid} = Agent.start_link(record)
+
+      # Simulate a linked session process that exits normally
+      session =
+        spawn_link(fn ->
+          Process.link(pid)
+          :ok
+        end)
+
+      # Wait for the session to finish
+      ref = Process.monitor(session)
+      assert_receive {:DOWN, ^ref, :process, ^session, :normal}
+
+      # Give the agent time to process the EXIT message
+      Process.sleep(50)
+
+      # Agent should still be alive and have cleaned up
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+    end
   end
 
   describe "Agent Supervisor" do

@@ -71,7 +71,9 @@ defmodule Egghead.Chat.Room do
   def start_link(opts) do
     id = Keyword.fetch!(opts, :id)
     name = room_name(id)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    # start (not start_link) so rooms survive when the creating process
+    # exits — critical for rooms created via RPC from CLI clients.
+    GenServer.start(__MODULE__, opts, name: name)
   end
 
   @doc """
@@ -305,6 +307,22 @@ defmodule Egghead.Chat.Room do
   @spec get_state(String.t()) :: map()
   def get_state(room_id) do
     Egghead.Node.call(room_name(room_id), :get_state)
+  end
+
+  @doc """
+  Stops a room. Broadcasts `{:room_stopped, room_id}` before shutdown
+  so subscribed clients can switch away.
+  """
+  @spec stop(String.t()) :: :ok
+  def stop(room_id) do
+    Phoenix.PubSub.broadcast(@pubsub, topic(room_id), {:room_stopped, room_id})
+
+    case Egghead.Node.server_node() do
+      nil -> GenServer.stop(room_name(room_id), :normal, 5_000)
+      node -> :rpc.call(node, GenServer, :stop, [room_name(room_id), :normal, 5_000])
+    end
+
+    :ok
   end
 
   @doc """

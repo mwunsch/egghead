@@ -218,7 +218,18 @@ defmodule Egghead.MixProject do
       listeners: [Phoenix.CodeReloader],
       deps: deps(),
       releases: releases(),
-      package: package()
+      package: package(),
+      docs: docs()
+    ]
+  end
+
+  defp docs do
+    [
+      main: "Egghead",
+      name: "Egghead",
+      source_url: "https://github.com/mwunsch/egghead",
+      homepage_url: "https://mwunsch.github.io/egghead/",
+      formatters: ["html"]
     ]
   end
 
@@ -254,7 +265,8 @@ defmodule Egghead.MixProject do
       {:lazy_html, ">= 0.1.0", only: :test},
       {:floki, "~> 0.36"},
       {:burrito, "~> 1.5"},
-      {:y_ex, "~> 0.10"}
+      {:y_ex, "~> 0.10"},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
   end
 

@@ -1,0 +1,18 @@
+baseURL = "https://mwunsch.github.io/egghead/"
+languageCode = "en-us"
+title = "Egghead"
+
+# Enable raw HTML passthrough in markdown (for bespoke guide embeds).
+[markup.goldmark.renderer]
+  unsafe = true
+
+[markup.highlight]
+  noClasses = false
+  lineNos = false
+
+[build]
+  writeStats = false
+
+[params]
+  description = "Record-store-first multi-agent system on Elixir/OTP."
+  githubURL = "https://github.com/mwunsch/egghead"

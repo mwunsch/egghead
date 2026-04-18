@@ -1,0 +1,11 @@
+{{ define "main" }}
+<section>
+  <h1>Egghead</h1>
+  <p>{{ .Site.Params.description }}</p>
+  <p>
+    <a href="{{ "guides/" | relURL }}">Guides</a> ·
+    <a href="{{ "reference/" | relURL }}">Reference</a> ·
+    <a href="{{ .Site.Params.githubURL }}">GitHub</a>
+  </p>
+</section>
+{{ end }}

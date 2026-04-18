@@ -43,6 +43,9 @@ defmodule Egghead.CLI.TUI do
     try do
       Egghead.tui()
     catch
+      :exit, {:disconnected, _} ->
+        IO.puts("\nServer disconnected. Restart egghead to continue.")
+
       :exit, {:exit, {:disconnected, _}} ->
         IO.puts("\nServer disconnected. Restart egghead to continue.")
 

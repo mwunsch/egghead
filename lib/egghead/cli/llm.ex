@@ -158,7 +158,7 @@ defmodule Egghead.CLI.LLM do
   end
 
   defp do_test do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     providers = Egghead.LLM.Registry.list_providers()
 
@@ -186,7 +186,7 @@ defmodule Egghead.CLI.LLM do
   end
 
   defp do_models do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     models =
       Widgets.spinner("Discovering models...", fn ->

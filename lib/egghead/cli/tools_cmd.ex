@@ -706,70 +706,8 @@ defmodule Egghead.CLI.ToolsCmd do
     end
   end
 
-  defp maybe_sync_agents do
-    if Process.whereis(Egghead.RecordStore) do
-      Egghead.Agent.Supervisor.sync_agents()
-    end
-  end
-
-  # Covers the full cold-start sequence under spinners so the user
-  # isn't staring at an empty terminal while the BEAM boots and MCP
-  # servers handshake. Two back-to-back spinners:
-  #
-  #   1. "Starting Egghead…"  covers Application.ensure_all_started
-  #   2. "Connecting to …"    covers MCP handshake (poll until every
-  #                           configured server is :ready or :failed)
   defp prepare_runtime(opts \\ []) do
-    await_mcp = Keyword.get(opts, :await_mcp, true)
-
-    Widgets.spinner("Starting Egghead…", fn ->
-      Egghead.CLI.start_app(:silent, web: false)
-      maybe_sync_agents()
-    end)
-
-    if await_mcp do
-      servers = Application.get_env(:egghead, :mcp_servers, [])
-
-      if servers != [] do
-        Widgets.spinner(connecting_label(servers), fn ->
-          poll_until_ready(servers, 15_000)
-        end)
-      end
-    end
-  end
-
-  defp connecting_label(servers) do
-    case servers do
-      [one] -> "Connecting to #{one.name}…"
-      _ -> "Connecting to #{length(servers)} MCP servers…"
-    end
-  end
-
-  defp poll_until_ready(servers, deadline_ms) do
-    deadline = System.monotonic_time(:millisecond) + deadline_ms
-    do_poll(servers, deadline)
-  end
-
-  defp do_poll(servers, deadline) do
-    # Pending = not in a terminal state. Terminal = :ready or :failed.
-    # :offline means "not registered yet" — the Application.start Task
-    # that spawns MCP children hasn't run yet, so we're waiting on it.
-    pending =
-      Enum.filter(servers, fn s ->
-        Client.Server.status(s.name) not in [:ready, :failed]
-      end)
-
-    cond do
-      pending == [] ->
-        :ok
-
-      System.monotonic_time(:millisecond) > deadline ->
-        :timeout
-
-      true ->
-        Process.sleep(100)
-        do_poll(servers, deadline)
-    end
+    Egghead.CLI.prepare_runtime(await_mcp: Keyword.get(opts, :await_mcp, true))
   end
 
   defp short_desc(text) do
@@ -809,14 +747,14 @@ defmodule Egghead.CLI.ToolsCmd do
 
     EXAMPLES
       $ egghead tools list
-      $ egghead tools list --agent agents/scout --source mcp
+      $ egghead tools list --agent index --source mcp
       $ egghead tools mcp list
       $ egghead tools mcp add exa               # from curated registry
       $ egghead tools mcp add weather --stdio 'mcp-weather'
       $ egghead tools mcp who parallel-search
 
     SEE ALSO
-      egghead agent grant, egghead agent capabilities
+      egghead agents grant, egghead agents capabilities
     """)
   end
 end

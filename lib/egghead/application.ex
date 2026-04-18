@@ -24,9 +24,9 @@ defmodule Egghead.Application do
   use Application
 
   # Commands that need the record store + agent layer running
-  @app_commands ~w(serve mcp tui init doctor)
+  @app_commands ~w(serve mcp tui init doctor rooms)
   @app_subcommands %{
-    "agent" => ~w(list new),
+    "agents" => ~w(list new),
     "llm" => ~w(test models),
     # tools always needs the app: querying agents + MCP client state
     "tools" => ~w(list show add remove who mcp)
@@ -40,8 +40,8 @@ defmodule Egghead.Application do
     end
 
     apply_config()
-    configure_distribution()
     configure_logging()
+    configure_distribution()
 
     children =
       cond do

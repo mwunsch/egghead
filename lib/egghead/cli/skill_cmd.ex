@@ -53,12 +53,12 @@ defmodule Egghead.CLI.SkillCmd do
                                         skill's allowed-tools and an agent's grants
 
     SEE ALSO
-      egghead agent
+      egghead agents
     """)
   end
 
   defp do_list do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     # Hydrate each record so we can validate against the body. A handful
     # of skills on disk, one file read apiece — the cost is fine here.
@@ -86,17 +86,15 @@ defmodule Egghead.CLI.SkillCmd do
       name_w = rows |> Enum.map(&String.length(&1.name)) |> Enum.max(fn -> 0 end) |> max(4)
       loc_w = rows |> Enum.map(&String.length(&1.location)) |> Enum.max(fn -> 0 end) |> max(8)
 
-      IO.puts(
-        "  #{Widgets.pad("NAME", name_w)}  #{Widgets.pad("LOCATION", loc_w)}  #{Widgets.pad("", 3)} DESCRIPTION"
-      )
+      IO.puts("  #{Widgets.pad("NAME", name_w)}  #{Widgets.pad("LOCATION", loc_w)}  DESCRIPTION")
 
       IO.puts(
-        "  #{String.duplicate("─", name_w)}  #{String.duplicate("─", loc_w)}  #{String.duplicate("─", 3)} #{String.duplicate("─", 40)}"
+        "  #{String.duplicate("─", name_w)}  #{String.duplicate("─", loc_w)}  #{String.duplicate("─", 40)}"
       )
 
       Enum.each(rows, fn row ->
         IO.puts(
-          "  #{Widgets.pad(row.name, name_w)}  #{Widgets.pad(row.location, loc_w)}  #{row.status_marker}  #{truncate(row.desc, 40)}"
+          "  #{row.status_marker} #{Widgets.pad(row.name, name_w)}  #{Widgets.pad(row.location, loc_w)}  #{truncate(row.desc, 40)}"
         )
       end)
 
@@ -114,7 +112,7 @@ defmodule Egghead.CLI.SkillCmd do
   end
 
   defp do_check(name, opts) do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     agent_id = opts[:agent]
 
@@ -135,17 +133,13 @@ defmodule Egghead.CLI.SkillCmd do
             _ -> lightweight
           end
 
-        case Egghead.get_record(agent_id) do
-          {:ok, agent_record} when agent_record.class == :agent ->
-            report_delta(record, agent_record)
+        agent_record = resolve_agent(agent_id)
 
-          {:ok, _} ->
-            IO.puts("#{agent_id} is not an agent record")
-            System.halt(1)
-
-          {:error, :not_found} ->
-            IO.puts("Agent not found: #{agent_id}")
-            System.halt(1)
+        if is_nil(agent_record) do
+          IO.puts("Agent not found: #{agent_id}")
+          System.halt(1)
+        else
+          report_delta(record, agent_record)
         end
     end
   end
@@ -205,7 +199,7 @@ defmodule Egghead.CLI.SkillCmd do
 
         Enum.each(denied, fn {:denied, req, _} ->
           spec = suggest_spec(req)
-          IO.puts("    egghead agent grant #{agent_record.id} '#{spec}'")
+          IO.puts("    egghead agents grant #{agent_record.id} '#{spec}'")
         end)
     end
   end
@@ -242,7 +236,7 @@ defmodule Egghead.CLI.SkillCmd do
   end
 
   defp do_show(name) do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     case find_by_name(name) do
       nil ->
@@ -335,5 +329,28 @@ defmodule Egghead.CLI.SkillCmd do
 
   defp truncate(str, max) do
     if String.length(str) > max, do: String.slice(str, 0, max - 1) <> "…", else: str
+  end
+
+  # Resolve an agent by id — tries the record store first, falls back
+  # to the running agent's state (handles built-in agents like "index").
+  defp resolve_agent(agent_id) do
+    case Egghead.get_record(agent_id) do
+      {:ok, record} when record.class == :agent ->
+        record
+
+      _ ->
+        case Enum.find(Egghead.list_agents(), &(&1.id == agent_id)) do
+          %{capabilities: caps} = agent ->
+            # Build a minimal record-like map for report_delta
+            %Egghead.Record{
+              id: agent.id,
+              class: :agent,
+              meta: %{"capabilities" => Enum.map(caps, &Egghead.Capability.grant_to_spec/1)}
+            }
+
+          nil ->
+            nil
+        end
+    end
   end
 end

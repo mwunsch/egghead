@@ -10,7 +10,7 @@ defmodule Egghead.CLI do
   instead of `Mix.Task.run("app.start")`.
   """
 
-  @commands ~w(init serve mcp llm agent skills tools config doctor logs help tui)
+  @commands ~w(init serve mcp llm agents skills tools rooms config doctor logs help tui)
 
   @doc """
   Main entry point. Parses argv and dispatches to the appropriate
@@ -56,6 +56,71 @@ defmodule Egghead.CLI do
 
     {:ok, _} = Application.ensure_all_started(:egghead)
     :ok
+  end
+
+  @doc """
+  Start the app with a distribution-aware loading message.
+
+  Shows "Connected to <node>" when a server is found, or
+  "Starting Egghead..." with a spinner during standalone cold start.
+  Syncs agents when running standalone.
+  """
+  def prepare_runtime(opts \\ []) do
+    alias Egghead.CLI.Widgets
+
+    Widgets.spinner("Starting Egghead…", fn ->
+      start_app(:silent, web: false)
+
+      # Sync agents inside the same spinner (standalone only)
+      if not Egghead.Node.connected?() and GenServer.whereis(Egghead.RecordStore) do
+        Egghead.Agent.Supervisor.sync_agents()
+      end
+    end)
+
+    if Egghead.Node.connected?() do
+      Widgets.success("Connected to #{Egghead.Node.server_node()}")
+    end
+
+    if Keyword.get(opts, :await_mcp, false) do
+      servers = Application.get_env(:egghead, :mcp_servers, [])
+
+      if servers != [] do
+        label =
+          case servers do
+            [one] -> "Connecting to #{one.name}…"
+            _ -> "Connecting to #{length(servers)} MCP servers…"
+          end
+
+        Widgets.spinner(label, fn ->
+          poll_mcp_ready(servers, 15_000)
+        end)
+      end
+    end
+  end
+
+  @doc false
+  def poll_mcp_ready(servers, deadline_ms) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_poll_mcp(servers, deadline)
+  end
+
+  defp do_poll_mcp(servers, deadline) do
+    pending =
+      Enum.filter(servers, fn s ->
+        Egghead.MCP.Client.Server.status(s.name) not in [:ready, :failed]
+      end)
+
+    cond do
+      pending == [] ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        :timeout
+
+      true ->
+        Process.sleep(100)
+        do_poll_mcp(servers, deadline)
+    end
   end
 
   # --- Parsing ---
@@ -153,7 +218,7 @@ defmodule Egghead.CLI do
     Egghead.CLI.LLM.run(args)
   end
 
-  defp dispatch(:agent, args, _opts) do
+  defp dispatch(:agents, args, _opts) do
     Egghead.CLI.AgentCmd.run(args)
   end
 
@@ -163,6 +228,10 @@ defmodule Egghead.CLI do
 
   defp dispatch(:tools, args, _opts) do
     Egghead.CLI.ToolsCmd.run(args)
+  end
+
+  defp dispatch(:rooms, args, _opts) do
+    Egghead.CLI.RoomsCmd.run(args)
   end
 
   defp dispatch(:config, args, _opts) do
@@ -212,9 +281,10 @@ defmodule Egghead.CLI do
       serve         Run web + MCP servers (headless)
       mcp           Start the MCP stdio server
       llm           Manage LLM providers
-      agent         Manage agents
+      agents        Manage agents
       skills        Manage agent skills
       tools         Inspect agent tools and MCP servers
+      rooms         List open chat rooms
       config        View/edit configuration
       doctor        Diagnose setup problems
       logs          Tail application logs
@@ -231,7 +301,7 @@ defmodule Egghead.CLI do
       $ egghead                       # launch the TUI
       $ egghead init                  # first-run setup
       $ egghead llm add               # add an LLM provider
-      $ egghead agent new             # create a new agent
+      $ egghead agents new             # create a new agent
       $ egghead serve --port 8080     # run servers on port 8080
 
     SEE ALSO

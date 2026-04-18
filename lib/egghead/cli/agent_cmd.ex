@@ -8,7 +8,7 @@ defmodule Egghead.CLI.AgentCmd do
     if "--help" in args or "-h" in args do
       IO.puts("""
       USAGE
-        egghead agent <command> [flags]
+        egghead agents <command> [flags]
 
       DESCRIPTION
         Manage Egghead agents. Agents are markdown records with class: agent
@@ -31,11 +31,11 @@ defmodule Egghead.CLI.AgentCmd do
         -h, --help        Show this help
 
       EXAMPLES
-        $ egghead agent list
-        $ egghead agent new
-        $ egghead agent grant agents/scout 'net.get{hosts=[*.github.com]}'
-        $ egghead agent revoke agents/scout records.update
-        $ egghead agent capabilities agents/scout
+        $ egghead agents list
+        $ egghead agents new
+        $ egghead agents grant index 'net.get{hosts=[*.github.com]}'
+        $ egghead agents revoke index records.update
+        $ egghead agents capabilities index
 
       SEE ALSO
         egghead llm models, egghead skills check
@@ -74,15 +74,14 @@ defmodule Egghead.CLI.AgentCmd do
 
         _ ->
           IO.puts(
-            "Usage: egghead agent <command>\nCommands: list, new, grant, revoke, capabilities"
+            "Usage: egghead agents <command>\nCommands: list, new, grant, revoke, capabilities"
           )
       end
     end
   end
 
   defp do_list do
-    Egghead.CLI.start_app(:silent, web: false)
-    Egghead.Agent.Supervisor.sync_agents()
+    Egghead.CLI.prepare_runtime()
 
     agents = Egghead.list_agents()
 
@@ -120,7 +119,7 @@ defmodule Egghead.CLI.AgentCmd do
 
     name = opts[:name] || Widgets.input("Agent name")
 
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     model =
       opts[:model] ||
@@ -241,7 +240,7 @@ defmodule Egghead.CLI.AgentCmd do
   # --- Capability management ---
 
   defp do_grant(agent_id, cap_spec, opts) do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     case Egghead.Capability.parse_grant_spec(cap_spec) do
       {:ok, parsed} ->
@@ -296,7 +295,7 @@ defmodule Egghead.CLI.AgentCmd do
   # description, then prompt for scope values if the resource
   # supports them.
   defp do_grant_interactive(agent_id, opts) do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     case Egghead.get_record(agent_id) do
       {:ok, record} when record.class == :agent ->
@@ -426,7 +425,7 @@ defmodule Egghead.CLI.AgentCmd do
   end
 
   defp do_revoke(agent_id, cap_spec) do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
     case Egghead.Capability.parse_grant_spec(cap_spec) do
       {:ok, parsed} ->
@@ -473,35 +472,41 @@ defmodule Egghead.CLI.AgentCmd do
   end
 
   defp do_capabilities(agent_id) do
-    Egghead.CLI.start_app(:silent, web: false)
+    Egghead.CLI.prepare_runtime()
 
-    case Egghead.get_record(agent_id) do
-      {:ok, record} ->
-        if record.class != :agent do
-          Widgets.error("#{agent_id} is not an agent record (class: #{record.class})")
-          System.halt(1)
-        end
+    # Try the record store first, fall back to the running agent's state
+    # (handles built-in agents like "index" that have no file on disk)
+    grants =
+      case Egghead.get_record(agent_id) do
+        {:ok, record} when record.class == :agent ->
+          Egghead.Capability.parse(record.meta["capabilities"] || [])
 
-        raw = record.meta["capabilities"] || []
-        grants = Egghead.Capability.parse(raw) |> Egghead.Capability.Catalog.sort_by_risk()
+        _ ->
+          case Enum.find(Egghead.list_agents(), &(&1.id == agent_id)) do
+            %{capabilities: caps} when is_list(caps) -> caps
+            _ -> nil
+          end
+      end
 
-        Widgets.header("Capabilities: #{agent_id}")
+    if is_nil(grants) do
+      Widgets.error("Agent not found: #{agent_id}")
+      System.halt(1)
+    end
 
-        if grants == [] do
-          IO.puts("  (none)")
-        else
-          Enum.each(grants, fn grant ->
-            marker = risk_marker(Egghead.Capability.Catalog.risk(grant))
-            IO.puts("  #{marker} #{Egghead.Capability.Catalog.describe(grant)}")
-          end)
+    grants = Egghead.Capability.Catalog.sort_by_risk(grants)
 
-          IO.puts("")
-          IO.puts("  #{length(grants)} capabilities")
-        end
+    Widgets.header("Capabilities: #{agent_id}")
 
-      {:error, :not_found} ->
-        Widgets.error("Agent not found: #{agent_id}")
-        System.halt(1)
+    if grants == [] do
+      IO.puts("  (none)")
+    else
+      Enum.each(grants, fn grant ->
+        marker = risk_marker(Egghead.Capability.Catalog.risk(grant))
+        IO.puts("  #{marker} #{Egghead.Capability.Catalog.describe(grant)}")
+      end)
+
+      IO.puts("")
+      IO.puts("  #{length(grants)} capabilities")
     end
   end
 

@@ -325,6 +325,33 @@ defmodule Egghead.TUI.Records.Update do
     {Model.exit_command_mode(model), {:switch_screen, :chat, init_arg}}
   end
 
+  defp execute_command(%{name: "join"}, model) do
+    # Extract argument: everything after "join " in the command input
+    arg =
+      model.command_input
+      |> String.trim()
+      |> String.replace(~r/^join\s*/i, "")
+      |> String.trim()
+
+    room_id =
+      case arg do
+        "" -> Egghead.default_room()
+        target -> resolve_join_target(target)
+      end
+
+    case room_id do
+      nil ->
+        {Model.exit_command_mode(model), :none}
+
+      id ->
+        {Model.exit_command_mode(model), {:switch_screen, :chat, [room_id: id]}}
+    end
+  end
+
+  defp execute_command(%{name: "list"}, model) do
+    {Model.show_rooms(model) |> Model.exit_command_mode(), :none}
+  end
+
   defp execute_command(%{name: "system"}, model) do
     # Stub: system mode lands later.
     {Model.exit_command_mode(model), :none}
@@ -332,6 +359,33 @@ defmodule Egghead.TUI.Records.Update do
 
   defp execute_command(_unknown, model) do
     {Model.exit_command_mode(model), :none}
+  end
+
+  @valid_room_name ~r/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+
+  defp resolve_join_target(target) do
+    cond do
+      Egghead.room_exists?(target) ->
+        target
+
+      true ->
+        candidate = if String.starts_with?(target, "chat/"), do: target, else: "chat/#{target}"
+
+        case Egghead.Chat.Room.from_transcript(candidate) do
+          {:ok, room_id} ->
+            room_id
+
+          {:error, _} ->
+            if String.length(target) <= 64 and Regex.match?(@valid_room_name, target) do
+              case Egghead.create_room(id: target) do
+                {:ok, room_id} -> room_id
+                {:error, _} -> nil
+              end
+            else
+              nil
+            end
+        end
+    end
   end
 
   # `/debug` writes the current view tree to /tmp via an :exec

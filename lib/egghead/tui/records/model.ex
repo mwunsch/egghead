@@ -97,6 +97,8 @@ defmodule Egghead.TUI.Records.Model do
     %{name: "copy", description: "Copy current record to clipboard"},
     %{name: "debug", description: "Dump current view tree to /tmp/egghead-render.log"},
     %{name: "chat", description: "Enter chat mode"},
+    %{name: "join", description: "Join or create a room"},
+    %{name: "list", description: "List all open rooms"},
     %{name: "system", description: "Agent diagnostics (not yet implemented)"}
   ]
 
@@ -621,8 +623,15 @@ defmodule Egghead.TUI.Records.Model do
   def filtered_commands(%__MODULE__{command_input: input}) do
     needle = String.downcase(input)
 
+    # When the input is "join my-room", the command is "join" and
+    # "my-room" is the argument. Match commands where either the
+    # command name starts with the input OR the input starts with
+    # the command name followed by a space (argument mode).
     Enum.filter(@records_commands, fn cmd ->
-      String.starts_with?(String.downcase(cmd.name), needle)
+      cmd_lower = String.downcase(cmd.name)
+
+      String.starts_with?(cmd_lower, needle) or
+        String.starts_with?(needle, cmd_lower <> " ")
     end)
   end
 
@@ -699,6 +708,40 @@ defmodule Egghead.TUI.Records.Model do
   @spec show_mcp(t()) :: t()
   def show_mcp(%__MODULE__{} = model) do
     show_synthetic(model, "mcp", "egghead — MCP servers", Egghead.TUI.ToolCatalog.mcp_markdown())
+  end
+
+  @doc "Show a synthetic record listing open rooms."
+  @spec show_rooms(t()) :: t()
+  def show_rooms(%__MODULE__{} = model) do
+    show_synthetic(model, "rooms", "egghead — rooms", rooms_body())
+  end
+
+  defp rooms_body do
+    rooms = Egghead.list_rooms()
+    default = Egghead.default_room()
+
+    if rooms == [] do
+      "# Rooms\n\nNo open rooms."
+    else
+      lines =
+        Enum.map(rooms, fn id ->
+          marker = if id == default, do: " **(default)**", else: ""
+
+          info =
+            try do
+              state = Egghead.Chat.Room.get_state(id)
+              agents = length(state.agents || [])
+              msgs = state.message_count || 0
+              " — #{agents} agents, #{msgs} messages"
+            catch
+              _, _ -> ""
+            end
+
+          "- `#{id}`#{marker}#{info}"
+        end)
+
+      "# Rooms\n\n#{Enum.join(lines, "\n")}\n\n`/join <room>` to enter a room."
+    end
   end
 
   defp show_synthetic(model, id, title, body) do

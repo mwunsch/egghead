@@ -143,8 +143,17 @@ defmodule Egghead.TUI.App do
 
         {%{state | screen: :chat, chat: chat_model}, chat_cmd}
 
-      _existing ->
-        {%{state | screen: :chat}, :none}
+      existing ->
+        requested_room = Keyword.get(init_arg || [], :room_id)
+
+        chat =
+          if requested_room && requested_room != existing.room_id do
+            Egghead.TUI.Chat.Model.switch_room(existing, requested_room)
+          else
+            existing
+          end
+
+        {%{state | screen: :chat, chat: chat}, :none}
     end
   end
 

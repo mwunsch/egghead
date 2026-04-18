@@ -318,12 +318,12 @@ defmodule Egghead do
   ## Options
 
     * `:timeout` — max wait in ms (default: 120_000)
-    * `:round_budget` — max agent-to-agent rounds (default: 2)
+    * `:round_budget` — max agent-to-agent rounds (default: 10)
   """
   @spec consult(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def consult(question, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 120_000)
-    round_budget = Keyword.get(opts, :round_budget, 2)
+    round_budget = Keyword.get(opts, :round_budget, 10)
 
     room_id = "consult-#{:erlang.unique_integer([:positive])}"
 

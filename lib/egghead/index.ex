@@ -16,6 +16,7 @@ defmodule Egghead.Index do
   """
 
   use GenServer
+  require Logger
 
   alias Egghead.Record
   alias Egghead.Record.Parser
@@ -474,6 +475,7 @@ defmodule Egghead.Index do
         )
       end
 
+
       # Replace arbitrary metadata
       exec(conn, "DELETE FROM record_meta WHERE record_id = ?1", [record.id])
 
@@ -518,13 +520,14 @@ defmodule Egghead.Index do
         {:ok, content} ->
           case Parser.parse(content, source_path: path, records_dir: records_dir) do
             {:ok, record} -> do_upsert(conn, Egghead.Skill.auto_classify(record))
-            {:error, _} -> :skip
+            {:error, reason} -> Logger.warning("Skipping #{path}: #{inspect(reason)}")
           end
 
         {:error, _} ->
           :skip
       end
     end)
+
   end
 
   defp list_record_files(dir) do

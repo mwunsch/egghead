@@ -17,6 +17,7 @@ defmodule Egghead.RecordStore do
   """
 
   use GenServer
+  require Logger
 
   alias Egghead.Index
   alias Egghead.Record
@@ -240,12 +241,17 @@ defmodule Egghead.RecordStore do
       {:ok, meta} ->
         path = meta.source_path
 
-        # Hydrate existing record to get all current fields
         case hydrate(path, state.records_dir) do
           {:ok, existing} ->
-            # Merge: caller's attrs overlay existing fields
-            merged = merge_record_attrs(existing, normalize_attrs(attrs, id))
-            content = render_markdown(merged)
+            normalized = normalize_attrs(attrs, id)
+
+            content =
+              if body_only_update?(normalized) do
+                splice_body(path, normalized["body"])
+              else
+                merged = merge_record_attrs(existing, normalized)
+                render_markdown(merged)
+              end
 
             File.write!(path, content)
 
@@ -356,8 +362,8 @@ defmodule Egghead.RecordStore do
               maybe_restart_agent(record)
               broadcast_record_change(record.id)
 
-            {:error, _} ->
-              :skip
+            {:error, reason} ->
+              Logger.warning("Skipping #{path}: #{inspect(reason)}")
           end
 
         {:error, _} ->
@@ -396,8 +402,8 @@ defmodule Egghead.RecordStore do
               Index.upsert_record(state.index, skill_record)
               broadcast_record_change(skill_record.id)
 
-            {:error, _} ->
-              :skip
+            {:error, reason} ->
+              Logger.warning("Skipping skill #{path}: #{inspect(reason)}")
           end
 
         {:error, _} ->
@@ -534,6 +540,28 @@ defmodule Egghead.RecordStore do
     new_attrs
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Enum.into(base)
+  end
+
+  # True when the only meaningful key in the attrs is "body" (plus "id"
+  # which normalize_attrs always injects). Skips frontmatter re-rendering.
+  defp body_only_update?(attrs) do
+    meaningful = attrs |> Map.drop(["id"]) |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    match?([{"body", _}], meaningful)
+  end
+
+  # Replace just the body portion of a file, preserving the raw
+  # frontmatter exactly as written on disk.
+  defp splice_body(path, new_body) do
+    raw = File.read!(path)
+
+    case Parser.split_raw(raw) do
+      {:ok, raw_frontmatter, _old_body} ->
+        String.trim_trailing(raw_frontmatter <> (new_body || "")) <> "\n"
+
+      :error ->
+        # No frontmatter — just the body
+        String.trim_trailing(new_body || "") <> "\n"
+    end
   end
 
   @known_frontmatter_keys ~w(id created updated author tags links class)

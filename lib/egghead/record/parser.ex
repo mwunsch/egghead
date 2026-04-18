@@ -91,7 +91,15 @@ defmodule Egghead.Record.Parser do
 
   # --- Private helpers ---
 
-  defp split_frontmatter(content) do
+  @doc """
+  Splits a markdown file into YAML frontmatter and body.
+
+  Returns `{:ok, yaml_string, body}` where `yaml_string` is the YAML
+  content (without `---` delimiters) and `body` is the trimmed content
+  after the closing `---`. Returns `:error` if no valid frontmatter found.
+  """
+  @spec split_frontmatter(String.t()) :: {:ok, String.t(), String.t()} | :error
+  def split_frontmatter(content) do
     trimmed = String.trim_leading(content)
 
     case String.split(trimmed, ~r/\n---\s*\n/, parts: 2) do
@@ -115,6 +123,28 @@ defmodule Egghead.Record.Parser do
           _ ->
             :error
         end
+    end
+  end
+
+  @doc """
+  Splits a file into the raw frontmatter block (including `---` delimiters)
+  and the raw body after it. Unlike `split_frontmatter/1`, nothing is trimmed
+  or stripped — both parts can be reassembled into the original file.
+
+  Returns `{:ok, raw_frontmatter, raw_body}` or `:error`.
+  """
+  @spec split_raw(String.t()) :: {:ok, String.t(), String.t()} | :error
+  def split_raw(content) do
+    case Regex.split(~r/\n---[ \t]*\n/, content, parts: 2, include_captures: true) do
+      [front, sep, body] ->
+        if String.starts_with?(String.trim_leading(front), "---") do
+          {:ok, front <> sep, body}
+        else
+          :error
+        end
+
+      _ ->
+        :error
     end
   end
 

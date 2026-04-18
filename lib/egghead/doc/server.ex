@@ -139,11 +139,12 @@ defmodule Egghead.Doc.Server do
       {:ok, record} ->
         doc = Yex.Doc.new()
         text = Yex.Doc.get_text(doc, "content")
-        Yex.Doc.monitor_update_v1(doc)
 
         if record.body && record.body != "" do
           Yex.Text.insert(text, 0, record.body)
         end
+
+        Yex.Doc.monitor_update_v1(doc)
 
         {:noreply,
          %{state | doc: doc, text: text, last_written_body: record.body || "", seeded: true}}

@@ -1035,24 +1035,40 @@ defmodule Egghead.Agent.Session do
     try do
       transcript = Egghead.Chat.Room.get_transcript(room_id)
 
-      transcript
-      |> Enum.take(-@backfill_limit)
-      |> Enum.reject(fn m -> m.content == "/pass" end)
-      |> Enum.map(fn m ->
-        case m.sender do
-          %{type: :user, name: name} ->
-            %{role: "user", content: "#{name}: #{m.content}"}
+      history =
+        transcript
+        |> Enum.take(-@backfill_limit)
+        |> Enum.reject(fn m -> m.content == "/pass" end)
+        |> Enum.map(fn m ->
+          case m.sender do
+            %{type: :user, name: name} ->
+              %{role: "user", content: "#{name}: #{m.content}"}
 
-          %{type: :agent, id: ^agent_id} ->
-            %{role: "assistant", content: m.content}
+            %{type: :agent, id: ^agent_id} ->
+              %{role: "assistant", content: m.content}
 
-          %{type: :agent, id: id} ->
-            %{role: "user", content: "#{id}: #{m.content}"}
+            %{type: :agent, id: id} ->
+              %{role: "user", content: "#{id}: #{m.content}"}
 
-          _ ->
-            %{role: "user", content: m.content}
-        end
-      end)
+            _ ->
+              %{role: "user", content: m.content}
+          end
+        end)
+
+      # Newer Claude models (Sonnet 4.6+, Opus 4.7+) reject conversations
+      # ending with an assistant message ("prefill not supported"). When
+      # this agent was the last to speak, reframe the trailing self-message
+      # as a user turn so the model sees its prior output as context.
+      case List.last(history) do
+        %{role: "assistant", content: content} ->
+          List.replace_at(history, -1, %{
+            role: "user",
+            content: "[Your previous response]:\n#{content}"
+          })
+
+        _ ->
+          history
+      end
     catch
       :exit, reason ->
         Logger.warning(

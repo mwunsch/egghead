@@ -4,7 +4,7 @@ defmodule Egghead.SkillTest do
   alias Egghead.Record
   alias Egghead.Skill
 
-  defp record(attrs \\ []) do
+  defp record(attrs) do
     %Record{
       id: Keyword.get(attrs, :id, "skills/test"),
       class: Keyword.get(attrs, :class, :skill),

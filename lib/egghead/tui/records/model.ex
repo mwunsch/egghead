@@ -987,10 +987,8 @@ defmodule Egghead.TUI.Records.Model do
 
   @doc """
   Width available for rendered markdown text inside the preview
-  pane. Mirrors the inner-text math in
-  `Egghead.TUI.Records.View.preview_pane/4`: 1 column for the
-  scrollbar plus 1 column of leading padding leaves
-  `model.width - 2` for actual prose.
+  pane. The preview reserves 1 column for the scrollbar and 1
+  column for leading padding, leaving `model.width - 2` for prose.
   """
   @spec preview_text_width(t()) :: pos_integer()
   def preview_text_width(%__MODULE__{width: w}), do: max(w - 2, 1)
@@ -1032,8 +1030,7 @@ defmodule Egghead.TUI.Records.Model do
 
   @doc """
   If the trimmed filter would slugify to an id that doesn't yet
-  exist, return `{title, slug}`. Otherwise return `nil`. Mirrors
-  `Egghead.TUI.App.creation_target/1` on `main`.
+  exist, return `{title, slug}`. Otherwise return `nil`.
   """
   @spec creation_target(t()) :: {String.t(), String.t()} | nil
   def creation_target(%__MODULE__{} = model) do

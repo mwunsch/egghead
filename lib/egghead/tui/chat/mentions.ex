@@ -40,7 +40,12 @@ defmodule Egghead.TUI.Chat.Mentions do
   end
 
   defmodule Context do
-    @moduledoc false
+    @moduledoc """
+    In-scope mention state returned by `Egghead.TUI.Chat.Mentions.detect/1`.
+    Carries the sigil kind, the typed prefix, its column range in the
+    buffer, the candidate list (populated later by the Update layer),
+    and the currently selected candidate index.
+    """
     @type kind :: :agent | :record
     @type t :: %__MODULE__{
             kind: kind(),

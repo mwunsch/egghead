@@ -32,6 +32,15 @@ defmodule Egghead.Chat.Room do
 
   defmodule Message do
     @moduledoc "A single message in a chat room transcript."
+    @type t :: %__MODULE__{
+            id: String.t(),
+            room_id: String.t(),
+            sender: Egghead.Chat.Room.Sender.t(),
+            content: String.t(),
+            timestamp: DateTime.t(),
+            mentions: [String.t()] | nil,
+            usage: map() | nil
+          }
     defstruct [
       :id,
       :room_id,

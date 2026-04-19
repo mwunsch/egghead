@@ -1,4 +1,5 @@
 defmodule Egghead.Web.DocChannel do
+  @moduledoc false
   use Phoenix.Channel
 
   alias Egghead.Doc.Server

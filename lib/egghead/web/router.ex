@@ -1,4 +1,5 @@
 defmodule Egghead.Web.Router do
+  @moduledoc false
   use Egghead.Web, :router
 
   pipeline :browser do

@@ -1,4 +1,5 @@
 defmodule Egghead.Web.HealthController do
+  @moduledoc false
   use Egghead.Web, :controller
 
   def check(conn, _params) do

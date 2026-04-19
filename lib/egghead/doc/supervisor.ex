@@ -1,4 +1,9 @@
 defmodule Egghead.Doc.Supervisor do
+  @moduledoc """
+  DynamicSupervisor for per-record `Egghead.Doc.Server` processes.
+  One server is started per actively-edited record and persists
+  for the lifetime of collaborative editing in the web UI.
+  """
   use DynamicSupervisor
 
   def start_link(opts) do

@@ -1,7 +1,7 @@
 defmodule Egghead.Chat.TranscriptParser do
   @moduledoc """
   Parse a `class: transcript` record body back into a list of
-  `Egghead.Chat.Room.Message` structs.
+  message maps (the same shape `Egghead.Chat.Room` emits).
 
   Inverse of `Egghead.Chat.Room.format_transcript/1`. The format
   is stable enough to round-trip: each message starts with a header

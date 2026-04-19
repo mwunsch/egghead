@@ -2,10 +2,6 @@ defmodule Egghead.TUI.Records.Slug do
   @moduledoc """
   Convert a free-form title into a record id slug.
 
-  Ported verbatim from `Egghead.TUI.App.slugify/1` on `main`
-  (lines 1540–1549 of `lib/egghead/tui/app.ex`). The same edge
-  cases are preserved:
-
     * Lowercase
     * Strip non-`(alnum/_/slash/dash)` characters → `-`
     * Collapse runs of `-`

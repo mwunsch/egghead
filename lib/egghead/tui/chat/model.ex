@@ -16,9 +16,9 @@ defmodule Egghead.TUI.Chat.Model do
   When the App shell switches to chat mode it calls `init/1` with
   `room_id: id`. The constructor drains the room's existing
   transcript via `Egghead.Chat.Room.get_transcript/1`, hydrates
-  the agent roster, and seeds `agents`. The PubSub subscription
-  declared by `Egghead.TUI.Chat.subscriptions/1` then keeps the
-  model in sync with new room events.
+  the agent roster, and seeds `agents`. The runtime-declared
+  PubSub subscription then keeps the model in sync with new room
+  events.
   """
 
   alias Egghead.Chat.Stream
@@ -26,7 +26,11 @@ defmodule Egghead.TUI.Chat.Model do
   alias Egghead.TUI.Chat.{Entry, Mentions}
 
   defmodule AgentPresence do
-    @moduledoc false
+    @moduledoc """
+    Sidebar row for one agent: id, display name, `:idle`/`:active`
+    status, and the most recent context footprint from that agent's
+    last call. `ctx_tokens` is NOT cumulative lifetime spend.
+    """
     @type t :: %__MODULE__{
             id: String.t(),
             name: String.t(),

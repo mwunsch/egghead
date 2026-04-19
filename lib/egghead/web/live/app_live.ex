@@ -1,4 +1,10 @@
 defmodule Egghead.Web.AppLive do
+  @moduledoc """
+  Main LiveView — the browser counterpart to the TUI. Renders the
+  record browser, markdown preview, and chat room alongside each
+  other, subscribes to PubSub for record and room events, and
+  routes slash commands through the same handlers the TUI uses.
+  """
   use Egghead.Web, :live_view
 
   alias Egghead.Web.MarkdownHTML

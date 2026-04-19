@@ -14,9 +14,9 @@ defmodule Egghead.CLI do
 
   @doc """
   Main entry point. Parses argv and dispatches to the appropriate
-  command module. Called from:
-  - `Mix.Tasks.Egghead.run/1` (development)
-  - `Application.start/2` in release mode (Burrito binary)
+  command module. Called from the `mix egghead` task in development
+  and from the application start callback in release mode (Burrito
+  binary).
   """
   def main(argv \\ []) do
     {command, rest, global_opts} = parse(argv)

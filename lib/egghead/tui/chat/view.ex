@@ -1024,10 +1024,9 @@ defmodule Egghead.TUI.Chat.View do
     end
   end
 
-  # Deterministic-by-name agent colour rotation. Mirrors the
-  # convention on `main` of hashing the agent display name into
-  # a small palette so the same agent gets the same colour
-  # across the session.
+  # Deterministic-by-name agent colour rotation: hash the agent
+  # display name into a small palette so the same agent gets the
+  # same colour across the session.
   @agent_palette [
     :green,
     :blue,

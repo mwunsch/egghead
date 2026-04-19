@@ -348,9 +348,13 @@ class PhoenixProvider {
       colorLight: color + "40",
     });
 
-    // Doc sync
+    // Doc sync. Tag the initial server state with origin "remote" so
+    // the ydoc's update handler below short-circuits instead of echoing
+    // it back to the server as if it were a local edit — that echo
+    // would mark the record dirty on first load and trigger a no-op
+    // flush to disk.
     channel.on("sync", ({ data }) => {
-      Y.applyUpdate(this.ydoc, this._decode(data));
+      Y.applyUpdate(this.ydoc, this._decode(data), "remote");
       this.synced = true;
     });
 

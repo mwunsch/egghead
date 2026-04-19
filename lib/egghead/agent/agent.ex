@@ -30,11 +30,9 @@ defmodule Egghead.Agent do
 
   require Logger
 
-  alias Egghead.LLM.Registry
   alias Egghead.Agent.Session
-  alias Egghead.Capability
-
-  @default_context_threshold 0.70
+  alias Egghead.LLM.Registry
+  alias Egghead.Record.Agent, as: AgentProjection
 
   defmodule State do
     @moduledoc false
@@ -212,54 +210,23 @@ defmodule Egghead.Agent do
 
   @impl true
   def init(record) do
-    capabilities = parse_capabilities(record)
-    thinking = get_meta_string(record, "thinking", nil)
-    max_tokens = get_meta_int(record, "max_tokens", 4096)
-    temperature = get_meta_float(record, "temperature", nil)
-
-    context_threshold =
-      get_meta_float(record, "context_threshold", @default_context_threshold)
-
-    raw_model = get_meta_string(record, "model", nil)
-    fallback_provider = get_meta_string(record, "provider", nil)
-
-    model =
-      cond do
-        raw_model && String.contains?(raw_model, "/") ->
-          raw_model
-
-        raw_model && fallback_provider ->
-          "#{fallback_provider}/#{raw_model}"
-
-        raw_model ->
-          raw_model
-
-        true ->
-          try do
-            Registry.default_model()
-          catch
-            :exit, _ -> "anthropic/claude-sonnet-4-6"
-          end
-      end
-
-    # Agent tags for domain filtering — exclude the "agent" tag itself
-    tags = (record.tags || []) |> Enum.reject(&(&1 == "agent"))
+    config = AgentProjection.from(record)
 
     state = %State{
-      id: record.id,
-      name: record.title || record.id,
-      disposition: record.body || "",
-      model: model,
-      capabilities: capabilities,
-      tags: tags,
-      thinking: thinking,
-      max_tokens: max_tokens,
-      temperature: temperature,
-      context_threshold: context_threshold
+      id: config.id,
+      name: config.name,
+      disposition: config.disposition,
+      model: config.model,
+      capabilities: config.capabilities,
+      tags: config.tags,
+      thinking: config.thinking,
+      max_tokens: config.max_tokens,
+      temperature: config.temperature,
+      context_threshold: config.context_threshold
     }
 
     Logger.info(
-      "Agent started: #{state.name} (#{state.id}) model=#{model} capabilities=#{inspect(capabilities)}"
+      "Agent started: #{state.name} (#{state.id}) model=#{state.model} capabilities=#{inspect(state.capabilities)}"
     )
 
     Process.flag(:trap_exit, true)
@@ -475,41 +442,6 @@ defmodule Egghead.Agent do
   end
 
   # --- Helpers ---
-
-  defp parse_capabilities(record) do
-    case record.meta["capabilities"] do
-      nil -> Capability.parse(["records.read"])
-      value -> Capability.parse(value)
-    end
-  end
-
-  defp get_meta_string(record, key, default) do
-    case record.meta[key] do
-      nil -> default
-      val -> to_string(val)
-    end
-  end
-
-  defp get_meta_int(record, key, default) do
-    case record.meta[key] do
-      nil -> default
-      val when is_integer(val) -> val
-      val -> String.to_integer(to_string(val))
-    end
-  rescue
-    _ -> default
-  end
-
-  defp get_meta_float(record, key, default) do
-    case record.meta[key] do
-      nil -> default
-      val when is_float(val) -> val
-      val when is_integer(val) -> val / 1
-      val -> String.to_float(to_string(val))
-    end
-  rescue
-    _ -> default
-  end
 
   defp fallback_context_window(model) do
     cond do

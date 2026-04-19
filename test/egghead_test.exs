@@ -263,7 +263,10 @@ defmodule EggheadTest do
       assert record.updated =~ ~r/^\d{4}-\d{2}-\d{2}T/
     end
 
-    test "explicit frontmatter updated takes precedence" do
+    test "frontmatter updated is ignored; filesystem mtime is the truth", context do
+      dir = tmp_dir(context)
+      path = Path.join(dir, "stale.md")
+
       content = """
       ---
       id: rec_upd
@@ -273,8 +276,11 @@ defmodule EggheadTest do
       # Note
       """
 
-      assert {:ok, record} = Parser.parse(content)
-      assert record.updated == "2026-01-15T08:00:00Z"
+      File.write!(path, content)
+      assert {:ok, record} = Parser.parse(content, source_path: path)
+      # Filesystem wins — authored `updated:` is discarded at parse time.
+      refute record.updated == "2026-01-15T08:00:00Z"
+      assert record.updated =~ ~r/^\d{4}-\d{2}-\d{2}T/
     end
 
     test "created and updated differ after file modification", context do
@@ -328,8 +334,10 @@ defmodule EggheadTest do
     test "wikilinks still work in plain markdown" do
       content = "# Connections\n\nSee [[rec_0001]] for context."
       assert {:ok, record} = Parser.parse(content)
-      assert record.links == ["rec_0001"]
+      # Body wikilinks live in `wikilinks`, not authored `links`.
+      assert record.links == []
       assert length(record.wikilinks) == 1
+      assert Egghead.Record.references(record) == ["rec_0001"]
     end
   end
 
@@ -450,7 +458,7 @@ defmodule EggheadTest do
                record.wikilinks
     end
 
-    test "merges wikilink targets into links, deduplicated" do
+    test "authored links and body wikilinks stay separate; references unions them" do
       content = """
       ---
       id: rec_merge
@@ -462,8 +470,11 @@ defmodule EggheadTest do
 
       assert {:ok, record} = Parser.parse(content)
 
-      # rec_0038 appears in both frontmatter and wikilink — deduplicated
-      assert record.links == ["rec_0038", "rec_0040", "rec_0041"]
+      # Authored links unchanged; body wikilinks live on wikilinks.
+      assert record.links == ["rec_0038", "rec_0040"]
+      assert Enum.map(record.wikilinks, & &1.target) == ["rec_0038", "rec_0041"]
+      # references/1 gives the deduped union for graph traversal.
+      assert Egghead.Record.references(record) == ["rec_0038", "rec_0040", "rec_0041"]
     end
 
     test "wikilinks with no frontmatter links" do
@@ -476,7 +487,9 @@ defmodule EggheadTest do
       """
 
       assert {:ok, record} = Parser.parse(content)
-      assert record.links == ["rec_001", "rec_002"]
+      assert record.links == []
+      assert Enum.map(record.wikilinks, & &1.target) == ["rec_001", "rec_002"]
+      assert Egghead.Record.references(record) == ["rec_001", "rec_002"]
     end
 
     test "no wikilinks in body yields empty wikilinks list" do
@@ -510,10 +523,13 @@ defmodule EggheadTest do
       assert %{target: "rec_0038", display: "service boundaries", fragment: nil} in record.wikilinks
 
       assert %{target: "rec_0041", display: nil, fragment: nil} in record.wikilinks
-      assert record.links == ["rec_0040", "rec_0038", "rec_0041"]
+      # Authored :LINKS: drawer value stays authored.
+      assert record.links == ["rec_0040"]
+      # Union view merges both.
+      assert Egghead.Record.references(record) == ["rec_0040", "rec_0038", "rec_0041"]
     end
 
-    test "multiple wikilinks to same target are deduplicated in links" do
+    test "multiple wikilinks to same target stay separate; references dedupes" do
       content = """
       ---
       id: rec_dedup
@@ -524,10 +540,12 @@ defmodule EggheadTest do
 
       assert {:ok, record} = Parser.parse(content)
 
-      # wikilinks preserves both occurrences (they're positional references)
+      # wikilinks preserves both occurrences (positional).
       assert length(record.wikilinks) == 2
-      # links deduplicates
-      assert record.links == ["rec_0038"]
+      # No authored links.
+      assert record.links == []
+      # Union view dedupes.
+      assert Egghead.Record.references(record) == ["rec_0038"]
     end
   end
 
@@ -927,6 +945,116 @@ defmodule EggheadTest do
 
       assert {:error, :already_exists} =
                RecordStore.create_record(name, %{id: "rec_0042", title: "Dup"})
+    end
+
+    test "writer never emits `updated:` to frontmatter", context do
+      dir = tmp_dir(context)
+      {_pid, name} = start_store(dir)
+
+      assert {:ok, _record} =
+               RecordStore.create_record(name, %{
+                 id: "rec_noupd",
+                 title: "No Updated",
+                 body: "Body."
+               })
+
+      raw = File.read!(Path.join(dir, "rec_noupd.md"))
+      refute raw =~ ~r/^updated:/m
+    end
+
+    test "authored `created:` survives a round-trip", context do
+      dir = tmp_dir(context)
+
+      write_file(dir, "rec_authored.md", """
+      ---
+      id: rec_authored
+      created: 2023-05-01T00:00:00Z
+      ---
+
+      Authored body.
+      """)
+
+      {_pid, name} = start_store(dir)
+
+      assert {:ok, _record} =
+               RecordStore.update_record(name, "rec_authored", %{title: "Updated Title"})
+
+      raw = File.read!(Path.join(dir, "rec_authored.md"))
+      assert raw =~ ~r/^created:\s*2023-05-01T00:00:00Z/m
+      refute raw =~ ~r/^updated:/m
+    end
+
+    test "filesystem-derived `created` is not written back", context do
+      dir = tmp_dir(context)
+
+      write_file(dir, "rec_noauthored.md", """
+      ---
+      id: rec_noauthored
+      ---
+
+      Body.
+      """)
+
+      {_pid, name} = start_store(dir)
+
+      assert {:ok, _record} =
+               RecordStore.update_record(name, "rec_noauthored", %{title: "New Title"})
+
+      raw = File.read!(Path.join(dir, "rec_noauthored.md"))
+      # Filesystem-derived `created` was NOT present in original frontmatter
+      # and must not be persisted by the round-trip.
+      refute raw =~ ~r/^created:/m
+    end
+
+    test "arbitrary frontmatter keys passed on create survive in meta and yaml", context do
+      dir = tmp_dir(context)
+      {_pid, name} = start_store(dir)
+
+      assert {:ok, record} =
+               RecordStore.create_record(name, %{
+                 "id" => "rec_meta_rt",
+                 "title" => "Has Meta",
+                 "body" => "Body.",
+                 "class" => "agent",
+                 "model" => "anthropic/claude-sonnet-4-6",
+                 "temperature" => 0.3
+               })
+
+      assert record.meta["model"] == "anthropic/claude-sonnet-4-6"
+      # Numeric values round-trip as strings via yaml but the key is preserved.
+      assert record.meta["temperature"] in [0.3, "0.3"]
+
+      raw = File.read!(Path.join(dir, "rec_meta_rt.md"))
+      assert raw =~ ~r/^model:\s*anthropic\/claude-sonnet-4-6/m
+      assert raw =~ ~r/^temperature:\s*0\.3/m
+    end
+
+    test "update preserves and modifies arbitrary meta keys", context do
+      dir = tmp_dir(context)
+
+      write_file(dir, "rec_agent_meta.md", """
+      ---
+      id: rec_agent_meta
+      class: agent
+      model: anthropic/claude-haiku-4-5
+      temperature: 0.7
+      ---
+
+      Be helpful.
+      """)
+
+      {_pid, name} = start_store(dir)
+
+      assert {:ok, _record} =
+               RecordStore.update_record(name, "rec_agent_meta", %{
+                 "model" => "anthropic/claude-opus-4-7"
+               })
+
+      raw = File.read!(Path.join(dir, "rec_agent_meta.md"))
+      # New model replaces old.
+      assert raw =~ ~r/^model:\s*anthropic\/claude-opus-4-7/m
+      # Untouched meta is preserved.
+      assert raw =~ ~r/^temperature:\s*0\.7/m
     end
 
     test "search_by_tag returns matching records", context do

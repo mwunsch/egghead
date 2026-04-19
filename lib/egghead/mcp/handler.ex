@@ -518,7 +518,7 @@ defmodule Egghead.MCP.Handler do
         if(record.updated, do: "updated: #{record.updated}"),
         "class: #{record.class}",
         if(record.tags != [], do: "tags: #{Enum.join(record.tags, ", ")}"),
-        if(record.links != [], do: "links: #{Enum.join(record.links, ", ")}"),
+        references_line(record),
         if(record.meta != %{}, do: "meta: #{Jason.encode!(record.meta)}")
       ]
       |> Enum.reject(&is_nil/1)
@@ -560,6 +560,13 @@ defmodule Egghead.MCP.Handler do
     ]
 
     parts |> Enum.reject(&is_nil/1) |> Enum.join(" | ")
+  end
+
+  defp references_line(record) do
+    case Egghead.Record.references(record) do
+      [] -> nil
+      refs -> "links: #{Enum.join(refs, ", ")}"
+    end
   end
 
   defp format_record_list([], label), do: "#{label}: (none)"

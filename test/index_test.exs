@@ -167,6 +167,44 @@ defmodule Egghead.IndexTest do
       Index.upsert_record(idx, make_record(%{id: "island"}))
       assert Index.find_backlinks(idx, "island") == []
     end
+
+    test "finds records that reach via body wikilinks only" do
+      idx = start_index()
+
+      # Record `a` has no authored `links:` but references `target` via
+      # a body wikilink. Must still be a backlink of `target`.
+      Index.upsert_record(
+        idx,
+        make_record(%{
+          id: "a",
+          links: [],
+          wikilinks: [%{target: "target", display: nil, fragment: nil}]
+        })
+      )
+
+      Index.upsert_record(idx, make_record(%{id: "target"}))
+
+      results = Index.find_backlinks(idx, "target")
+      assert Enum.map(results, & &1.id) == ["a"]
+    end
+
+    test "deduplicates when a record links AND wikilinks to the same target" do
+      idx = start_index()
+
+      Index.upsert_record(
+        idx,
+        make_record(%{
+          id: "a",
+          links: ["target"],
+          wikilinks: [%{target: "target", display: nil, fragment: nil}]
+        })
+      )
+
+      Index.upsert_record(idx, make_record(%{id: "target"}))
+
+      results = Index.find_backlinks(idx, "target")
+      assert Enum.map(results, & &1.id) == ["a"]
+    end
   end
 
   describe "full-text search" do

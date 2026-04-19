@@ -604,13 +604,13 @@ defmodule Egghead.RecordStore do
   end
 
   # Merge caller-provided attrs onto existing record, keeping existing values
-  # for any field the caller didn't provide.
+  # for any field the caller didn't provide. `created`/`updated` are not
+  # here intentionally — `updated` is filesystem-owned and never serialized,
+  # and authored `created` (if present) flows through via `existing.meta`.
   defp merge_record_attrs(existing, new_attrs) do
     known_fields = %{
       "id" => existing.id,
       "title" => existing.title,
-      "created" => existing.created,
-      "updated" => existing.updated,
       "author" => existing.author,
       "tags" => existing.tags,
       "links" => existing.links,
@@ -652,7 +652,11 @@ defmodule Egghead.RecordStore do
     end
   end
 
-  @known_frontmatter_keys ~w(id created updated author tags links class)
+  # Skip keys for the meta_lines pass. `updated` is filesystem-owned and
+  # never written back. `created` is omitted from the explicit known-lines
+  # below so that authored values (preserved in `meta`) flow through the
+  # generic meta_lines renderer; filesystem-derived values stay out of yaml.
+  @known_frontmatter_keys ~w(id updated author tags links class)
 
   defp render_markdown(attrs) do
     # Known fields in a stable order
@@ -660,8 +664,6 @@ defmodule Egghead.RecordStore do
       [
         "---",
         "id: #{attrs["id"]}",
-        maybe_field("created", attrs["created"]),
-        maybe_field("updated", attrs["updated"]),
         maybe_field("author", attrs["author"]),
         render_list("tags", attrs["tags"]),
         render_list("links", attrs["links"]),

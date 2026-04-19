@@ -218,15 +218,21 @@ defmodule Egghead.Index do
       query_all(
         state.conn,
         """
-        WITH RECURSIVE reachable(id, depth) AS (
-          SELECT target_id, 1 FROM record_links WHERE source_id = ?1
-          UNION
-          SELECT rl.target_id, r.depth + 1
-          FROM record_links rl
-          JOIN reachable r ON rl.source_id = r.id
-          WHERE r.depth < ?2
-            AND rl.target_id != ?1
-        )
+        WITH RECURSIVE
+          edges(source_id, target_id) AS (
+            SELECT source_id, target_id FROM record_links
+            UNION
+            SELECT source_id, target FROM record_wikilinks
+          ),
+          reachable(id, depth) AS (
+            SELECT target_id, 1 FROM edges WHERE source_id = ?1
+            UNION
+            SELECT e.target_id, r.depth + 1
+            FROM edges e
+            JOIN reachable r ON e.source_id = r.id
+            WHERE r.depth < ?2
+              AND e.target_id != ?1
+          )
         SELECT DISTINCT rec.* FROM records rec
         JOIN reachable ON rec.id = reachable.id
         WHERE rec.id != ?1
@@ -243,8 +249,11 @@ defmodule Egghead.Index do
         state.conn,
         """
         SELECT DISTINCT r.* FROM records r
-        JOIN record_links rl ON rl.source_id = r.id
-        WHERE rl.target_id = ?1
+        WHERE r.id IN (
+          SELECT source_id FROM record_links WHERE target_id = ?1
+          UNION
+          SELECT source_id FROM record_wikilinks WHERE target = ?1
+        )
         """,
         [id]
       )

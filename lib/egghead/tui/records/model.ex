@@ -844,9 +844,6 @@ defmodule Egghead.TUI.Records.Model do
 
   # ---- preview link / footer helpers -------------------------------------
 
-  # Forward link targets for a record. The worktree's parser
-  # already merges frontmatter `links:` with body wikilinks into
-  # `record.links`, deduped, in order, so we just read it.
   # Pull `[[target]]` refs from a markdown body via the same parser
   # real records go through. Used for synthetic records like
   # `/tools` and `/mcp` whose body is generated in code — nothing
@@ -858,10 +855,11 @@ defmodule Egghead.TUI.Records.Model do
     |> Enum.uniq()
   end
 
+  # Forward link targets: union of authored `links:` and body-scanned
+  # wikilinks, deduped.
   defp forward_targets_for(nil), do: []
-
+  defp forward_targets_for(%Egghead.Record{} = record), do: Egghead.Record.references(record)
   defp forward_targets_for(%{links: links}) when is_list(links), do: links
-
   defp forward_targets_for(_), do: []
 
   defp backlinks_for(nil), do: []

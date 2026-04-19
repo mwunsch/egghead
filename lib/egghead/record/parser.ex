@@ -249,18 +249,15 @@ defmodule Egghead.Record.Parser do
     {ast, wikilinks, ast_title, outline} = parse_markdown_ast(body)
 
     title = to_nil_string(meta["title"]) || ast_title
-    frontmatter_links = normalize_list(meta["links"])
-    wikilink_targets = Enum.map(wikilinks, & &1.target)
-    merged_links = Enum.uniq(frontmatter_links ++ wikilink_targets)
 
     %Record{
       id: to_string(meta["id"] || derive_id(source_path, records_dir)),
       title: title,
       created: normalize_timestamp(meta["created"]) || derive_created(source_path),
-      updated: normalize_timestamp(meta["updated"]) || derive_updated(source_path),
+      updated: derive_updated(source_path),
       author: to_nil_string(meta["author"]) || derive_author(source_path),
       tags: normalize_list(meta["tags"]),
-      links: merged_links,
+      links: normalize_list(meta["links"]),
       wikilinks: wikilinks,
       class: Record.parse_class(meta["class"]),
       meta: extract_extra_meta(meta),
@@ -278,18 +275,15 @@ defmodule Egghead.Record.Parser do
     {ast, org_wikilinks, org_title, outline} = parse_org_ast(body)
 
     title = to_nil_string(meta["title"]) || org_title
-    frontmatter_links = normalize_list(meta["links"])
-    wikilink_targets = Enum.map(org_wikilinks, & &1.target)
-    merged_links = Enum.uniq(frontmatter_links ++ wikilink_targets)
 
     %Record{
       id: to_string(meta["id"] || derive_id(source_path, records_dir)),
       title: title,
       created: normalize_timestamp(meta["created"]) || derive_created(source_path),
-      updated: normalize_timestamp(meta["updated"]) || derive_updated(source_path),
+      updated: derive_updated(source_path),
       author: to_nil_string(meta["author"]) || derive_author(source_path),
       tags: normalize_list(meta["tags"]),
-      links: merged_links,
+      links: normalize_list(meta["links"]),
       wikilinks: org_wikilinks,
       class: Record.parse_class(meta["class"]),
       meta: extract_extra_meta(meta),

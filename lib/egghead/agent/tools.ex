@@ -307,7 +307,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :create}, {:agent, :create}],
         resolve: &req_create_record/1,
         description:
-          "Create a new record in the store. Returns the created record's id. For agent records (class: agent) with a `capabilities:` list, the caller must hold `agent.grant` AND the proposed capabilities must be a subset of the caller's own.",
+          "Create a new record in the store. Returns the created record's id. Any keys beyond the structural fields (id, title, tags, links, class, body) are preserved as frontmatter metadata — e.g. `model`, `provider`, `capabilities` for agent records, or skill-spec keys like `name`, `description`, `allowed-tools`, `compatibility` for skill records. If `capabilities` is set for an agent record, the caller must hold `agent.grant` and the proposed capabilities must be a subset of the caller's own.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -320,11 +320,12 @@ defmodule Egghead.Agent.Tools do
             links: %{type: "array", items: %{type: "string"}, description: "Linked record ids"},
             class: %{
               type: "string",
-              enum: ["durable", "inbox", "deliberation", "agent"],
+              enum: ["durable", "inbox", "deliberation", "agent", "skill", "transcript"],
               description: "Record class (default: durable)"
             },
             body: %{type: "string", description: "Record body (Markdown)"}
           },
+          additionalProperties: true,
           required: ["title", "body"]
         }
       },
@@ -436,7 +437,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :update}, {:agent, :update}, {:agent, :grant}],
         resolve: &req_update_record/1,
         description:
-          "Update an existing record by merging new values. Only fields you provide change. Modifying an agent's `capabilities:` field requires the `agent.grant` capability and is subject to attenuation (grants cannot exceed your own). You cannot grant capabilities to yourself.",
+          "Update an existing record by merging new values. Only fields you provide change. Any keys beyond the structural fields become frontmatter metadata — for agent records typical keys are `model`, `provider`, `capabilities`, `thinking`, `max_tokens`, `temperature`, `context_threshold`; for skill records the spec keys like `name`, `description`, `allowed-tools`. Modifying an agent's `capabilities` requires the `agent.grant` capability and is subject to attenuation — grants cannot exceed your own, and you cannot grant capabilities to yourself.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -448,17 +449,7 @@ defmodule Egghead.Agent.Tools do
               items: %{type: "string"},
               description: "New linked record ids"
             },
-            body: %{type: "string", description: "New body (Markdown)"},
-            model: %{
-              type: "string",
-              description: "LLM model id (for agent records)"
-            },
-            provider: %{type: "string", description: "LLM provider (for agent records)"},
-            capabilities: %{
-              type: "array",
-              items: %{},
-              description: "Agent capabilities (only for agent records; requires agent.grant)"
-            }
+            body: %{type: "string", description: "New body (Markdown)"}
           },
           additionalProperties: true,
           required: ["id"]
@@ -481,12 +472,10 @@ defmodule Egghead.Agent.Tools do
         base = %Request{resource: :agent, verb: :create, scope: %{id: input["id"]}}
 
         if Map.has_key?(input, "capabilities") do
-          proposed = Capability.parse(input["capabilities"])
-
           grant_req = %Request{
             resource: :agent,
             verb: :grant,
-            scope: %{id: input["id"], granted: proposed}
+            scope: %{id: input["id"], granted: Capability.parse(input["capabilities"])}
           }
 
           {:ok, [base, grant_req]}
@@ -505,14 +494,13 @@ defmodule Egghead.Agent.Tools do
 
     cond do
       target_class == "agent" and Map.has_key?(input, "capabilities") ->
-        proposed = Capability.parse(input["capabilities"])
         other_fields? = input |> Map.drop(["id", "capabilities"]) |> map_size() > 0
 
         requests = [
           %Request{
             resource: :agent,
             verb: :grant,
-            scope: %{id: id, granted: proposed}
+            scope: %{id: id, granted: Capability.parse(input["capabilities"])}
           }
         ]
 
@@ -624,17 +612,9 @@ defmodule Egghead.Agent.Tools do
   defp do_execute("create_record", input, ctx) do
     attrs =
       input
-      |> Map.take(["id", "title", "tags", "links", "class", "body"])
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
       |> Map.put_new("author", ctx[:agent_id])
-
-    attrs =
-      if Map.has_key?(input, "capabilities") do
-        Map.put(attrs, "capabilities", input["capabilities"])
-      else
-        attrs
-      end
 
     case Egghead.create_record(attrs) do
       {:ok, record} -> {:ok, "Created record: #{record.id}"}
@@ -705,6 +685,13 @@ defmodule Egghead.Agent.Tools do
   end
 
   defp format_record_preview(record) do
+    refs = Egghead.Record.references(record)
+
+    extra_meta_lines =
+      (record.meta || %{})
+      |> Enum.sort_by(fn {k, _} -> k end)
+      |> Enum.map(fn {k, v} -> "#{k}: #{format_meta_value(v)}" end)
+
     meta =
       [
         "id: #{record.id}",
@@ -712,8 +699,9 @@ defmodule Egghead.Agent.Tools do
         if(record.author, do: "author: #{record.author}"),
         "class: #{record.class}",
         if(record.tags != [], do: "tags: #{Enum.join(record.tags, ", ")}"),
-        if(record.links != [], do: "links: #{Enum.join(record.links, ", ")}")
+        if(refs != [], do: "links: #{Enum.join(refs, ", ")}")
       ]
+      |> Enum.concat(extra_meta_lines)
       |> Enum.reject(&is_nil/1)
       |> Enum.join("\n")
 
@@ -739,4 +727,23 @@ defmodule Egghead.Agent.Tools do
 
     "#{meta}#{backlinks_str}\n\n#{preview}"
   end
+
+  # Render a meta value for inclusion in the record preview. Scalars
+  # print as-is; lists use a compact inline form; maps JSON-encode.
+  defp format_meta_value(v) when is_binary(v), do: v
+  defp format_meta_value(v) when is_number(v) or is_boolean(v) or is_atom(v), do: to_string(v)
+
+  defp format_meta_value(v) when is_list(v) do
+    if Enum.all?(v, &scalar_meta?/1) do
+      "[" <> Enum.map_join(v, ", ", &to_string/1) <> "]"
+    else
+      Jason.encode!(v)
+    end
+  end
+
+  defp format_meta_value(v) when is_map(v), do: Jason.encode!(v)
+  defp format_meta_value(v), do: inspect(v)
+
+  defp scalar_meta?(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_atom(v), do: true
+  defp scalar_meta?(_), do: false
 end

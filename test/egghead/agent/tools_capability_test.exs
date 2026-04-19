@@ -63,6 +63,29 @@ defmodule Egghead.Agent.ToolsCapabilityTest do
       assert [%Capability.Grant{resource: :records, verb: :read}] = grant_req.scope.granted
     end
 
+    test "create_record with arbitrary agent meta fields alongside capabilities" do
+      {:ok, requests} =
+        Tools.resolve_requests(
+          "create_record",
+          %{
+            "title" => "New",
+            "body" => "...",
+            "class" => "agent",
+            "id" => "agents/new",
+            "model" => "anthropic/claude-sonnet-4-6",
+            "capabilities" => ["records.read"]
+          },
+          %{}
+        )
+
+      verbs = Enum.map(requests, &{&1.resource, &1.verb})
+      assert {:agent, :create} in verbs
+      assert {:agent, :grant} in verbs
+
+      grant_req = Enum.find(requests, &(&1.verb == :grant))
+      assert [%Capability.Grant{resource: :records, verb: :read}] = grant_req.scope.granted
+    end
+
     test "unknown tool" do
       assert {:error, :unknown_tool} = Tools.resolve_requests("nope", %{}, %{})
     end

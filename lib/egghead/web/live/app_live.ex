@@ -1485,11 +1485,11 @@ defmodule Egghead.Web.AppLive do
                     <span :for={tag <- @selected_record.tags} class="tag-pill">{tag}</span>
                   </dd>
                 </div>
-                <div :if={@selected_record.links != []} class="prop-row">
+                <div :if={Egghead.Record.references(@selected_record) != []} class="prop-row">
                   <dt>links</dt>
                   <dd>
                     <a
-                      :for={link <- @selected_record.links}
+                      :for={link <- Egghead.Record.references(@selected_record)}
                       class="prop-link"
                       href={"/records/#{link}"}
                       data-phx-link="patch"

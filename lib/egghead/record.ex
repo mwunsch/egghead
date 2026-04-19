@@ -39,7 +39,13 @@ defmodule Egghead.Record do
           source_path: String.t() | nil
         }
 
-  @known_keys ~w(id title created updated author tags links class)
+  # `updated` is strictly filesystem-owned and is stripped from
+  # frontmatter on read (never surfaced on `meta`). `created` is
+  # authorable-with-fallback: if it was authored in frontmatter we
+  # want it to survive in `meta` so the writer knows to preserve it.
+  # Filesystem-derived `created` values are kept out of `meta` and
+  # therefore don't get written back to yaml.
+  @known_keys ~w(id title updated author tags links class)
 
   @doc """
   Returns the list of known/reserved frontmatter keys.
@@ -73,6 +79,18 @@ defmodule Egghead.Record do
   """
   @spec valid_classes() :: [class()]
   def valid_classes, do: @valid_classes
+
+  @doc """
+  Returns the union of authored `links` and body-derived `wikilinks`
+  targets as a deduped list of record ids. Use this for graph
+  traversal when callers want a combined view — `links` and
+  `wikilinks` are stored separately so demonstrative wikilinks in
+  prose don't leak into authored metadata.
+  """
+  @spec references(t()) :: [String.t()]
+  def references(%__MODULE__{links: links, wikilinks: wikilinks}) do
+    Enum.uniq(links ++ Enum.map(wikilinks || [], & &1.target))
+  end
 
   @doc """
   Parses a class string into an atom. Returns `:durable` for unrecognized values.

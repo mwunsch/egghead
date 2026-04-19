@@ -1,6 +1,9 @@
 defmodule Egghead.CLI.Doctor do
   @moduledoc false
 
+  alias Egghead.Capability
+  alias Egghead.Capability.Catalog
+  alias Egghead.Capability.Validate
   alias Egghead.CLI.Widgets
   alias Egghead.Config
 
@@ -20,10 +23,11 @@ defmodule Egghead.CLI.Doctor do
         - Records directory is accessible
         - SQLite index is present
         - NIF/OpenTUI binary exists for this platform
-        - Web port is available
+        - Web endpoint is reachable (or port available if standalone)
         - Log file is writable
         - inotify-tools available (Linux only)
         - Each LLM provider is reachable
+        - Agent capability hygiene (malformed yaml, escalation risks)
 
       FLAGS
         --config PATH   Override config file location
@@ -38,6 +42,12 @@ defmodule Egghead.CLI.Doctor do
   end
 
   defp do_run do
+    # Start the OTP application (record store, index, agent sync) so
+    # capability audit can iterate agent records. Uses the shared
+    # spinner helper so cold boot shows progress instead of looking
+    # like the command has stalled.
+    Egghead.CLI.prepare_runtime()
+
     IO.puts("")
     IO.puts("\e[1mEgghead Doctor\e[0m")
     IO.puts("")
@@ -48,7 +58,7 @@ defmodule Egghead.CLI.Doctor do
         {"Records directory", &check_records_dir/0},
         {"SQLite index", &check_index/0},
         {"NIF binary", &check_nif/0},
-        {"Web port", &check_port/0},
+        {"Web endpoint", &check_web_endpoint/0},
         {"Log file", &check_log_file/0}
       ] ++ linux_only([{"inotify-tools", &check_inotify/0}])
 
@@ -60,8 +70,9 @@ defmodule Egghead.CLI.Doctor do
       end)
 
     provider_results = check_providers()
+    capability_results = check_agent_capabilities()
 
-    all_results = results ++ provider_results
+    all_results = results ++ provider_results ++ capability_results
     passed = Enum.count(all_results, &match?(:ok, &1))
     failed = Enum.count(all_results, &match?({:error, _}, &1))
     warned = Enum.count(all_results, &match?({:warn, _}, &1))
@@ -131,23 +142,56 @@ defmodule Egghead.CLI.Doctor do
     _ -> {:warn, "could not locate priv directory"}
   end
 
-  defp check_port do
-    port =
-      case Config.load() do
-        {:ok, config} -> config.web.port
-        _ -> 4000
-      end
+  # Two meaningful modes:
+  #
+  # - Client mode (another Egghead is already running): HEAD the
+  #   server's `/health` endpoint to confirm the web UI is actually
+  #   reachable, not just that a node is registered with epmd.
+  # - Standalone: port-availability precheck for `egghead serve`.
+  defp check_web_endpoint do
+    {host, port} = web_host_port()
 
+    if Egghead.Node.connected?() do
+      ping_health(host, port)
+    else
+      check_port_available(port)
+    end
+  end
+
+  defp ping_health(host, port) do
+    Application.ensure_all_started(:req)
+    url = "http://#{host}:#{port}/health"
+
+    case Req.get(url, receive_timeout: 2_000, retry: false) do
+      {:ok, %{status: 200}} ->
+        {:ok, "reachable at #{host}:#{port}"}
+
+      {:ok, %{status: status}} ->
+        {:warn, "#{url} returned HTTP #{status}"}
+
+      {:error, reason} ->
+        {:warn, "#{url} unreachable: #{inspect(reason)}"}
+    end
+  end
+
+  defp check_port_available(port) do
     case :gen_tcp.listen(port, []) do
       {:ok, socket} ->
         :gen_tcp.close(socket)
-        :ok
+        {:ok, "port #{port} available"}
 
       {:error, :eaddrinuse} ->
-        {:warn, "port #{port} is in use (Egghead may already be running)"}
+        {:warn, "port #{port} is in use (something else is listening)"}
 
       {:error, reason} ->
         {:error, "port #{port}: #{inspect(reason)}"}
+    end
+  end
+
+  defp web_host_port do
+    case Config.load() do
+      {:ok, config} -> {config.web.host, config.web.port}
+      _ -> {"localhost", 4000}
     end
   end
 
@@ -239,6 +283,106 @@ defmodule Egghead.CLI.Doctor do
       _ ->
         [{:warn, "no providers configured"}]
     end
+  end
+
+  # Iterate every :agent record, validate its `capabilities:` yaml
+  # against the Catalog schema, flag escalation-risk scopes
+  # (fs.write/fs.delete covering the records directory, shell.exec
+  # with no command/pattern restriction), and render the capability
+  # list with the same risk-marker + short-label style as
+  # `egghead agents capabilities`. Issues warn rather than fail —
+  # records always load; this just surfaces problems.
+  defp check_agent_capabilities do
+    records = safe_list_class(:agent)
+
+    IO.puts("")
+    IO.puts("  Agent capabilities:")
+
+    case records do
+      [] ->
+        IO.puts("      (no agent records)")
+        [:ok]
+
+      records ->
+        records_dir = records_dir()
+        Enum.map(records, &audit_and_print(&1, records_dir))
+    end
+  end
+
+  defp audit_and_print(record, records_dir) do
+    raw = Map.get(record.meta || %{}, "capabilities")
+
+    issues =
+      case Validate.validate(raw) do
+        :ok -> []
+        {:error, problems} -> Enum.map(problems, & &1.problem)
+      end
+
+    escalations = Validate.escalation_warnings(raw, records_dir)
+    warnings = issues ++ escalations
+
+    result = if warnings == [], do: :ok, else: {:warn, Enum.join(warnings, "; ")}
+
+    # Status line in the same style as the providers section: icon
+    # at column 0, name indented two spaces.
+    case result do
+      :ok -> Widgets.success("  #{record.id}")
+      {:warn, _} -> Widgets.warn("  #{record.id}")
+    end
+
+    render_capability_list(raw)
+    Enum.each(warnings, fn w -> IO.puts("      \e[33m⚠\e[0m #{w}") end)
+
+    result
+  end
+
+  defp render_capability_list(raw) do
+    grants = parse_safely(raw)
+
+    cond do
+      grants == [] ->
+        IO.puts("      (none)")
+
+      true ->
+        grants
+        |> Catalog.sort_by_risk()
+        |> Enum.each(fn grant ->
+          marker = risk_marker(Catalog.risk(grant))
+          IO.puts("      #{marker} #{Catalog.describe(grant)}")
+        end)
+    end
+  end
+
+  # Capability.parse/1 logs warnings for malformed entries. For the
+  # doctor display we want to tolerate bad input silently and
+  # continue — the validation pass above already surfaced the issues.
+  defp parse_safely(raw) do
+    Capability.parse(raw || [])
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp risk_marker(:low), do: "\e[32m●\e[0m"
+  defp risk_marker(:medium), do: "\e[33m●\e[0m"
+  defp risk_marker(:high), do: "\e[31m●\e[0m"
+  defp risk_marker(_), do: "○"
+
+  defp records_dir do
+    case Config.load() do
+      {:ok, config} -> Config.records_dir(config) |> Path.expand()
+      _ -> nil
+    end
+  end
+
+  defp safe_list_class(class) do
+    Egghead.list_records()
+    |> Enum.filter(&(&1.class == class))
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
   end
 
   defp print_result(name, :ok), do: Widgets.success(name)

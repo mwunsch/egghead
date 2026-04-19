@@ -472,13 +472,19 @@ defmodule Egghead.Agent.Tools do
         base = %Request{resource: :agent, verb: :create, scope: %{id: input["id"]}}
 
         if Map.has_key?(input, "capabilities") do
-          grant_req = %Request{
-            resource: :agent,
-            verb: :grant,
-            scope: %{id: input["id"], granted: Capability.parse(input["capabilities"])}
-          }
+          case Capability.Validate.validate(input["capabilities"]) do
+            :ok ->
+              grant_req = %Request{
+                resource: :agent,
+                verb: :grant,
+                scope: %{id: input["id"], granted: Capability.parse(input["capabilities"])}
+              }
 
-          {:ok, [base, grant_req]}
+              {:ok, [base, grant_req]}
+
+            {:error, issues} ->
+              {:error, Capability.Validate.format_errors(issues)}
+          end
         else
           {:ok, [base]}
         end
@@ -494,24 +500,30 @@ defmodule Egghead.Agent.Tools do
 
     cond do
       target_class == "agent" and Map.has_key?(input, "capabilities") ->
-        other_fields? = input |> Map.drop(["id", "capabilities"]) |> map_size() > 0
+        case Capability.Validate.validate(input["capabilities"]) do
+          :ok ->
+            other_fields? = input |> Map.drop(["id", "capabilities"]) |> map_size() > 0
 
-        requests = [
-          %Request{
-            resource: :agent,
-            verb: :grant,
-            scope: %{id: id, granted: Capability.parse(input["capabilities"])}
-          }
-        ]
+            requests = [
+              %Request{
+                resource: :agent,
+                verb: :grant,
+                scope: %{id: id, granted: Capability.parse(input["capabilities"])}
+              }
+            ]
 
-        requests =
-          if other_fields? do
-            requests ++ [%Request{resource: :agent, verb: :update, scope: %{id: id}}]
-          else
-            requests
-          end
+            requests =
+              if other_fields? do
+                requests ++ [%Request{resource: :agent, verb: :update, scope: %{id: id}}]
+              else
+                requests
+              end
 
-        {:ok, requests}
+            {:ok, requests}
+
+          {:error, issues} ->
+            {:error, Capability.Validate.format_errors(issues)}
+        end
 
       target_class == "agent" ->
         {:ok, [%Request{resource: :agent, verb: :update, scope: %{id: id}}]}

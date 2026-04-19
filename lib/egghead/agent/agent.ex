@@ -338,6 +338,19 @@ defmodule Egghead.Agent do
 
             max_input
 
+          {:ok, _info} ->
+            # Provider returned model info but without a usable
+            # context window (OpenAI does this for very new models
+            # whose metadata hasn't been populated yet). Fall back
+            # to the model-family heuristic instead of crashing —
+            # a crash here would loop the supervisor and block app
+            # boot.
+            Logger.warning(
+              "Agent #{state.name}: model #{state.model} has no context window metadata, using fallback"
+            )
+
+            fallback_context_window(state.model)
+
           {:error, reason} ->
             Logger.warning("Agent #{state.name}: could not fetch model info: #{inspect(reason)}")
             fallback_context_window(state.model)

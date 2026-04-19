@@ -165,35 +165,21 @@ defmodule Egghead.Agent.Wizard do
   defp validate_model(errors, ""), do: Map.put(errors, :model, ["is required"])
   defp validate_model(errors, _model), do: errors
 
-  defp validate_capabilities(errors, nil), do: errors
-  defp validate_capabilities(errors, []), do: errors
+  defp validate_capabilities(errors, caps) do
+    case Egghead.Capability.Validate.validate(caps) do
+      :ok ->
+        errors
 
-  defp validate_capabilities(errors, caps) when is_list(caps) do
-    known = MapSet.new(valid_capabilities())
-
-    invalid =
-      caps
-      |> Enum.map(&capability_key/1)
-      |> Enum.reject(&(&1 == nil or MapSet.member?(known, &1)))
-
-    if invalid == [] do
-      errors
-    else
-      Map.put(errors, :capabilities, ["invalid capabilities: #{Enum.join(invalid, ", ")}"])
+      {:error, issues} ->
+        messages = Enum.map(issues, &format_issue/1)
+        Map.put(errors, :capabilities, messages)
     end
   end
 
-  defp validate_capabilities(errors, _), do: Map.put(errors, :capabilities, ["must be a list"])
+  defp format_issue(%{problem: problem, suggestion: nil}), do: problem
 
-  # Accept either a bare string ("net.get") or a scoped map (%{"net.get" => %{...}}).
-  defp capability_key(str) when is_binary(str), do: str
-
-  defp capability_key(%{} = map) when map_size(map) == 1 do
-    [k] = Map.keys(map)
-    to_string(k)
-  end
-
-  defp capability_key(_), do: nil
+  defp format_issue(%{problem: problem, suggestion: suggestion}),
+    do: "#{problem} (did you mean `#{suggestion}`?)"
 
   defp validate_instructions(errors, nil), do: errors
   defp validate_instructions(errors, ""), do: Map.put(errors, :instructions, ["cannot be empty"])

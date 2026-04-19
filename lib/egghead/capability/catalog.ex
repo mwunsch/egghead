@@ -12,43 +12,108 @@ defmodule Egghead.Capability.Catalog do
   alias Egghead.Capability.Grant
 
   @type risk :: :low | :medium | :high
-  @type entry :: %{short: String.t(), risk: risk()}
+  @type scope_type :: :string | :string_list
+  @type entry :: %{
+          short: String.t(),
+          risk: risk(),
+          scope_keys: %{atom() => scope_type()}
+        }
 
+  # Per-capability schema. `scope_keys` names every scope key the
+  # matcher recognizes at dispatch, paired with its value shape —
+  # `:string` for scalar ids, `:string_list` for globs/lists. An
+  # empty `scope_keys` map means the capability takes no scope; any
+  # scope key in yaml is a typo.
   @catalog %{
     # Content records
-    {:records, :read} => %{short: "Read and search records", risk: :low},
-    {:records, :create} => %{short: "Create new content records", risk: :low},
-    {:records, :update} => %{short: "Edit existing content records", risk: :medium},
-    {:records, :delete} => %{short: "Delete content records", risk: :high},
+    {:records, :read} => %{
+      short: "Read and search records",
+      risk: :low,
+      scope_keys: %{}
+    },
+    {:records, :create} => %{
+      short: "Create new content records",
+      risk: :low,
+      scope_keys: %{classes: :string_list}
+    },
+    {:records, :update} => %{
+      short: "Edit existing content records",
+      risk: :medium,
+      scope_keys: %{classes: :string_list, paths: :string_list}
+    },
+    {:records, :delete} => %{
+      short: "Delete content records",
+      risk: :high,
+      scope_keys: %{classes: :string_list}
+    },
 
     # Agents — the authority-bearing operations
     {:agent, :create} => %{
       short: "Create new agents (inert capabilities until granted)",
-      risk: :medium
+      risk: :medium,
+      scope_keys: %{id: :string}
     },
     {:agent, :update} => %{
       short: "Edit agent disposition, model, tags (not capabilities)",
-      risk: :medium
+      risk: :medium,
+      scope_keys: %{id: :string, ids: :string_list, paths: :string_list}
     },
-    {:agent, :delete} => %{short: "Remove agents", risk: :high},
+    {:agent, :delete} => %{
+      short: "Remove agents",
+      risk: :high,
+      scope_keys: %{id: :string, ids: :string_list}
+    },
     {:agent, :grant} => %{
       short: "Grant capabilities to agents (attenuation-bound)",
-      risk: :high
+      risk: :high,
+      scope_keys: %{id: :string}
     },
 
     # Filesystem outside the record store
-    {:fs, :read} => %{short: "Read files outside the record store", risk: :medium},
-    {:fs, :write} => %{short: "Write files outside the record store", risk: :high},
-    {:fs, :delete} => %{short: "Delete files outside the record store", risk: :high},
+    {:fs, :read} => %{
+      short: "Read files outside the record store",
+      risk: :medium,
+      scope_keys: %{paths: :string_list}
+    },
+    {:fs, :write} => %{
+      short: "Write files outside the record store",
+      risk: :high,
+      scope_keys: %{paths: :string_list}
+    },
+    {:fs, :delete} => %{
+      short: "Delete files outside the record store",
+      risk: :high,
+      scope_keys: %{paths: :string_list}
+    },
 
     # Network — HTTP verbs
-    {:net, :get} => %{short: "Fetch web pages (HTTP GET)", risk: :medium},
-    {:net, :post} => %{short: "Submit data to web APIs (HTTP POST)", risk: :high},
-    {:net, :put} => %{short: "Update remote resources (HTTP PUT)", risk: :high},
-    {:net, :delete} => %{short: "Delete remote resources (HTTP DELETE)", risk: :high},
+    {:net, :get} => %{
+      short: "Fetch web pages (HTTP GET)",
+      risk: :medium,
+      scope_keys: %{hosts: :string_list}
+    },
+    {:net, :post} => %{
+      short: "Submit data to web APIs (HTTP POST)",
+      risk: :high,
+      scope_keys: %{hosts: :string_list}
+    },
+    {:net, :put} => %{
+      short: "Update remote resources (HTTP PUT)",
+      risk: :high,
+      scope_keys: %{hosts: :string_list}
+    },
+    {:net, :delete} => %{
+      short: "Delete remote resources (HTTP DELETE)",
+      risk: :high,
+      scope_keys: %{hosts: :string_list}
+    },
 
     # Shell
-    {:shell, :exec} => %{short: "Run allow-listed shell commands", risk: :high}
+    {:shell, :exec} => %{
+      short: "Run allow-listed shell commands",
+      risk: :high,
+      scope_keys: %{cmds: :string_list, patterns: :string_list}
+    }
   }
 
   @risk_order %{low: 0, medium: 1, high: 2}
@@ -62,6 +127,29 @@ defmodule Egghead.Capability.Catalog do
   @doc "Look up catalog metadata for a resource/verb. Returns `nil` if unknown."
   @spec lookup(atom(), atom()) :: entry() | nil
   def lookup(resource, verb), do: Map.get(@catalog, {resource, verb})
+
+  @doc """
+  All known capability keys as `"resource.verb"` strings. Used by
+  validators to detect typos via string-distance suggestions.
+  """
+  @spec keys() :: [String.t()]
+  def keys do
+    Enum.map(@catalog, fn {{r, v}, _} -> "#{r}.#{v}" end)
+  end
+
+  @doc """
+  Scope key schema for `resource.verb` — a map of
+  `%{key_atom => :string | :string_list}`. Returns `nil` if the
+  `resource.verb` pair is unknown, or an empty map if the capability
+  takes no scope keys.
+  """
+  @spec scope_keys(atom(), atom()) :: %{atom() => scope_type()} | nil
+  def scope_keys(resource, verb) do
+    case lookup(resource, verb) do
+      %{scope_keys: keys} -> keys
+      nil -> nil
+    end
+  end
 
   @doc "Short label for a grant, with scope rendered inline if present."
   @spec describe(Grant.t()) :: String.t()

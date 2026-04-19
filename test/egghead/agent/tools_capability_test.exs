@@ -89,6 +89,43 @@ defmodule Egghead.Agent.ToolsCapabilityTest do
     test "unknown tool" do
       assert {:error, :unknown_tool} = Tools.resolve_requests("nope", %{}, %{})
     end
+
+    test "create_record with malformed capabilities hard-fails at resolve" do
+      assert {:error, msg} =
+               Tools.resolve_requests(
+                 "create_record",
+                 %{
+                   "title" => "New",
+                   "body" => "...",
+                   "class" => "agent",
+                   "id" => "agents/new",
+                   "capabilities" => ["records.reed"]
+                 },
+                 %{}
+               )
+
+      assert msg =~ "capabilities validation failed"
+      assert msg =~ "records.reed"
+      assert msg =~ "records.read"
+    end
+
+    test "create_record with malformed scope key hard-fails at resolve" do
+      assert {:error, msg} =
+               Tools.resolve_requests(
+                 "create_record",
+                 %{
+                   "title" => "New",
+                   "body" => "...",
+                   "class" => "agent",
+                   "id" => "agents/new",
+                   "capabilities" => [%{"fs.write" => %{"pathz" => ["/tmp/*"]}}]
+                 },
+                 %{}
+               )
+
+      assert msg =~ "unknown scope key `pathz`"
+      assert msg =~ "paths"
+    end
   end
 
   describe "execute/3 denies" do

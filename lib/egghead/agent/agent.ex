@@ -120,32 +120,6 @@ defmodule Egghead.Agent do
   end
 
   @doc """
-  Clears an agent's conversation history.
-  """
-  @spec clear_history(String.t()) :: :ok | {:error, :agent_not_found}
-  def clear_history(agent_id) do
-    name = agent_name(agent_id)
-
-    case whereis_node_aware(name) do
-      nil -> {:error, :agent_not_found}
-      _pid -> Egghead.Node.call(name, :clear_history)
-    end
-  end
-
-  @doc """
-  Returns an agent's token usage and context info.
-  """
-  @spec usage(String.t()) :: {:ok, map()} | {:error, :agent_not_found}
-  def usage(agent_id) do
-    name = agent_name(agent_id)
-
-    case whereis_node_aware(name) do
-      nil -> {:error, :agent_not_found}
-      _pid -> Egghead.Node.call(name, :usage)
-    end
-  end
-
-  @doc """
   Lists all running agents.
   """
   @spec list_agents() :: [map()]
@@ -360,32 +334,6 @@ defmodule Egghead.Agent do
       pid ->
         forward_async(from, fn -> Session.save(pid) end)
         {:noreply, state}
-    end
-  end
-
-  def handle_call(:clear_history, _from, state) do
-    case Map.get(state.sessions, :default) do
-      nil -> {:reply, :ok, state}
-      pid -> {:reply, Session.clear_history(pid), state}
-    end
-  end
-
-  def handle_call(:usage, _from, state) do
-    case Map.get(state.sessions, :default) do
-      nil ->
-        {:reply,
-         {:ok,
-          %{
-            total_usage: %{input_tokens: 0, output_tokens: 0},
-            session_tokens: 0,
-            context_window: state.context_window,
-            context_used_pct: nil,
-            history_turns: 0,
-            referenced_records: []
-          }}, state}
-
-      pid ->
-        {:reply, Session.usage(pid), state}
     end
   end
 

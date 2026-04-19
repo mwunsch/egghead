@@ -172,16 +172,6 @@ defmodule Egghead.Agent.Session do
     GenServer.call(session, :save, 300_000)
   end
 
-  @spec clear_history(pid() | atom()) :: :ok
-  def clear_history(session) do
-    GenServer.call(session, :clear_history)
-  end
-
-  @spec usage(pid() | atom()) :: {:ok, map()}
-  def usage(session) do
-    GenServer.call(session, :usage)
-  end
-
   @doc """
   Returns the registered name for a session process.
   """
@@ -254,44 +244,6 @@ defmodule Egghead.Agent.Session do
 
   def handle_call(:save, from, state) do
     dispatch_or_queue(state, from, :save)
-  end
-
-  def handle_call(:clear_history, _from, state) do
-    # Rehydrate from the room after clearing so the agent doesn't lose
-    # peer context. Non-room sessions (1:1 prompts) just clear to empty.
-    history =
-      if state.room_id do
-        rehydrate_history_from_transcript(state.room_id, state.agent_id)
-      else
-        []
-      end
-
-    {:reply, :ok,
-     %{
-       state
-       | history: history,
-         session_tokens: 0,
-         current_context_tokens: 0,
-         referenced_records: MapSet.new()
-     }}
-  end
-
-  def handle_call(:usage, _from, state) do
-    info = %{
-      total_usage: state.usage,
-      session_tokens: state.session_tokens,
-      current_context_tokens: state.current_context_tokens,
-      context_window: state.context_window,
-      context_used_pct:
-        if(state.context_window && state.context_window > 0,
-          do: Float.round(state.current_context_tokens / state.context_window * 100, 1),
-          else: nil
-        ),
-      history_turns: length(state.history),
-      referenced_records: MapSet.to_list(state.referenced_records)
-    }
-
-    {:reply, {:ok, info}, state}
   end
 
   @impl true

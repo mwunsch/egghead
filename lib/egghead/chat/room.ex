@@ -140,14 +140,6 @@ defmodule Egghead.Chat.Room do
     Egghead.Node.cast(room_name(room_id), {:clear_in_progress, agent_id})
   end
 
-  @doc """
-  Set the room's activation mode at runtime.
-  """
-  @spec set_mode(String.t(), :staggered | :serial) :: :ok
-  def set_mode(room_id, mode) when mode in [:staggered, :serial] do
-    Egghead.Node.call(room_name(room_id), {:set_mode, mode})
-  end
-
   @spec mute(String.t(), String.t()) :: :ok
   def mute(room_id, agent_id) do
     Egghead.Node.call(room_name(room_id), {:mute, agent_id})
@@ -583,10 +575,6 @@ defmodule Egghead.Chat.Room do
     }
 
     {:reply, info, state}
-  end
-
-  def handle_call({:set_mode, mode}, _from, state) do
-    {:reply, :ok, %{state | mode: mode}}
   end
 
   def handle_call({:mute, agent_id}, _from, state) do

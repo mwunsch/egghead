@@ -23,9 +23,19 @@ defmodule Egghead.Record.AST do
   """
   @spec parse_markdown(String.t()) :: {:ok, [ast_node()]} | {:error, term()}
   def parse_markdown(body) do
+    # Earmark returns `{:error, ast, warnings}` whenever it emits any
+    # warning (common on real-world bodies — e.g. false-positive IAL
+    # attribute parsing). The AST in those tuples is usable; treat
+    # non-empty error ASTs as successful parses.
     case Earmark.as_ast(body, wikilinks: true) do
-      {:ok, ast, _warnings} -> {:ok, ast}
-      {:error, _ast, errors} -> {:error, {:earmark, errors}}
+      {:ok, ast, _warnings} ->
+        {:ok, ast}
+
+      {:error, ast, _warnings} when is_list(ast) and ast != [] ->
+        {:ok, ast}
+
+      {:error, _ast, errors} ->
+        {:error, {:earmark, errors}}
     end
   end
 

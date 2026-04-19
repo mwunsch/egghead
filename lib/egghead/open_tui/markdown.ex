@@ -150,8 +150,15 @@ defmodule Egghead.OpenTUI.Markdown do
     max_w = Keyword.get(opts, :max_width, @default_max_width)
     eff_width = min(width, max_w)
 
+    # Earmark returns `{:error, ast, warnings}` whenever it emits a
+    # warning (common on real-world bodies — false-positive IAL
+    # attribute parsing). The AST is still usable; fall back to
+    # plain text only when the AST is actually missing.
     case Earmark.as_ast(markdown, @earmark_opts) do
       {:ok, ast, _} when is_list(ast) ->
+        Enum.flat_map(ast, &render_node(&1, eff_width, theme))
+
+      {:error, ast, _} when is_list(ast) and ast != [] ->
         Enum.flat_map(ast, &render_node(&1, eff_width, theme))
 
       _ ->

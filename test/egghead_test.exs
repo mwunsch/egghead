@@ -658,6 +658,16 @@ defmodule EggheadTest do
       assert %{language: "elixir", content: "def hello, do: :world"} in blocks
       assert %{language: nil, content: "plain code"} in blocks
     end
+
+    test "parse_markdown returns :ok for bodies that trigger Earmark warnings" do
+      # `<div>unclosed` is one of the patterns where Earmark returns
+      # `{:error, ast, warnings}` with a usable AST rather than a
+      # clean `:ok`. We should still expose the AST, not propagate
+      # the error.
+      assert {:ok, ast} = AST.parse_markdown("# Heading\n\n<div>unclosed")
+      assert is_list(ast)
+      assert Enum.any?(ast, &match?({"h1", _, _, _}, &1))
+    end
   end
 
   describe "AST integration with parser" do

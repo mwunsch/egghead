@@ -24,11 +24,16 @@ defmodule Egghead.Web.MarkdownHTML do
     link_fn = Keyword.get(opts, :link_fn, &default_link/1)
     exists_fn = Keyword.get(opts, :exists_fn, fn _ -> true end)
 
+    # Earmark returns `{:error, ast, warnings}` whenever it emits a
+    # warning (common on real-world bodies — false-positive IAL
+    # attribute parsing). The AST is still usable; fall back to
+    # plaintext-in-a-pre only when no AST came back at all.
     case Earmark.as_ast(markdown, @earmark_opts) do
       {:ok, ast, _} when is_list(ast) ->
-        ast
-        |> Enum.map(&render_node(&1, link_fn, exists_fn))
-        |> IO.iodata_to_binary()
+        render_ast(ast, link_fn, exists_fn)
+
+      {:error, ast, _} when is_list(ast) and ast != [] ->
+        render_ast(ast, link_fn, exists_fn)
 
       _ ->
         "<pre>#{escape(markdown)}</pre>"
@@ -38,6 +43,12 @@ defmodule Egghead.Web.MarkdownHTML do
   end
 
   defp default_link(target), do: "/records/#{target}"
+
+  defp render_ast(ast, link_fn, exists_fn) do
+    ast
+    |> Enum.map(&render_node(&1, link_fn, exists_fn))
+    |> IO.iodata_to_binary()
+  end
 
   # --- block nodes ---
 

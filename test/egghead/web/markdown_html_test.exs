@@ -217,5 +217,14 @@ defmodule Egghead.Web.MarkdownHTMLTest do
       html = MarkdownHTML.render("")
       assert is_binary(html)
     end
+
+    test "bodies that trigger Earmark warnings still render as HTML" do
+      # `<div>unclosed` makes Earmark return `{:error, ast, warnings}`
+      # — the AST is usable, but the old code dropped it and fell
+      # through to the `<pre>` fallback. New behavior: use the AST.
+      html = MarkdownHTML.render("# Heading\n\n<div>unclosed")
+      assert html =~ "<h1>Heading</h1>"
+      refute String.starts_with?(html, "<pre>")
+    end
   end
 end

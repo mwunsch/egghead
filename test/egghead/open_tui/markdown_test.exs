@@ -216,4 +216,30 @@ defmodule Egghead.OpenTUI.MarkdownTest do
       _ = row
     end
   end
+
+  describe "earmark :error recovery" do
+    # Earmark returns `{:error, ast, warnings}` for bodies that emit
+    # warnings but still produce a usable AST (e.g. naked unclosed
+    # HTML tags). The renderer should use that AST, not fall back to
+    # plain text.
+    test "renders body that triggers a :error tuple with non-empty AST" do
+      body = "# Heading\n\nPlain text.\n\n<div>unclosed"
+      rows = Markdown.render(body, 80)
+
+      text =
+        rows
+        |> List.flatten()
+        |> Enum.map_join("", fn
+          %{text: t} -> t
+          _ -> ""
+        end)
+
+      # The AST renderer unwraps the `<div>` — its text children
+      # come through without the angle brackets. Plaintext fallback
+      # would emit the literal `<div>unclosed` substring.
+      assert text =~ "Heading"
+      assert text =~ "unclosed"
+      refute text =~ "<div>"
+    end
+  end
 end

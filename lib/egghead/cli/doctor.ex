@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.Doctor do
-  @moduledoc "Diagnostic checks."
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config

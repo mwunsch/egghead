@@ -1,9 +1,5 @@
 defmodule Egghead.CLI.RoomsCmd do
-  @moduledoc """
-  `egghead rooms` — manage chat rooms.
-
-  Subcommands: list (default), new, drop, show.
-  """
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
 

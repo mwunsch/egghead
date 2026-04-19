@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.LLM do
-  @moduledoc "LLM provider management commands."
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config

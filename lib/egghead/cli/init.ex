@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.Init do
-  @moduledoc "First-run setup wizard."
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config

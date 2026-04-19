@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.Serve do
-  @moduledoc "Starts the web server and MCP HTTP endpoint."
+  @moduledoc false
 
   def run(args) do
     if "--help" in args or "-h" in args do

@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.ConfigCmd do
-  @moduledoc "Configuration viewing and editing."
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
   alias Egghead.Config

@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.MCPCmd do
-  @moduledoc "Starts the MCP stdio server."
+  @moduledoc false
 
   def run(args) do
     if "--help" in args or "-h" in args do

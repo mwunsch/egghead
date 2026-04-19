@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.Logs do
-  @moduledoc "Tail the application log file."
+  @moduledoc false
 
   def run(args) do
     if "--help" in args or "-h" in args do

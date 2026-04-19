@@ -1,14 +1,5 @@
 defmodule Egghead.CLI.ToolsCmd do
-  @moduledoc """
-  `egghead tools` — catalog of tools available to agents, by source.
-
-  Tools come from multiple sources:
-  - **local** — built into Egghead (records, web_fetch, shell_exec, fs_*)
-  - **mcp** — external MCP servers declared in config.yml
-
-  This surface lets the user inspect what's available, which agents
-  can use what, and register/remove MCP servers.
-  """
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
   alias Egghead.MCP.Client

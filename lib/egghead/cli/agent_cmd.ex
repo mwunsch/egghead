@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.AgentCmd do
-  @moduledoc "Agent management commands."
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
   alias Egghead.Agent.Wizard

@@ -1,5 +1,5 @@
 defmodule Egghead.CLI.TUI do
-  @moduledoc "Launches the Egghead TUI."
+  @moduledoc false
 
   def run(args) when is_list(args) do
     if "--help" in args or "-h" in args do

@@ -5,12 +5,13 @@ defmodule Egghead.LLM.Registry do
   Manages configured providers, resolves `provider/model` strings,
   validates model availability, and handles credential resolution.
 
-  ## Configuration layers (in precedence order)
+  ## Configuration
 
-  1. Egghead config file: `~/.config/egghead/config.yml` (llm section)
-  2. Legacy project config: `records/.egghead/providers.yml`
-  3. Legacy user config: `~/.egghead/providers.yml`
-  4. Environment variables: auto-detects `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`
+  Providers are configured in `~/.config/egghead/config.yml`
+  (respects `$XDG_CONFIG_HOME` / `$EGGHEAD_CONFIG`) under the `llm:`
+  key. When no providers are configured, the registry auto-detects
+  the `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`
+  environment variables.
 
   ## Provider/model format
 

@@ -1,13 +1,5 @@
 defmodule Egghead.CLI.SkillCmd do
-  @moduledoc """
-  Skill listing/inspection commands.
-
-  Skills are records with `class: skill`. They come from three sources:
-  SKILLS_DIR drop-ins (auto-indexed), explicit class:skill records,
-  and skills/*/SKILL.md records in the store. This command queries the
-  unified index and surfaces validation status against the Agent Skills
-  spec (https://agentskills.io/specification).
-  """
+  @moduledoc false
 
   alias Egghead.CLI.Widgets
   alias Egghead.Skill

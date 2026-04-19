@@ -26,7 +26,7 @@ egghead init                     # First-run setup wizard
 egghead serve                    # Web + MCP HTTP server (headless)
 egghead mcp                      # MCP stdio server (editor integration)
 egghead llm list|add|remove|test|models
-egghead agent list|new
+egghead agents list|new
 egghead config [set K V | path]
 egghead doctor                   # Diagnose setup problems
 egghead logs                     # Tail application logs
@@ -134,8 +134,7 @@ library embedding. Prefer reusing these over reinventing.
 | Function | Purpose |
 |---|---|
 | `prompt/3` | 1:1 prompt to a single agent |
-| `list_agents/0`, `agent_usage/1` | Roster + token / context % |
-| `clear_history/1` | Reset session history |
+| `list_agents/0` | Roster + token / context % |
 | `handoff/2` | Summarize + clear, accepts `room_id:` opt for room-targeted handoff |
 | `save_insights/1` | Distill session to a deliberation record |
 
@@ -149,7 +148,6 @@ library embedding. Prefer reusing these over reinventing.
 | `chat_continue/1` | Reset turn budget; replay queued mentions |
 | `chat_save/1` | Persist transcript as a `class: transcript` record |
 | `chat_transcript/1` | Read full transcript |
-| `set_room_mode/2` | `:serial` (default) or `:staggered` activation |
 | `watch/1` | Stream room events to stdout (RoomLogger) |
 
 ### Consultation

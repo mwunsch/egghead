@@ -23,9 +23,6 @@ defmodule Egghead.TUI.App do
   generic. On first switch into a screen, the shell calls that
   screen's `init/1` lazily; subsequent switches just flip the
   active screen and resume the existing model.
-
-  Phase 6a wires routing only — chat is a placeholder. Phases 6c
-  onward fill in the chat screen.
   """
 
   @behaviour Egghead.OpenTUI.Runtime

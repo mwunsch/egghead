@@ -19,7 +19,8 @@ defmodule Egghead do
     * `:author` — who created it
     * `:tags` — list of tag strings
     * `:links` — list of linked record ids
-    * `:class` — `:durable`, `:inbox`, or `:deliberation` (default: `:durable`)
+    * `:class` — `:durable`, `:inbox`, `:deliberation`, `:transcript`,
+      `:agent`, or `:skill` (default: `:durable`)
     * `:body` — the record body text
   """
   @spec create_record(map()) :: {:ok, Record.t()} | {:error, term()}
@@ -103,12 +104,6 @@ defmodule Egghead do
   defdelegate list_agents(), to: Egghead.Agent
 
   @doc """
-  Clears an agent's conversation history.
-  """
-  @spec clear_history(String.t()) :: :ok | {:error, :agent_not_found}
-  defdelegate clear_history(agent_id), to: Egghead.Agent
-
-  @doc """
   Handoff: summarize the agent's session to a deliberation record and
   optionally continue with a new prompt.
 
@@ -132,12 +127,6 @@ defmodule Egghead do
   """
   @spec save_insights(String.t()) :: {:ok, String.t()} | {:error, term()}
   defdelegate save_insights(agent_id), to: Egghead.Agent, as: :save
-
-  @doc """
-  Returns an agent's token usage and context info.
-  """
-  @spec agent_usage(String.t()) :: {:ok, map()} | {:error, :agent_not_found}
-  defdelegate agent_usage(agent_id), to: Egghead.Agent, as: :usage
 
   # --- Provider API ---
 
@@ -283,18 +272,6 @@ defmodule Egghead do
   @spec chat_save(String.t()) :: {:ok, String.t()} | {:error, term()}
   def chat_save(room_id \\ default_room()) do
     Egghead.Chat.Room.save_transcript(room_id)
-  end
-
-  @doc """
-  Sets the room's activation mode. `:serial` (default) for strict
-  turn-taking — each agent reads the transcript-so-far before deciding
-  to speak or `/pass`. `:staggered` is available as opt-in for overlapping
-  activity (next agent starts on the prior agent's first tool call or a
-  3s timeout), trading coordination quality for lower wall-clock latency.
-  """
-  @spec set_room_mode(String.t(), :staggered | :serial) :: :ok
-  def set_room_mode(room_id \\ default_room(), mode) do
-    Egghead.Chat.Room.set_mode(room_id, mode)
   end
 
   @doc """

@@ -18,10 +18,8 @@ defmodule Egghead.TUI.Records.View do
       blank spacer            (1 row)
       status bar              (1 row, full-width styled bar)
 
-  Mirrors the structure of `Egghead.TUI.App.records_view/1` on
-  `main`. Theming is intentionally not implemented yet — Phase
-  5b.5 uses fixed palette colors from `Egghead.OpenTUI.Colors`
-  as placeholders. A real theme module is a follow-on.
+  Colors are pulled from `Egghead.OpenTUI.Colors` directly. A
+  dedicated theme module is a follow-on.
   """
 
   import Egghead.OpenTUI.View
@@ -35,9 +33,8 @@ defmodule Egghead.TUI.Records.View do
   derivation of `model → tree`.
 
   The chrome (header + search + separator + 2 blanks + status)
-  is 6 rows. The remaining body is split 1/3 list / 2/3 preview,
-  matching `Egghead.TUI.App.records_view/1` on `main`. The
-  preview reserves one row for its label and the rest is body.
+  is 6 rows. The remaining body is split 1/3 list / 2/3 preview.
+  The preview reserves one row for its label and the rest is body.
   """
   @spec render(Model.t()) :: Egghead.OpenTUI.View.tree()
   def render(%Model{} = model) do

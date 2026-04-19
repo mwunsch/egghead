@@ -5,9 +5,6 @@ defmodule Egghead.TUI.Records do
   Wires together `Egghead.TUI.Records.Model`,
   `Egghead.TUI.Records.Update`, and `Egghead.TUI.Records.View`
   so the runtime can drive the screen via four pure callbacks.
-
-  Phase 5a is functional parity with the Phase 4 imperative
-  records list. Later sub-phases add features additively.
   """
 
   @behaviour Egghead.OpenTUI.Runtime

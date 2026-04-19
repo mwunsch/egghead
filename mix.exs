@@ -35,8 +35,9 @@ defmodule Egghead.OpenTUIPaths do
   @doc """
   Map a `:zig_target` value to the OpenTUI release asset filename.
 
-  Phase 3 supports darwin-arm64 and linux-x86_64. Add more
-  triples here as we extend cross-compile coverage.
+  Supports darwin-arm64, darwin-x64, linux-x64, and linux-arm64.
+  Add more triples in `opentui_asset_for_triple/1` as cross-compile
+  coverage extends.
   """
   def opentui_asset(:host), do: opentui_asset_for_triple(host_triple())
   def opentui_asset(triple) when is_binary(triple), do: opentui_asset_for_triple(triple)

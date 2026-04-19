@@ -4,8 +4,8 @@ defmodule Egghead.Record.AST do
   metadata from it.
 
   For Markdown, delegates to Earmark (with `wikilinks: true`) and
-  walks the resulting AST. For org-mode, a NimbleParsec-based parser
-  will be added in a future phase.
+  walks the resulting AST. Org-mode bodies are parsed by
+  `Egghead.Record.OrgParser` (NimbleParsec-based).
 
   The AST is Earmark's native format: a list of tuples like
   `{tag, attrs, children, meta}` where children can be strings or

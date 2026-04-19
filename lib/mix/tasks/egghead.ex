@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Egghead do
-  @moduledoc "Bridge to `Egghead.CLI.main/1`. The only Mix task."
+  @moduledoc "Bridge to `Egghead.CLI.main/1`."
   use Mix.Task
   @shortdoc "Run the egghead CLI"
   @requirements []

@@ -402,15 +402,39 @@ defmodule Egghead.Record.Parser do
     end
   end
 
-  defp derive_updated(nil), do: nil
+  @doc """
+  Returns the ISO8601 modification timestamp of `path`, or `nil` if
+  the file can't be stat'd. The hydrated record's `updated` field is
+  populated from this, so callers that want to know "has this file
+  changed since we last read it?" can compare against `record.updated`.
+  """
+  @spec derive_updated(String.t() | nil) :: String.t() | nil
+  def derive_updated(nil), do: nil
 
-  defp derive_updated(path) do
+  def derive_updated(path) do
     case File.stat(path, time: :posix) do
       {:ok, %{mtime: mtime}} ->
         mtime |> DateTime.from_unix!() |> DateTime.to_iso8601()
 
       _ ->
         nil
+    end
+  end
+
+  @doc """
+  Returns a cheap invalidation fingerprint for `path` — `{mtime, size}`
+  — or `nil` if the file can't be stat'd. Mtime alone is insufficient
+  on filesystems with second-granularity timestamps (two rewrites in
+  the same second look identical); pairing with size catches nearly
+  all in-second edits, which is what content caches need.
+  """
+  @spec file_fingerprint(String.t() | nil) :: {integer(), non_neg_integer()} | nil
+  def file_fingerprint(nil), do: nil
+
+  def file_fingerprint(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: mtime, size: size}} -> {mtime, size}
+      _ -> nil
     end
   end
 

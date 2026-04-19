@@ -23,6 +23,15 @@ defmodule Egghead.RecordStore do
   alias Egghead.Record
   alias Egghead.Record.Parser
 
+  # ETS table caching hydrated records by source_path, value
+  # {mtime, record}. Parsing a large markdown body runs Earmark to
+  # build an AST — hundreds of ms on a ~100 KB body. Without a cache,
+  # navigating away from a record and back re-hits hydrate/2 and pays
+  # the full parse cost every time. Mtime from a single stat is cheap
+  # and authoritative — if the file changes on disk, the next hydrate
+  # sees a different mtime and re-parses.
+  @hydrate_cache :egghead_record_hydrate_cache
+
   # --- State struct ---
 
   defmodule State do
@@ -160,6 +169,8 @@ defmodule Egghead.RecordStore do
     # Resolve symlinks so file watcher paths match (e.g. /tmp -> /private/tmp on macOS)
     records_dir = records_dir |> Path.expand() |> resolve_symlinks()
 
+    ensure_hydrate_cache()
+
     skills_dir =
       case Keyword.get(opts, :skills_dir) do
         nil -> nil
@@ -221,6 +232,7 @@ defmodule Egghead.RecordStore do
           # Ensure intermediate directories exist (e.g. records/chat/)
           path |> Path.dirname() |> File.mkdir_p!()
           File.write!(path, content)
+          hydrate_cache_evict(path)
 
           case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
             {:ok, record} ->
@@ -254,6 +266,7 @@ defmodule Egghead.RecordStore do
               end
 
             File.write!(path, content)
+            hydrate_cache_evict(path)
 
             case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
               {:ok, record} ->
@@ -326,6 +339,7 @@ defmodule Egghead.RecordStore do
 
   def handle_call(:reload, _from, state) do
     Index.rebuild(state.index, state.records_dir)
+    hydrate_cache_clear()
     {:reply, :ok, state}
   end
 
@@ -352,6 +366,8 @@ defmodule Egghead.RecordStore do
   # --- Private helpers ---
 
   defp handle_file_change(state, path) do
+    hydrate_cache_evict(path)
+
     if File.exists?(path) do
       case File.read(path) do
         {:ok, content} ->
@@ -388,6 +404,8 @@ defmodule Egghead.RecordStore do
   # Id is derived from the path relative to skills_dir, prefixed with
   # `skills/` and stripped of the conventional `/SKILL` suffix.
   defp handle_skill_change(state, path) do
+    hydrate_cache_evict(path)
+
     if File.exists?(path) do
       case File.read(path) do
         {:ok, content} ->
@@ -494,15 +512,85 @@ defmodule Egghead.RecordStore do
   defp hydrate(nil, _records_dir), do: {:error, :not_found}
 
   defp hydrate(path, records_dir) do
+    fingerprint = Parser.file_fingerprint(path)
+
+    case hydrate_cache_lookup(path, fingerprint) do
+      {:ok, record} ->
+        {:ok, record}
+
+      :miss ->
+        hydrate_from_disk(path, records_dir, fingerprint)
+    end
+  end
+
+  defp hydrate_from_disk(path, records_dir, fingerprint) do
     case File.read(path) do
       {:ok, content} ->
         case Parser.parse(content, source_path: path, records_dir: records_dir) do
-          {:ok, record} -> {:ok, record}
-          {:error, _} -> {:error, :parse_error}
+          {:ok, record} ->
+            hydrate_cache_put(path, fingerprint, record)
+            {:ok, record}
+
+          {:error, _} ->
+            {:error, :parse_error}
         end
 
       {:error, _} ->
         {:error, :file_read_error}
+    end
+  end
+
+  defp ensure_hydrate_cache do
+    case :ets.whereis(@hydrate_cache) do
+      :undefined ->
+        :ets.new(@hydrate_cache, [
+          :set,
+          :public,
+          :named_table,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp hydrate_cache_lookup(_path, nil), do: :miss
+
+  defp hydrate_cache_lookup(path, fingerprint) do
+    case :ets.whereis(@hydrate_cache) do
+      :undefined ->
+        :miss
+
+      _ ->
+        case :ets.lookup(@hydrate_cache, path) do
+          [{^path, ^fingerprint, record}] -> {:ok, record}
+          _ -> :miss
+        end
+    end
+  end
+
+  defp hydrate_cache_put(_path, nil, _record), do: :ok
+
+  defp hydrate_cache_put(path, fingerprint, record) do
+    case :ets.whereis(@hydrate_cache) do
+      :undefined -> :ok
+      _ -> :ets.insert(@hydrate_cache, {path, fingerprint, record})
+    end
+  end
+
+  defp hydrate_cache_evict(path) do
+    case :ets.whereis(@hydrate_cache) do
+      :undefined -> :ok
+      _ -> :ets.delete(@hydrate_cache, path)
+    end
+  end
+
+  defp hydrate_cache_clear do
+    case :ets.whereis(@hydrate_cache) do
+      :undefined -> :ok
+      _ -> :ets.delete_all_objects(@hydrate_cache)
     end
   end
 

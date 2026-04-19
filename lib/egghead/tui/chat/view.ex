@@ -25,8 +25,9 @@ defmodule Egghead.TUI.Chat.View do
   import Egghead.OpenTUI.View
 
   alias Egghead.Chat.Stream
-  alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer, Markdown}
+  alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer}
   alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste}
+  alias Egghead.TUI.MarkdownCache
   alias Model.AgentPresence
 
   @prompt "❯ "
@@ -246,8 +247,16 @@ defmodule Egghead.TUI.Chat.View do
   defp flush_run(run), do: {:run, run}
 
   # Render a run of consecutive agent entries from the same sender
-  # as a single markdown block. The nick appears on the first row;
+  # as a stack of markdown blocks. The nick appears on the first row;
   # continuation rows get blank gutter.
+  #
+  # Each entry was committed on a `\n\n` paragraph boundary, so we
+  # render each one independently and stack the rows, interleaving a
+  # blank row between entries to reproduce the visual spacing of a
+  # single merged render. Per-entry rendering lets `MarkdownCache`
+  # hit on every draw for every already-committed entry — a streaming
+  # agent only incurs one Earmark pass per new paragraph, not one per
+  # paragraph per draw.
   defp agent_run_to_rows(entries_with_nicks, body_w, full_w, active_target) do
     [{first_entry, show_nick?} | _] = entries_with_nicks
 
@@ -256,16 +265,14 @@ defmodule Egghead.TUI.Chat.View do
         do: nick_cell(first_entry.sender_name, :agent, first_entry.sender_id),
         else: blank_nick()
 
-    # Each entry was committed on a `\n\n` paragraph boundary, so re-join
-    # with `\n\n` — not `\n`. Joining with a single newline lets CommonMark
-    # treat a following prose line as a lazy continuation of a preceding
-    # blockquote, which pipes the prose into the blockquote gutter.
-    merged_text =
+    md_rows =
       entries_with_nicks
-      |> Enum.map(fn {e, _} -> e.text end)
-      |> Enum.join("\n\n")
+      |> Enum.map(fn {e, _} ->
+        e.text |> MarkdownCache.render(body_w) |> trim_trailing_empty()
+      end)
+      |> Enum.intersperse([[]])
+      |> Enum.concat()
 
-    md_rows = merged_text |> Markdown.render(body_w) |> trim_trailing_empty()
     wrap_markdown(nick, md_rows, full_w, nil, active_target)
   end
 
@@ -287,7 +294,7 @@ defmodule Egghead.TUI.Chat.View do
 
   defp entry_to_rows(%Entry{kind: :user} = e, show_nick?, body_w, full_w, active_target) do
     nick = if show_nick?, do: nick_cell(e.sender_name, :user, e.sender_id), else: blank_nick()
-    md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
+    md_rows = e.text |> MarkdownCache.render(body_w) |> trim_trailing_empty()
     wrap_markdown(nick, md_rows, full_w, Colors.user_msg_bg(), active_target)
   end
 
@@ -304,13 +311,13 @@ defmodule Egghead.TUI.Chat.View do
 
   defp entry_to_rows(%Entry{kind: :system} = e, _show_nick?, body_w, full_w, active_target) do
     nick = gutter_symbol("—")
-    md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
+    md_rows = e.text |> MarkdownCache.render(body_w) |> trim_trailing_empty()
     wrap_markdown(nick, md_rows, full_w, nil, active_target, Colors.dim())
   end
 
   defp entry_to_rows(%Entry{kind: :handoff} = e, _show_nick?, body_w, full_w, active_target) do
     nick = gutter_symbol("»")
-    md_rows = e.text |> Markdown.render(body_w) |> trim_trailing_empty()
+    md_rows = e.text |> MarkdownCache.render(body_w) |> trim_trailing_empty()
     wrap_markdown(nick, md_rows, full_w, nil, active_target)
   end
 

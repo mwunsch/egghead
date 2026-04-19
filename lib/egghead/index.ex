@@ -475,7 +475,6 @@ defmodule Egghead.Index do
         )
       end
 
-
       # Replace arbitrary metadata
       exec(conn, "DELETE FROM record_meta WHERE record_id = ?1", [record.id])
 
@@ -527,7 +526,6 @@ defmodule Egghead.Index do
           :skip
       end
     end)
-
   end
 
   defp list_record_files(dir) do

@@ -17,6 +17,7 @@ defmodule Egghead.TUI.Records.Model do
 
   alias Egghead.OpenTUI.{Colors, Markdown, Readline}
   alias Egghead.RecordStore
+  alias Egghead.TUI.MarkdownCache
   alias Egghead.TUI.Records.Slug
 
   @type date_format :: :relative | :iso
@@ -294,7 +295,7 @@ defmodule Egghead.TUI.Records.Model do
     if model.preview_rendered != nil and model.preview_rendered_width == width do
       model
     else
-      body_rows = Markdown.render(model.selected_body, width)
+      body_rows = MarkdownCache.render(model.selected_body, width)
 
       forward_targets = forward_targets_for(model.selected_record)
       backlink_records = backlinks_for(model.selected_id)

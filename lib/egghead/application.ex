@@ -47,7 +47,10 @@ defmodule Egghead.Application do
       cond do
         # Connected to a remote server — only start PubSub for cluster fan-out
         Egghead.Node.connected?() ->
-          [{Phoenix.PubSub, name: Egghead.PubSub}]
+          [
+            {Phoenix.PubSub, name: Egghead.PubSub},
+            Egghead.TUI.MarkdownCache
+          ]
 
         # Standalone mode — start the full supervision tree
         Application.get_env(:egghead, :start_record_store, true) ->
@@ -68,7 +71,8 @@ defmodule Egghead.Application do
             Egghead.MCP.Client.Supervisor,
             {Egghead.Agent.LayerSupervisor, records_dir: records_dir},
             {Registry, keys: :unique, name: Egghead.Doc.Registry},
-            {Egghead.Doc.Supervisor, []}
+            {Egghead.Doc.Supervisor, []},
+            Egghead.TUI.MarkdownCache
           ] ++ web_children()
 
         # Commands that don't need the app (--help, config, etc.)

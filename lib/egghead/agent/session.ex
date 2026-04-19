@@ -943,32 +943,12 @@ defmodule Egghead.Agent.Session do
     end
   end
 
-  # Find the most recent deliberation record tagged with this room.
-  # Returns a brief context block or nil.
+  # Find the most recent deliberation record tagged with this room
+  # and return a priming-context block, or nil if none exists.
   defp room_deliberation_context(room_id) do
-    case Egghead.search_by_tag("room:#{room_id}") do
-      [] ->
-        nil
-
-      records ->
-        latest = Enum.max_by(records, & &1.updated)
-
-        case Egghead.get_record(latest.id) do
-          {:ok, record} ->
-            body = record.body || ""
-
-            preview =
-              if String.length(body) > 500 do
-                String.slice(body, 0, 500) <> "..."
-              else
-                body
-              end
-
-            "Prior context (from #{latest.id}):\n#{preview}"
-
-          _ ->
-            nil
-        end
+    case Egghead.Record.Deliberation.latest_for_room(room_id) do
+      nil -> nil
+      deliberation -> Egghead.Record.Deliberation.context_for_session(deliberation)
     end
   end
 

@@ -626,6 +626,15 @@ defmodule Egghead.Agent.Session do
         _ -> compacted ++ [%{role: "user", content: message}]
       end
 
+    # Newer Claude models (Opus 4.5+, extended-thinking modes) reject
+    # messages ending with an assistant turn — they interpret it as
+    # prefill, which isn't supported. This happens when a session is
+    # re-activated via @-mention before the peer's agent_message has
+    # been processed (PubSub is async; mailbox ordering isn't guaranteed
+    # against the GenServer.call). Ensure we always send a final user
+    # turn.
+    history = ensure_trailing_user_turn(history)
+
     task_input_history_len = length(history)
 
     tools = Egghead.Agent.Tools.definitions_for(id[:capabilities] || [])
@@ -1013,6 +1022,18 @@ defmodule Egghead.Agent.Session do
 
   # --- Compaction ---
 
+  defp ensure_trailing_user_turn([]), do: []
+
+  defp ensure_trailing_user_turn(history) do
+    case List.last(history) do
+      %{role: "assistant"} ->
+        history ++ [%{role: "user", content: "(Continue.)"}]
+
+      _ ->
+        history
+    end
+  end
+
   defp compact_history(history) do
     {protected_ids, _} =
       history
@@ -1154,10 +1175,32 @@ defmodule Egghead.Agent.Session do
          "API key not set for this provider. Set the appropriate environment variable " <>
            "or run `egghead llm add`"}
 
+      {:error, {:transport_error, msg, _raw}} ->
+        # Already retried once at the provider layer; surface the human
+        # message verbatim so the chat shows e.g. "connection closed by
+        # server (transient — retry)" instead of a struct dump.
+        {:error, msg}
+
+      {:error, {:api_error, status, body}} ->
+        # Pull the actual provider error message out of the response
+        # body so the chat shows the why, not a truncated struct dump.
+        {:error, "API #{status}: #{api_error_message(body)}"}
+
       {:error, reason} ->
         {:error, {:provider_error, reason}}
     end
   end
+
+  # Extract a readable message from OpenAI / Gemini / Anthropic error
+  # bodies. Falls back to inspecting the body when the shape is unfamiliar.
+  defp api_error_message(%{"error" => %{"message" => msg}}) when is_binary(msg), do: msg
+
+  defp api_error_message(%{"error" => %{"message" => msg, "code" => code}}),
+    do: "#{code}: #{msg}"
+
+  defp api_error_message(%{"error" => err}) when is_binary(err), do: err
+  defp api_error_message(%{"message" => msg}) when is_binary(msg), do: msg
+  defp api_error_message(body), do: inspect(body, limit: 5, printable_limit: 400)
 
   # --- Helpers ---
 

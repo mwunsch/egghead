@@ -26,13 +26,39 @@ defmodule Egghead.LLM.Registry do
   @known_providers %{
     "anthropic" => Egghead.LLM.Anthropic,
     "openai" => Egghead.LLM.OpenAI,
-    "google" => Egghead.LLM.Google
+    "google" => Egghead.LLM.Google,
+    "xai" => Egghead.LLM.OpenAI,
+    "groq" => Egghead.LLM.OpenAI,
+    "deepseek" => Egghead.LLM.OpenAI,
+    "mistral" => Egghead.LLM.OpenAI,
+    "openrouter" => Egghead.LLM.OpenAI,
+    "ollama" => Egghead.LLM.OpenAI,
+    "lmstudio" => Egghead.LLM.OpenAI
+  }
+
+  # Curated OpenAI-compatible presets. Each provider is known to speak
+  # enough of OpenAI's chat/completions + /v1/models dialect that our
+  # single OpenAI adapter covers it — we just need the base_url.
+  # Local runners (Ollama/LM Studio) don't need an API key.
+  @provider_presets %{
+    "xai" => %{base_url: "https://api.x.ai/v1"},
+    "groq" => %{base_url: "https://api.groq.com/openai/v1"},
+    "deepseek" => %{base_url: "https://api.deepseek.com"},
+    "mistral" => %{base_url: "https://api.mistral.ai/v1"},
+    "openrouter" => %{base_url: "https://openrouter.ai/api/v1"},
+    "ollama" => %{base_url: "http://localhost:11434/v1", optional_key: true},
+    "lmstudio" => %{base_url: "http://localhost:1234/v1", optional_key: true}
   }
 
   @env_var_map %{
     "anthropic" => ["ANTHROPIC_API_KEY"],
     "openai" => ["OPENAI_API_KEY"],
-    "google" => ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+    "google" => ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    "xai" => ["XAI_API_KEY"],
+    "groq" => ["GROQ_API_KEY"],
+    "deepseek" => ["DEEPSEEK_API_KEY"],
+    "mistral" => ["MISTRAL_API_KEY"],
+    "openrouter" => ["OPENROUTER_API_KEY"]
   }
 
   @model_prefixes %{
@@ -41,8 +67,27 @@ defmodule Egghead.LLM.Registry do
     "o1" => "openai",
     "o3" => "openai",
     "o4" => "openai",
-    "gemini" => "google"
+    "o5" => "openai",
+    "gemini" => "google",
+    "grok" => "xai",
+    "deepseek" => "deepseek",
+    "mistral" => "mistral",
+    "codestral" => "mistral",
+    "ministral" => "mistral",
+    "pixtral" => "mistral"
   }
+
+  @doc "Returns the preset config (base_url, etc.) for a known provider, or `nil`."
+  @spec preset(String.t()) :: map() | nil
+  def preset(name), do: Map.get(@provider_presets, name)
+
+  @doc "Returns the known list of preset provider names (for CLI pickers)."
+  @spec preset_names() :: [String.t()]
+  def preset_names, do: Map.keys(@provider_presets)
+
+  @doc "Returns the canonical env var name(s) for a provider, or `[]`."
+  @spec env_vars(String.t()) :: [String.t()]
+  def env_vars(name), do: Map.get(@env_var_map, name, [])
 
   defmodule ProviderConfig do
     @moduledoc false
@@ -302,12 +347,13 @@ defmodule Egghead.LLM.Registry do
           name = entry.provider
           api_key = Egghead.Config.resolve_value(entry.api_key)
           module = determine_module(name, nil)
+          preset = Map.get(@provider_presets, name, %{})
 
           config = %ProviderConfig{
             name: name,
             module: module,
             api_key: api_key,
-            base_url: entry[:base_url],
+            base_url: entry[:base_url] || Map.get(preset, :base_url),
             models: :auto
           }
 
@@ -394,12 +440,13 @@ defmodule Egghead.LLM.Registry do
             acc
 
           api_key ->
-            module = @known_providers[provider_name]
+            preset = Map.get(@provider_presets, provider_name, %{})
 
             config = %ProviderConfig{
               name: provider_name,
-              module: module,
+              module: @known_providers[provider_name],
               api_key: api_key,
+              base_url: Map.get(preset, :base_url),
               models: :auto
             }
 

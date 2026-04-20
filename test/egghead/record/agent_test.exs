@@ -98,5 +98,22 @@ defmodule Egghead.Record.AgentTest do
       assert config.max_tokens == 4096
       assert config.temperature == nil
     end
+
+    test "reads context_window override from frontmatter" do
+      # Escape hatch for local-model users whose endpoint doesn't
+      # advertise a ceiling (Ollama, LM Studio).
+      config = Projection.from(record(meta: %{"context_window" => 32768}))
+      assert config.context_window == 32768
+    end
+
+    test "context_window defaults to nil when absent" do
+      config = Projection.from(record(meta: %{}))
+      assert config.context_window == nil
+    end
+
+    test "tolerates malformed context_window gracefully" do
+      config = Projection.from(record(meta: %{"context_window" => "not-a-number"}))
+      assert config.context_window == nil
+    end
   end
 end

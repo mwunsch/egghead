@@ -33,7 +33,8 @@ defmodule Egghead.Record.Agent do
           thinking: String.t() | nil,
           max_tokens: pos_integer(),
           temperature: float() | nil,
-          context_threshold: float()
+          context_threshold: float(),
+          context_window: pos_integer() | nil
         }
 
   defstruct [
@@ -44,6 +45,7 @@ defmodule Egghead.Record.Agent do
     :provider,
     :thinking,
     :temperature,
+    :context_window,
     capabilities: [],
     tags: [],
     max_tokens: @default_max_tokens,
@@ -67,7 +69,8 @@ defmodule Egghead.Record.Agent do
       thinking: meta_string(record, "thinking"),
       max_tokens: meta_int(record, "max_tokens", @default_max_tokens),
       temperature: meta_float(record, "temperature", nil),
-      context_threshold: meta_float(record, "context_threshold", @default_context_threshold)
+      context_threshold: meta_float(record, "context_threshold", @default_context_threshold),
+      context_window: meta_int(record, "context_window", nil)
     }
   end
 

@@ -684,17 +684,24 @@ defmodule Egghead.Chat.Coordinator do
     Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:agent_passed, agent_id})
   end
 
-  # Trim a terminate or error reason for display in a single chat line.
-  # Erlang exit reasons can be deeply nested; we keep the head and a
-  # short suffix so the user gets a hint without the line wrapping
-  # forever.
+  # Trim a terminate or error reason for display in chat. Erlang exit
+  # reasons can be deeply nested; we keep enough text for the actual
+  # diagnostic (provider error messages, etc.) but cap total length so
+  # runaway stack traces don't flood the transcript.
+  @max_reason_chars 400
+
   defp format_reason(reason) when is_binary(reason) do
-    if String.length(reason) > 80, do: String.slice(reason, 0, 77) <> "...", else: reason
+    if String.length(reason) > @max_reason_chars,
+      do: String.slice(reason, 0, @max_reason_chars - 3) <> "...",
+      else: reason
   end
 
   defp format_reason(reason) do
-    full = inspect(reason, limit: 5, printable_limit: 80)
-    if String.length(full) > 80, do: String.slice(full, 0, 77) <> "...", else: full
+    full = inspect(reason, limit: 5, printable_limit: @max_reason_chars)
+
+    if String.length(full) > @max_reason_chars,
+      do: String.slice(full, 0, @max_reason_chars - 3) <> "...",
+      else: full
   end
 
   defp display_name(state, agent_id) do

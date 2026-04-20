@@ -574,26 +574,34 @@ defmodule Egghead.TUI.Chat.Update do
   # The usage map carries :input_tokens, :output_tokens, :session_tokens
   # (cumulative lifetime), :current_context_tokens (current footprint),
   # :context_window, and :context_pct directly. Pressure display uses
-  # current context, not cumulative.
+  # current context, not cumulative. When the window is unknown (local
+  # models, providers that don't advertise it) we still track tokens —
+  # the view renders "N tok" with no bar rather than a bogus 0%.
   defp update_agent_ctx(%Model{agents: agents} = model, agent_id, msg) do
     case Map.get(msg, :usage) do
       %{context_window: cw, current_context_tokens: cct} when is_integer(cw) and cw > 0 ->
         pct = Float.round(cct / cw * 100, 1)
+        set_agent_ctx(model, agents, agent_id, pct, cw, cct)
 
-        agents =
-          Enum.map(agents, fn
-            %Model.AgentPresence{id: ^agent_id} = a ->
-              %{a | ctx_pct: pct, ctx_window: cw, ctx_tokens: cct}
-
-            a ->
-              a
-          end)
-
-        %{model | agents: agents}
+      %{current_context_tokens: cct} when is_integer(cct) ->
+        set_agent_ctx(model, agents, agent_id, 0.0, 0, cct)
 
       _ ->
         model
     end
+  end
+
+  defp set_agent_ctx(model, agents, agent_id, pct, cw, cct) do
+    agents =
+      Enum.map(agents, fn
+        %Model.AgentPresence{id: ^agent_id} = a ->
+          %{a | ctx_pct: pct, ctx_window: cw, ctx_tokens: cct}
+
+        a ->
+          a
+      end)
+
+    %{model | agents: agents}
   end
 
   defp display_name(agent_id, %Model{agents: agents}) do

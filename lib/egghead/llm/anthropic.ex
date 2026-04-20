@@ -109,7 +109,8 @@ defmodule Egghead.LLM.Anthropic do
     case Req.post(@api_url,
            json: body,
            headers: headers(api_key, "application/json"),
-           receive_timeout: 300_000
+           receive_timeout: 300_000,
+           retry: :transient
          ) do
       {:ok, %{status: 200, body: resp_body}} ->
         {:ok,
@@ -123,9 +124,25 @@ defmodule Egghead.LLM.Anthropic do
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->
-        {:error, {:request_error, reason}}
+        normalize_transport_error("Anthropic", reason)
     end
   end
+
+  defp normalize_transport_error(provider, %Req.TransportError{reason: r} = err) do
+    Logger.warning("#{provider} transport error: #{inspect(r)}")
+    {:error, {:transport_error, transport_reason(r), err}}
+  end
+
+  defp normalize_transport_error(provider, reason) do
+    Logger.warning("#{provider} request error: #{inspect(reason, limit: 5)}")
+    {:error, {:request_error, reason}}
+  end
+
+  defp transport_reason(:closed), do: "connection closed by server (transient — retry)"
+  defp transport_reason(:timeout), do: "request timed out"
+  defp transport_reason(:econnrefused), do: "connection refused"
+  defp transport_reason(:nxdomain), do: "DNS lookup failed"
+  defp transport_reason(other), do: "transport error: #{inspect(other)}"
 
   # --- Streaming ---
 
@@ -139,7 +156,11 @@ defmodule Egghead.LLM.Anthropic do
       current_block: nil,
       stop_reason: nil,
       usage: %{input_tokens: 0, output_tokens: 0},
-      on_chunk: on_chunk
+      on_chunk: on_chunk,
+      # TCP chunks land at arbitrary boundaries — buffer any trailing
+      # partial line across Req callbacks so split-JSON events aren't
+      # silently dropped by the SSE parser.
+      buffer: ""
     }
 
     # `into:` runs for every chunk regardless of status code. For 200s
@@ -189,7 +210,7 @@ defmodule Egghead.LLM.Anthropic do
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->
-        {:error, {:request_error, reason}}
+        normalize_transport_error("Anthropic", reason)
     end
   end
 
@@ -206,9 +227,12 @@ defmodule Egghead.LLM.Anthropic do
   end
 
   defp process_sse_chunk(data, acc) do
-    data
-    |> String.split("\n")
-    |> Enum.reduce(acc, fn line, acc ->
+    combined = (acc[:buffer] || "") <> data
+    parts = String.split(combined, "\n")
+    {remainder, complete} = List.pop_at(parts, -1)
+    acc = Map.put(acc, :buffer, remainder || "")
+
+    Enum.reduce(complete, acc, fn line, acc ->
       case String.trim_leading(line, "data: ") do
         "[DONE]" ->
           acc

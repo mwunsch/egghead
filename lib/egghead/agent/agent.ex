@@ -222,7 +222,8 @@ defmodule Egghead.Agent do
       thinking: config.thinking,
       max_tokens: config.max_tokens,
       temperature: config.temperature,
-      context_threshold: config.context_threshold
+      context_threshold: config.context_threshold,
+      context_window: config.context_window
     }
 
     Logger.info(
@@ -230,7 +231,11 @@ defmodule Egghead.Agent do
     )
 
     Process.flag(:trap_exit, true)
-    send(self(), :fetch_model_info)
+
+    # Frontmatter override wins — no point hitting the Registry if the
+    # agent author declared their model's ceiling explicitly.
+    if is_nil(state.context_window), do: send(self(), :fetch_model_info)
+
     broadcast_lifecycle(:started, state.id)
 
     {:ok, state}
@@ -339,26 +344,16 @@ defmodule Egghead.Agent do
             max_input
 
           {:ok, _info} ->
-            # Provider returned model info but without a usable
-            # context window (OpenAI does this for very new models
-            # whose metadata hasn't been populated yet). Fall back
-            # to the model-family heuristic instead of crashing —
-            # a crash here would loop the supervisor and block app
-            # boot.
-            Logger.warning(
-              "Agent #{state.name}: model #{state.model} has no context window metadata, using fallback"
-            )
-
-            fallback_context_window(state.model)
+            fallback_context_window(state.model, state.name)
 
           {:error, reason} ->
             Logger.warning("Agent #{state.name}: could not fetch model info: #{inspect(reason)}")
-            fallback_context_window(state.model)
+            fallback_context_window(state.model, state.name)
         end
       catch
         :exit, _ ->
           Logger.warning("Agent #{state.name}: LLM Registry not available")
-          fallback_context_window(state.model)
+          fallback_context_window(state.model, state.name)
       end
 
     {:noreply, %{state | context_window: context_window}}
@@ -456,11 +451,26 @@ defmodule Egghead.Agent do
 
   # --- Helpers ---
 
-  defp fallback_context_window(model) do
-    cond do
-      String.contains?(model, "opus") -> 1_000_000
-      String.contains?(model, "haiku") -> 200_000
-      true -> 200_000
+  # When the provider API can't tell us, look up by model-family prefix.
+  # Returns `nil` for genuinely unknown models so the TUI can render an
+  # honest "unknown ceiling" instead of a fabricated number. Users on
+  # exotic local models can set `context_window:` in agent frontmatter
+  # to override everything.
+  defp fallback_context_window(model, agent_name) do
+    # The registry may prefix as `provider/model`; strip it before lookup.
+    bare = model |> to_string() |> String.split("/", parts: 2) |> List.last()
+
+    case Egghead.LLM.ModelMeta.context_window(bare) do
+      nil ->
+        Logger.warning(
+          "Agent #{agent_name}: no context window for model #{model}; set `context_window:` in frontmatter to override"
+        )
+
+        nil
+
+      ctx ->
+        Logger.info("Agent #{agent_name}: fallback context window = #{ctx} tokens for #{model}")
+        ctx
     end
   end
 end

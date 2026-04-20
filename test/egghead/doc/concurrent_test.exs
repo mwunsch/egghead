@@ -137,9 +137,12 @@ defmodule Egghead.Doc.ConcurrentTest do
       {:ok, c1} = YjsClient.start_link(id, self())
       :ok = YjsClient.connect(c1)
 
-      # Client adds text at the end
+      # Append at end of body. Bodies returned from the record store
+      # don't always have a trailing newline, so `byte_size(body) - 1`
+      # goes off-by-one and splits the final word. Use `byte_size(body)`
+      # and let the merge handle newline structure.
       body = YjsClient.read(c1)
-      YjsClient.insert(c1, byte_size(body) - 1, "\nLine four")
+      YjsClient.insert(c1, byte_size(body), "\nLine four")
 
       # External editor modifies the beginning
       path = Path.join(tmp_dir, "#{id}.md")
@@ -149,14 +152,12 @@ defmodule Egghead.Doc.ConcurrentTest do
         "---\ntitle: #{id}\nclass: durable\n---\n\nModified line one\nLine two\nLine three\n"
       )
 
-      # Wait for watcher + reconciliation + propagation
-      Process.sleep(4000)
-
-      text = YjsClient.read(c1)
-
-      # Both edits should be present
-      assert text =~ "Modified line one"
-      assert text =~ "Line four"
+      # Poll for convergence. File watcher + reindex + reconcile +
+      # broadcast + client apply isn't deterministic under full-suite
+      # load — a fixed sleep was flaky.
+      assert wait_for_text(c1, fn text ->
+               text =~ "Modified line one" and text =~ "Line four"
+             end)
     end
 
     test "file edit with unicode merges correctly", %{tmp_dir: tmp_dir} do
@@ -173,11 +174,30 @@ defmodule Egghead.Doc.ConcurrentTest do
         "---\ntitle: #{id}\nclass: durable\n---\n\nHello → Beautiful → World\n"
       )
 
-      Process.sleep(4000)
-
-      text = YjsClient.read(c1)
-      assert text =~ "Hello → Beautiful → World"
+      assert wait_for_text(c1, fn text -> text =~ "Hello → Beautiful → World" end)
     end
+  end
+
+  # Poll a Yjs client until `pred` returns true for its current text, or
+  # give up after `deadline_ms`. Short sleeps keep CPU low while being
+  # responsive when propagation is fast.
+  defp wait_for_text(client, pred, deadline_ms \\ 15_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+
+    Stream.repeatedly(fn -> :ok end)
+    |> Enum.reduce_while(false, fn _, _ ->
+      cond do
+        pred.(YjsClient.read(client)) ->
+          {:halt, true}
+
+        System.monotonic_time(:millisecond) > deadline ->
+          {:halt, false}
+
+        true ->
+          Process.sleep(50)
+          {:cont, false}
+      end
+    end)
   end
 
   describe "disconnect and reconnect" do

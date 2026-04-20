@@ -8,7 +8,14 @@ defmodule Egghead.CLI.Init do
     %{name: "Anthropic", id: "anthropic", hint: "Claude models"},
     %{name: "OpenAI", id: "openai", hint: "GPT, o-series models"},
     %{name: "Google", id: "google", hint: "Gemini models"},
-    %{name: "Custom", id: "custom", hint: "OpenAI-compatible endpoint"}
+    %{name: "xAI", id: "xai", hint: "Grok models"},
+    %{name: "Groq", id: "groq", hint: "Fast inference of open models"},
+    %{name: "DeepSeek", id: "deepseek", hint: "DeepSeek V3/R1, reasoning"},
+    %{name: "Mistral", id: "mistral", hint: "Mistral Large / Medium / Small"},
+    %{name: "OpenRouter", id: "openrouter", hint: "300+ models via one key"},
+    %{name: "Ollama", id: "ollama", hint: "Local models (localhost:11434)"},
+    %{name: "LM Studio", id: "lmstudio", hint: "Local models (localhost:1234)"},
+    %{name: "Custom", id: "custom", hint: "Any OpenAI-compatible endpoint"}
   ]
 
   def run(args) do
@@ -113,19 +120,9 @@ defmodule Egghead.CLI.Init do
     if is_nil(provider) do
       {config, []}
     else
-      {api_key, base_url} =
-        case provider.id do
-          "custom" ->
-            key = Widgets.secret("API key (or press Enter for none)")
-            url = Widgets.input("Base URL", default: "http://localhost:11434/v1")
-            {key, url}
-
-          _ ->
-            key = Widgets.secret("API key")
-            {key, nil}
-        end
-
-      api_key = if api_key == "", do: nil, else: api_key
+      preset = Egghead.LLM.Registry.preset(provider.id)
+      {raw_key, base_url} = prompt_credentials(provider, preset)
+      api_key = resolve_or_env_ref(raw_key, provider.id, preset)
 
       entry = %{
         provider: provider.id,
@@ -134,7 +131,10 @@ defmodule Egghead.CLI.Init do
         name: if(provider.id == "custom", do: "custom")
       }
 
-      if api_key do
+      # Local runners (Ollama / LM Studio) are valid with no key.
+      proceed? = api_key != nil or (preset && Map.get(preset, :optional_key))
+
+      if proceed? do
         result =
           Widgets.spinner("Verifying #{provider.name}...", fn ->
             verify_provider(entry)
@@ -148,7 +148,7 @@ defmodule Egghead.CLI.Init do
 
           {:error, reason} ->
             Widgets.error("Verification failed: #{inspect(reason)}")
-            Widgets.warn("Provider not added. Check your API key and try again.")
+            Widgets.warn("Provider not added. Check your endpoint and key and try again.")
             {config, []}
         end
       else
@@ -156,6 +156,54 @@ defmodule Egghead.CLI.Init do
       end
     end
   end
+
+  defp prompt_credentials(%{id: "custom"}, _preset) do
+    key = Widgets.secret("API key (or press Enter for none)")
+    url = Widgets.input("Base URL", default: "http://localhost:11434/v1")
+    {key, url}
+  end
+
+  defp prompt_credentials(provider, nil) do
+    # Native provider with no preset entry (anthropic / openai / google).
+    key = Widgets.secret(api_key_prompt(provider.id))
+    {key, nil}
+  end
+
+  defp prompt_credentials(provider, preset) do
+    base_url = Map.get(preset, :base_url)
+
+    key =
+      if Map.get(preset, :optional_key) do
+        Widgets.secret("API key (leave empty for local)")
+      else
+        Widgets.secret(api_key_prompt(provider.id))
+      end
+
+    {key, base_url}
+  end
+
+  defp api_key_prompt(provider_id) do
+    case Egghead.LLM.Registry.env_vars(provider_id) do
+      [env | _] -> "API key (or leave empty to use $#{env})"
+      [] -> "API key"
+    end
+  end
+
+  # Turn a user-entered key into a config value:
+  # - empty input + known env var → store `"{env:XXX}"` so it resolves at runtime
+  # - empty input + no env var → nil (skip adding unless preset says key is optional)
+  # - any non-empty input → use verbatim
+  defp resolve_or_env_ref("", provider_id, _preset) do
+    case Egghead.LLM.Registry.env_vars(provider_id) do
+      [env | _] -> "{env:#{env}}"
+      [] -> nil
+    end
+  end
+
+  defp resolve_or_env_ref(nil, provider_id, preset),
+    do: resolve_or_env_ref("", provider_id, preset)
+
+  defp resolve_or_env_ref(key, _provider_id, _preset), do: key
 
   defp add_providers_loop(config, all_models) do
     {config, models} = add_provider(config)

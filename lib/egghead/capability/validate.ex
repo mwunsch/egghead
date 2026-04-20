@@ -109,8 +109,7 @@ defmodule Egghead.Capability.Validate do
     [
       %{
         entry: other,
-        problem:
-          "expected a capability string or a single-key map, got #{inspect(other)}",
+        problem: "expected a capability string or a single-key map, got #{inspect(other)}",
         suggestion: nil
       }
     ]

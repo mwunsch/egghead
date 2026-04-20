@@ -606,11 +606,18 @@ defmodule Egghead.TUI.Chat.View do
         attrs: if(a.status == :active, do: Attrs.bold(), else: 0)
       )
 
+    has_window? = a.ctx_window > 0
+
     token_label =
-      if a.ctx_window > 0 do
-        "  #{format_tokens(a.ctx_tokens)}/#{format_tokens(a.ctx_window)}"
-      else
-        "  —"
+      cond do
+        has_window? ->
+          "  #{format_tokens(a.ctx_tokens)}/#{format_tokens(a.ctx_window)}"
+
+        a.ctx_tokens > 0 ->
+          "  #{format_tokens(a.ctx_tokens)} tok"
+
+        true ->
+          "  —"
       end
 
     token_row =
@@ -621,15 +628,20 @@ defmodule Egghead.TUI.Chat.View do
       )
 
     # Leave 3 chars right margin so e.g. "62.3%" doesn't butt
-    # against the screen edge.
-    bar = context_bar(a.ctx_pct, sb_width - 3)
-
+    # against the screen edge. With no known window, render an
+    # honest blank row rather than a fake 0% bar.
     ctx_row =
-      text(pad_to("  #{bar}", sb_width),
-        height: 1,
-        fg: Colors.muted(),
-        bg: @sidebar_bg
-      )
+      if has_window? do
+        bar = context_bar(a.ctx_pct, sb_width - 3)
+
+        text(pad_to("  #{bar}", sb_width),
+          height: 1,
+          fg: Colors.muted(),
+          bg: @sidebar_bg
+        )
+      else
+        text(pad_to("", sb_width), height: 1, bg: @sidebar_bg)
+      end
 
     separator =
       text(String.duplicate(" ", sb_width), height: 1, bg: @sidebar_bg)

@@ -5,6 +5,8 @@ defmodule Egghead.Doc.ConcurrentTest do
   """
   use ExUnit.Case, async: false
 
+  import Egghead.Test.WaitFor
+
   alias Egghead.Doc.Server
   alias Egghead.Test.YjsClient
 
@@ -23,6 +25,8 @@ defmodule Egghead.Doc.ConcurrentTest do
     start_supervised!({Egghead.Doc.Supervisor, []})
     start_supervised!({Egghead.RecordSupervisor, records_dir: tmp_dir, db_path: db_path})
 
+    # FSEvents/inotify subscription takes a beat to become live.
+    # Empirically 300ms is the floor; lower and new-file events get lost.
     Process.sleep(300)
 
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
@@ -33,14 +37,30 @@ defmodule Egghead.Doc.ConcurrentTest do
   defp create_fixture(tmp_dir, id, body) do
     path = Path.join(tmp_dir, "#{id}.md")
     File.write!(path, "---\ntitle: #{id}\nclass: durable\n---\n\n#{body}\n")
-    Process.sleep(500)
+    assert wait_for(fn -> match?({:ok, _}, Egghead.get_record(id)) end, 3_000)
+    # Let FSEvents/inotify coalescing settle before a subsequent write
+    # to the same path, otherwise the external-file-edit tests lose the
+    # second write event.
+    Process.sleep(200)
     id
   end
 
-  defp wait_for_convergence(clients, timeout \\ 3000) do
-    # Wait for updates to propagate, then read all clients
-    Process.sleep(timeout)
-    Enum.map(clients, &YjsClient.read/1)
+  # Poll two clients until their text matches, then return both. Fails
+  # if they don't converge within `deadline_ms`.
+  defp wait_for_convergence(clients, deadline_ms \\ 3_000) do
+    result =
+      wait_for(
+        fn ->
+          texts = Enum.map(clients, &YjsClient.read/1)
+          if Enum.uniq(texts) |> length() == 1, do: texts, else: false
+        end,
+        deadline_ms
+      )
+
+    assert result != false,
+           "clients did not converge within #{deadline_ms}ms — got #{inspect(Enum.map(clients, &YjsClient.read/1))}"
+
+    result
   end
 
   describe "two-client convergence" do
@@ -155,9 +175,13 @@ defmodule Egghead.Doc.ConcurrentTest do
       # Poll for convergence. File watcher + reindex + reconcile +
       # broadcast + client apply isn't deterministic under full-suite
       # load — a fixed sleep was flaky.
-      assert wait_for_text(c1, fn text ->
-               text =~ "Modified line one" and text =~ "Line four"
-             end)
+      assert wait_for(
+               fn ->
+                 text = YjsClient.read(c1)
+                 text =~ "Modified line one" and text =~ "Line four"
+               end,
+               15_000
+             )
     end
 
     test "file edit with unicode merges correctly", %{tmp_dir: tmp_dir} do
@@ -174,30 +198,8 @@ defmodule Egghead.Doc.ConcurrentTest do
         "---\ntitle: #{id}\nclass: durable\n---\n\nHello → Beautiful → World\n"
       )
 
-      assert wait_for_text(c1, fn text -> text =~ "Hello → Beautiful → World" end)
+      assert wait_for(fn -> YjsClient.read(c1) =~ "Hello → Beautiful → World" end, 15_000)
     end
-  end
-
-  # Poll a Yjs client until `pred` returns true for its current text, or
-  # give up after `deadline_ms`. Short sleeps keep CPU low while being
-  # responsive when propagation is fast.
-  defp wait_for_text(client, pred, deadline_ms \\ 15_000) do
-    deadline = System.monotonic_time(:millisecond) + deadline_ms
-
-    Stream.repeatedly(fn -> :ok end)
-    |> Enum.reduce_while(false, fn _, _ ->
-      cond do
-        pred.(YjsClient.read(client)) ->
-          {:halt, true}
-
-        System.monotonic_time(:millisecond) > deadline ->
-          {:halt, false}
-
-        true ->
-          Process.sleep(50)
-          {:cont, false}
-      end
-    end)
   end
 
   describe "disconnect and reconnect" do
@@ -207,19 +209,14 @@ defmodule Egghead.Doc.ConcurrentTest do
       {:ok, c1} = YjsClient.start_link(id, self())
       :ok = YjsClient.connect(c1)
 
-      # Client 1 edits
+      # Client 1 edits — poll until c1 reflects it locally
       YjsClient.insert(c1, byte_size("Original"), " edited")
-      Process.sleep(1000)
+      assert wait_for(fn -> YjsClient.read(c1) =~ "Original edited" end, 2_000)
 
-      # Client 2 joins later
+      # Client 2 joins later — poll until it syncs the edited state
       {:ok, c2} = YjsClient.start_link(id, self())
       :ok = YjsClient.connect(c2)
-
-      Process.sleep(1000)
-
-      # Client 2 should have the edited content
-      text2 = YjsClient.read(c2)
-      assert text2 =~ "Original edited"
+      assert wait_for(fn -> YjsClient.read(c2) =~ "Original edited" end, 2_000)
     end
 
     test "client crash triggers cleanup via monitor", %{tmp_dir: tmp_dir} do
@@ -235,19 +232,18 @@ defmodule Egghead.Doc.ConcurrentTest do
       {:ok, c2} = YjsClient.start_link(id, self())
       :ok = YjsClient.connect(c2)
 
-      # Kill client 1 abruptly
+      # Kill client 1 abruptly — monitor so we know the server has
+      # seen the :DOWN before we proceed, rather than sleeping blindly.
+      ref = Process.monitor(c1)
       Process.exit(c1, :kill)
-      Process.sleep(500)
+      assert_receive {:DOWN, ^ref, :process, ^c1, _}, 1_000
 
       # Server should still be alive (c2 is still connected)
       assert Process.alive?(pid)
 
-      # Client 2 should still work
+      # Client 2 should still work — poll for its insert to round-trip
       YjsClient.insert(c2, 0, "Still works: ")
-      Process.sleep(1000)
-
-      text = YjsClient.read(c2)
-      assert text =~ "Still works"
+      assert wait_for(fn -> YjsClient.read(c2) =~ "Still works" end, 2_000)
     end
 
     test "edits flush to disk before last client disconnects", %{tmp_dir: tmp_dir} do
@@ -258,13 +254,19 @@ defmodule Egghead.Doc.ConcurrentTest do
 
       YjsClient.insert(c1, byte_size("Before"), " after")
 
-      # Detach — server should flush dirty buffer in terminate
+      # Detach — server schedules shutdown (5s) and flushes on terminate.
+      # Poll up to 7s for the edit to land on disk.
       Server.detach(id, c1)
-      Process.sleep(6000)
 
-      # Read from disk — should have the edit
-      {:ok, record} = Egghead.get_record(id)
-      assert record.body =~ "after"
+      assert wait_for(
+               fn ->
+                 case Egghead.get_record(id) do
+                   {:ok, record} -> record.body =~ "after"
+                   _ -> false
+                 end
+               end,
+               7_000
+             )
     end
   end
 
@@ -281,15 +283,25 @@ defmodule Egghead.Doc.ConcurrentTest do
       YjsClient.insert(c1, byte_size("Start"), " from-c1")
       YjsClient.insert(c2, 0, "from-c2 ")
 
-      # Wait for debounce + flush
-      Process.sleep(4000)
+      # Debounce is max 2s; poll up to 5s for both edits on disk.
+      record =
+        wait_for(
+          fn ->
+            case Egghead.get_record(id) do
+              {:ok, %{body: b} = r} ->
+                if b =~ "from-c1" and b =~ "from-c2", do: r, else: false
 
-      {:ok, record} = Egghead.get_record(id)
-      assert record.body =~ "from-c1"
-      assert record.body =~ "from-c2"
+              _ ->
+                false
+            end
+          end,
+          5_000
+        )
+
+      assert record, "both edits did not flush to disk within 5s"
 
       # And both clients agree with disk
-      [text1, text2] = wait_for_convergence([c1, c2], 1000)
+      [text1, text2] = wait_for_convergence([c1, c2])
       disk_body = record.body
       assert String.trim(text1) == String.trim(disk_body)
       assert String.trim(text2) == String.trim(disk_body)
@@ -308,10 +320,7 @@ defmodule Egghead.Doc.ConcurrentTest do
       # Agent edits through the CRDT path
       :ok = Server.agent_edit(id, "agents/scout", "Modified by agent")
 
-      Process.sleep(1000)
-
-      text = YjsClient.read(c1)
-      assert text =~ "Modified by agent"
+      assert wait_for(fn -> YjsClient.read(c1) =~ "Modified by agent" end, 3_000)
     end
 
     test "agent_edit sends cursor events to client", %{tmp_dir: tmp_dir} do
@@ -349,20 +358,23 @@ defmodule Egghead.Doc.ConcurrentTest do
       {:ok, c1} = YjsClient.start_link(id, self())
       :ok = YjsClient.connect(c1)
 
-      # Client edits beginning — wait for it to reach the server
+      # Client edits beginning — poll until it's applied locally (and
+      # by extension, reached the server before we fire the agent edit).
       YjsClient.insert(c1, 0, "Prepended! ")
-      Process.sleep(500)
+      assert wait_for(fn -> YjsClient.read(c1) =~ "Prepended!" end, 2_000)
 
       # Agent edits end (after client edit has been applied)
       current = "Prepended! Line one\nLine two\nLine three"
       new_body = current <> "\nLine four from agent"
       Server.agent_edit(id, "agents/scout", new_body)
 
-      Process.sleep(2000)
-
-      text = YjsClient.read(c1)
-      assert text =~ "Prepended!"
-      assert text =~ "Line four from agent"
+      assert wait_for(
+               fn ->
+                 text = YjsClient.read(c1)
+                 text =~ "Prepended!" and text =~ "Line four from agent"
+               end,
+               3_000
+             )
     end
 
     test "alive?/1 returns false when no Doc.Server running" do

@@ -1,6 +1,7 @@
 defmodule Egghead.Doc.ServerTest do
   use ExUnit.Case, async: false
 
+  import Egghead.Test.WaitFor
   alias Egghead.Doc.Server
 
   @moduletag :records
@@ -18,7 +19,12 @@ defmodule Egghead.Doc.ServerTest do
     start_supervised!({Egghead.Doc.Supervisor, []})
     start_supervised!({Egghead.RecordSupervisor, records_dir: tmp_dir, db_path: db_path})
 
+    # RecordStore's init spawns the `file_system` watcher but FSEvents
+    # (macOS) / inotify (Linux) take a moment to start firing reliably —
+    # a new file written too soon after setup is missed. 300ms is the
+    # empirical floor; the subsequent index-ready check is fast.
     Process.sleep(300)
+    assert wait_for(fn -> Process.whereis(Egghead.Index) != nil end, 2_000)
 
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
@@ -32,7 +38,10 @@ defmodule Egghead.Doc.ServerTest do
       "---\ntitle: #{String.capitalize(id)}\nclass: durable\n---\n\n#{body}\n"
 
     File.write!(path, content)
-    Process.sleep(500)
+    assert wait_for(fn -> match?({:ok, _}, Egghead.get_record(id)) end, 3_000)
+    # Let FSEvents/inotify coalescing settle before the next fixture
+    # write hits the same directory.
+    Process.sleep(200)
     id
   end
 
@@ -84,11 +93,14 @@ defmodule Egghead.Doc.ServerTest do
       {:ok, pid} = Server.ensure_started(id)
       {:ok, _} = Server.attach(id, self())
       Server.detach(id, self())
-
-      Process.sleep(100)
       {:ok, _} = Server.attach(id, self())
 
-      Process.sleep(6000)
+      # Server's shutdown timer is 5s. `refute_receive` waits that long
+      # for a :DOWN — if it never fires, the reattach cancelled the
+      # timer (what we want). Bails as soon as a :DOWN arrives, so
+      # failures are fast instead of waiting out a sleep.
+      ref = Process.monitor(pid)
+      refute_receive {:DOWN, ^ref, :process, ^pid, _}, 5_500
       assert Process.alive?(pid)
 
       Server.detach(id, self())
@@ -127,10 +139,17 @@ defmodule Egghead.Doc.ServerTest do
 
       Server.apply_update(id, update)
 
-      Process.sleep(3000)
-
-      {:ok, record} = Egghead.get_record(id)
-      assert record.body =~ "After edit"
+      # Debounce is max 2s; poll up to 3s for the flushed body to
+      # appear on disk instead of sleeping the full window every run.
+      assert wait_for(
+               fn ->
+                 case Egghead.get_record(id) do
+                   {:ok, record} -> record.body =~ "After edit"
+                   _ -> false
+                 end
+               end,
+               3_000
+             )
     end
   end
 

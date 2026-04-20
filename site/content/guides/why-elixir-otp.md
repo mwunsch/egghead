@@ -3,13 +3,16 @@ title: Why Elixir/OTP
 weight: 50
 ---
 
-Egghead is built on Elixir, which runs on the BEAM — the runtime
-Ericsson created in the 1980s for telecom switching. That choice
-wasn't made for performance. LLM API latency dominates every hot
-path in this system; no programming language is going to move that
-number. The choice was made because the shape of the problem —
-long-lived stateful agents, graceful failure, hot-reload, shared
-event streams — is exactly the shape OTP was designed around.
+Egghead is built on [Elixir](https://elixir-lang.org), which runs
+on the [BEAM](https://en.wikipedia.org/wiki/BEAM_(Erlang_virtual_machine))
+— the runtime Ericsson created in the 1980s for telecom switching.
+That choice wasn't made for performance. LLM API latency dominates
+every hot path in this system; no programming language is going to
+move that number. The choice was made because the shape of the
+problem — long-lived stateful agents, graceful failure, hot-reload,
+shared event streams — is exactly the shape
+[OTP](https://en.wikipedia.org/wiki/Open_Telecom_Platform) was
+designed around.
 
 This guide explains what the runtime buys Egghead, where it
 doesn't help, and what the honest costs are.
@@ -40,12 +43,13 @@ for the system:
 
 ### Processes as units of concurrency
 
-A BEAM process isn't an OS thread. It's a lightweight scheduled
-unit — tens of kilobytes of heap, microseconds to spawn, millions
-per node. Each agent is a `GenServer` (a BEAM process with a
-defined message-handling contract). Each chat room is a GenServer.
-The record store, the LLM registry, each MCP client connection —
-all GenServers.
+A [BEAM process](https://hexdocs.pm/elixir/processes.html) isn't an
+OS thread. It's a lightweight scheduled unit — tens of kilobytes of
+heap, microseconds to spawn, millions per node. Each agent is a
+[`GenServer`](https://hexdocs.pm/elixir/GenServer.html) (a BEAM
+process with a defined message-handling contract). Each chat room
+is a GenServer. The record store, the LLM registry, each MCP client
+connection — all GenServers.
 
 Why that matters here: agents have independent state and
 independent failure modes. When one agent's tool call throws, that
@@ -55,17 +59,19 @@ corrupt, no exception to propagate across contexts.
 
 ### Supervision trees
 
-A supervisor is a process whose only job is to start, watch, and
-restart other processes according to a declared policy. Egghead's
-supervision tree is a few dozen lines of code that describes the
-whole system's failure behavior:
+A [supervisor](https://hexdocs.pm/elixir/Supervisor.html) is a
+process whose only job is to start, watch, and restart other
+processes according to a declared policy. Egghead's supervision
+tree is a few dozen lines of code that describes the whole system's
+failure behavior:
 
 - If the `Index` process crashes, restart it and the `RecordStore`
   (because `RecordStore` depends on it) — `rest_for_one`.
 - If the whole agent layer collapses, restart it without touching
   the record store — isolated sub-tree.
 - If an individual agent crashes, restart just that agent with
-  fresh state — `DynamicSupervisor`.
+  fresh state —
+  [`DynamicSupervisor`](https://hexdocs.pm/elixir/DynamicSupervisor.html).
 
 The failure policies aren't ad-hoc error handling scattered
 through the code. They're a declarative tree. Crash recovery is a
@@ -73,11 +79,12 @@ structural primitive.
 
 ### "Let it crash"
 
-The OTP culture treats crashes as the normal path for unrecoverable
-errors. Instead of wrapping every call in defensive `try` blocks,
-you let the process die, let the supervisor restart it cleanly,
-and log the crash for later review. The state is gone, but it's
-almost always state the process was better off without.
+The [OTP culture](https://erlang.org/download/armstrong_thesis_2003.pdf)
+treats crashes as the normal path for unrecoverable errors. Instead
+of wrapping every call in defensive `try` blocks, you let the
+process die, let the supervisor restart it cleanly, and log the
+crash for later review. The state is gone, but it's almost always
+state the process was better off without.
 
 This maps directly onto a failure mode specific to LLM agents:
 **context degradation**. When an agent's context window fills up
@@ -110,19 +117,21 @@ the updated record as initialization state. From the user's
 perspective, it's instantaneous.
 
 Hot reload is a language feature on most runtimes. On the BEAM it's
-a first-class operational primitive — Ericsson built it because
-telephone switches can't be taken down to ship a bugfix. Egghead
-inherits the consequence: iterating on an agent feels like editing
-a document, because that's what it is.
+a [first-class operational primitive](https://www.erlang.org/doc/system/release_handling.html)
+— Ericsson built it because telephone switches can't be taken down
+to ship a bugfix. Egghead inherits the consequence: iterating on
+an agent feels like editing a document, because that's what it is.
 
 ### Distribution, built-in
 
-Two BEAM nodes on the same network can call each other's
-processes as if they were local. `GenServer.call({name, node},
-msg)` is the same API whether `node` is the current machine or a
-machine in a different datacenter. Phoenix's PubSub cluster-aware
-by default — broadcast an event on one node, every subscribed
-process on every connected node receives it.
+[Two BEAM nodes on the same network](https://www.erlang.org/doc/system/distributed.html)
+can call each other's processes as if they were local.
+`GenServer.call({name, node}, msg)` is the same API whether `node`
+is the current machine or a machine in a different datacenter.
+[Phoenix](https://www.phoenixframework.org)'s
+[PubSub](https://hexdocs.pm/phoenix_pubsub/Phoenix.PubSub.html) is
+cluster-aware by default — broadcast an event on one node, every
+subscribed process on every connected node receives it.
 
 Egghead uses this for the TUI/server split: `egghead serve` runs
 the full supervision tree; `egghead` (the TUI) launched elsewhere
@@ -144,8 +153,10 @@ Honest tradeoffs worth naming.
 
 BEAM process isolation is excellent for fault tolerance: a crash
 in one process can't corrupt another. But it was never designed as
-a security boundary. A malicious NIF (native code loaded into the
-BEAM) or a compromised library can read any process's memory.
+a security boundary. A malicious
+[NIF](https://www.erlang.org/doc/system/nif.html) (native code
+loaded into the BEAM) or a compromised library can read any
+process's memory.
 
 Egghead's security model accounts for this explicitly — the
 capability system enforces *what* an agent can ask the runtime to
@@ -203,19 +214,22 @@ stateless services; middling for stateful agent topologies.
 
 **Rust.** Best-in-class fault isolation at the *type* level — the
 borrow checker is its own kind of supervisor. But no runtime-level
-restart semantics, no hot reload, and Tokio async is great for
-network-bound work but doesn't give you the "each agent is a
-process with its own heap" primitive. A Rust Egghead would be a
-different system — arguably tighter but definitely more code.
+restart semantics, no hot reload, and [Tokio](https://tokio.rs)
+async is great for network-bound work but doesn't give you the
+"each agent is a process with its own heap" primitive. A Rust
+Egghead would be a different system — arguably tighter but
+definitely more code.
 
 **Python.** Fine for LLM clients, which is why most LLM tooling is
-in Python today. Async Python (`asyncio`) can do concurrency. But
-the gap between `asyncio` coroutines and BEAM processes is large:
-no cheap process spawn, no true isolation, no supervisor trees, no
-hot reload in any production-serious form. Building Egghead in
-Python would mean either a thick service mesh (Kubernetes,
-Celery, separate process pools) or accepting that one bug crashes
-the interpreter.
+in Python today. Async Python
+([`asyncio`](https://docs.python.org/3/library/asyncio.html)) can
+do concurrency. But the gap between `asyncio` coroutines and BEAM
+processes is large: no cheap process spawn, no true isolation, no
+supervisor trees, no hot reload in any production-serious form.
+Building Egghead in Python would mean either a thick service mesh
+([Kubernetes](https://kubernetes.io),
+[Celery](https://docs.celeryq.dev), separate process pools) or
+accepting that one bug crashes the interpreter.
 
 **Node.** Same concurrency story as Python, plus a runtime that
 wasn't designed for long-lived stateful processes. A Node Egghead

@@ -22,13 +22,15 @@ load-bearing for Egghead:
 
 ### Zettelkasten — Niklas Luhmann's slip-box
 
-Niklas Luhmann was a 20th-century German sociologist who developed
-a note-taking method using index cards kept in wooden slip-boxes
-(*Zettelkästen*). Each card held one idea. Each card had a unique
-identifier. Cards pointed at other cards by id. Luhmann accumulated
-roughly 90,000 cards over his career and credited the system with
-enabling his output — something like 50 books and 600 papers across
-multiple disciplines.
+[Niklas Luhmann](https://en.wikipedia.org/wiki/Niklas_Luhmann) was
+a 20th-century German sociologist who developed a
+[note-taking method](https://en.wikipedia.org/wiki/Zettelkasten)
+using index cards kept in wooden slip-boxes (*Zettelkästen*). Each
+card held one idea. Each card had a unique identifier. Cards
+pointed at other cards by id. Luhmann accumulated roughly 90,000
+cards over his career and credited the system with enabling his
+output — something like 50 books and 600 papers across multiple
+disciplines.
 
 The core moves of Zettelkasten:
 
@@ -68,9 +70,9 @@ slip-box became a staff.
 
 ### Second Brain — Tiago Forte
 
-Tiago Forte's 2022 book *Building a Second Brain* popularized a
-more project-oriented knowledge system with two acronyms worth
-naming:
+[Tiago Forte](https://fortelabs.com)'s 2022 book *Building a
+Second Brain* popularized a more project-oriented knowledge system
+with two acronyms worth naming:
 
 - **CODE.** Capture, Organize, Distill, Express. The pipeline view
   of how knowledge moves from in-the-world to in-your-head to
@@ -95,10 +97,11 @@ places:
 
 ### Evergreen notes — Andy Matuschak
 
-Andy Matuschak's working notes, published at
-[andymatuschak.org/notes/](https://andymatuschak.org/notes/), are
-a practical instantiation of Luhmann-adjacent practice in the era
-of wikilinks and static-site publishing. The core ideas:
+Andy Matuschak's [working notes](https://notes.andymatuschak.org/)
+are a practical instantiation of Luhmann-adjacent practice in the
+era of wikilinks and static-site publishing. The core ideas, all
+expressed as [evergreen notes](https://notes.andymatuschak.org/Evergreen_notes)
+in his own system:
 
 - **Evergreen notes should be atomic.** Permanent notes about
   single concepts, each standing on its own.
@@ -115,10 +118,12 @@ off at retrieval time.
 
 ### Tools in this lineage
 
-Obsidian, Logseq, and Roam Research are Egghead's closest cousins
-on the tooling side — Markdown (or Markdown-adjacent) notes,
-`[[wikilinks]]`, graph views, plain-files-on-disk. Egghead is
-deliberately compatible with this class of tool: your records
+[Obsidian](https://obsidian.md),
+[Logseq](https://logseq.com), and
+[Roam Research](https://roamresearch.com) are Egghead's closest
+cousins on the tooling side — Markdown (or Markdown-adjacent)
+notes, `[[wikilinks]]`, graph views, plain-files-on-disk. Egghead
+is deliberately compatible with this class of tool: your records
 directory can be an Obsidian vault, and vice versa.
 
 The distinction: in Obsidian the humans are the only participants
@@ -138,7 +143,7 @@ peer-reviewed; several are from 2025 alone. The field moves fast.
 
 *MultiAgentBench: Evaluating the Collaboration and Competition of
 LLM Agents*, Zhu et al., ACL 2025
-([arXiv:2503.01935](https://arxiv.org/abs/2503.01935)).
+([arXiv:2503.01935](https://arxiv.org/abs/2503.01935), [code](https://github.com/MultiagentBench/MARBLE)).
 
 MARBLE is the first broad benchmark for multi-agent collaboration
 topology. It tests four coordination shapes — star, tree, chain,
@@ -167,7 +172,7 @@ What Egghead takes from this:
 
 *Why Do Multi-Agent LLM Systems Fail?*, Cemri et al., Berkeley,
 NeurIPS 2025 Datasets & Benchmarks (spotlight)
-([arXiv:2503.13657](https://arxiv.org/abs/2503.13657)).
+([arXiv:2503.13657](https://arxiv.org/abs/2503.13657), [code](https://github.com/multi-agent-systems-failure-taxonomy/MAST)).
 
 The paper annotated 150+ execution traces from five multi-agent
 frameworks (MetaGPT, ChatDev, AG2, HyperAgent, AppWorld) with
@@ -205,12 +210,13 @@ What Egghead takes from this:
 
 ### AutoGen — what not to do with speaker selection
 
-Microsoft AutoGen (and its AG2 successor) uses a `GroupChatManager`
-that prompts an LLM to choose the next speaker from the roster.
-AutoGen's own documentation flags the default `auto` mode as
-fragile: the LLM can hallucinate a speaker not in the participant
-list, throwing an exception; the selection call is expensive; and
-the manager is a single point of failure.
+Microsoft [AutoGen](https://github.com/microsoft/autogen) (and its
+[AG2](https://github.com/ag2ai/ag2) successor) uses a
+`GroupChatManager` that prompts an LLM to choose the next speaker
+from the roster. AutoGen's own documentation flags the default
+`auto` mode as fragile: the LLM can hallucinate a speaker not in
+the participant list, throwing an exception; the selection call is
+expensive; and the manager is a single point of failure.
 
 Egghead's coordinator deliberately avoids this shape:
 
@@ -246,20 +252,24 @@ What Egghead takes from this:
 - **Parallel mode (`@jam`) for independent framings.** When you
   want variety rather than consensus, agents don't see each other's
   in-flight output. The cacophony is the point.
-- **The Heckler pattern is a partial mitigation.** An agent whose
-  disposition is structured dissent isn't a general solution to
-  conformity — the literature shows agents flip from correct
-  positions under persuasive-but-wrong peer pressure, and a heckler
-  who agrees with the wrong peer is no help — but it's a real tool
-  against groupthink in practice.
+- **A dedicated dissenter is a partial mitigation.** Configuring
+  an agent whose disposition is to challenge premises and push back
+  against consensus isn't a general solution to conformity — the
+  literature shows agents flip from correct positions under
+  persuasive-but-wrong peer pressure, and a dissenter who agrees
+  with the wrong peer is no help — but it's a real tool against
+  groupthink in practice. This is a pattern you can configure
+  yourself, not a built-in role. See the
+  [Agents guide]({{< ref "agents" >}}) for how dispositions shape
+  behavior.
 
 ### Stigmergy
 
-*Stigmergy* is the biological term for coordination through shared
-environmental state — ants leaving pheromone trails, termites
-responding to the mound's current state rather than to each other
-directly. Coordination emerges from the environment, not from
-signaling between agents.
+*[Stigmergy](https://en.wikipedia.org/wiki/Stigmergy)* is the
+biological term for coordination through shared environmental state
+— ants leaving pheromone trails, termites responding to the mound's
+current state rather than to each other directly. Coordination
+emerges from the environment, not from signaling between agents.
 
 The record store is Egghead's stigmergic substrate. Agents read
 records written by other agents (or by you). They write records in
@@ -315,14 +325,18 @@ Naming the opposite helps locate the design. Egghead is
 *not*:
 
 - **An agent framework with a knowledge base bolted on.** Most
-  multi-agent frameworks (CrewAI, LangGraph, and others) treat
-  agents as the primitive and storage as a subordinate component.
-  Egghead inverts this: the record store is the institution,
-  agents are staff.
+  multi-agent frameworks ([CrewAI](https://www.crewai.com),
+  [LangGraph](https://langchain-ai.github.io/langgraph/), and
+  others) treat agents as the primitive and storage as a
+  subordinate component. Egghead inverts this: the record store is
+  the institution, agents are staff.
 - **A memory system for a single coding agent.** Coding agents
-  (Claude Code, OpenCode, Amp, Codex) are single-agent tools with
-  local context. Egghead can be consulted by them over MCP, and
-  benefit from them as clients, but it is not trying to be one.
+  ([Claude Code](https://www.claude.com/product/claude-code),
+  [OpenCode](https://opencode.ai),
+  [Amp](https://ampcode.com),
+  [Codex](https://github.com/openai/codex)) are single-agent tools
+  with local context. Egghead can be consulted by them over MCP,
+  and benefit from them as clients, but it is not trying to be one.
 - **A delegation-chain workflow engine.** Star and tree topologies
   are explicitly what the MARBLE findings argue against for
   collaborative tasks. Egghead's coordinator gates activation, not

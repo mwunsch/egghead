@@ -226,11 +226,18 @@ defmodule Egghead.MixProject do
 
   defp docs do
     [
-      main: "Egghead",
+      main: "readme",
       name: "Egghead",
       source_url: "https://github.com/mwunsch/egghead",
       homepage_url: "https://mwunsch.github.io/egghead/",
-      formatters: ["html"]
+      formatters: ["html"],
+      extras: [
+        "README.md": [title: "Overview"],
+        "lib/egghead/open_tui/README.md": [
+          filename: "opentui_framework",
+          title: "OpenTUI Framework"
+        ]
+      ]
     ]
   end
 

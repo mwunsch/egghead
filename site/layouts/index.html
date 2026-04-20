@@ -1,11 +1,225 @@
 {{ define "main" }}
-<section>
-  <h1>Egghead</h1>
-  <p>{{ .Site.Params.description }}</p>
-  <p>
-    <a href="{{ "guides/" | relURL }}">Guides</a> ·
-    <a href="{{ "reference/" | relURL }}">Reference</a> ·
-    <a href="{{ .Site.Params.githubURL }}">GitHub</a>
-  </p>
-</section>
+<article class="landing">
+
+  {{/* ───────────── MASTHEAD ───────────── */}}
+  <header class="masthead">
+    <div class="masthead__text">
+      <h1 class="masthead__title" aria-label="Egghead">
+        <span aria-hidden="true">Egghead</span>
+      </h1>
+
+      <p class="masthead__dek">
+        A <em>record-store-first</em> multi-agent system &mdash; plain markdown
+        as the substrate, agents as participants in the graph.
+      </p>
+    </div>
+
+    <figure class="masthead__figure">
+      <img src="{{ "assets/img/voltaire.png" | relURL }}"
+           alt="Bust of Voltaire with an apple atop an open cranium, after Voltaire Seated by Jean-Antoine Houdon"
+           title="After Voltaire Seated by Jean-Antoine Houdon"
+           class="masthead__bust" width="256" height="384">
+    </figure>
+  </header>
+
+  {{/* ───────────── EDITOR'S NOTE ───────────── */}}
+  <aside class="editors-note">
+    <p class="label">Editor's Note</p>
+    <p>
+      This page describes a small system that treats its own records as the
+      durable institution, and its agents as staff passing through. It is
+      best read top to bottom, like the opening pages of a reference volume.
+    </p>
+  </aside>
+
+  {{/* ───────────── § 1 — ESSAY ───────────── */}}
+  <section class="essay" aria-labelledby="essay-head">
+    <h2 id="essay-head" class="section-head">
+      <span class="section-head__num">§ 1</span>
+      <span class="section-head__text">The Thesis</span>
+    </h2>
+
+    <div class="essay__body prose">
+      <p class="prose__lede">
+        <span class="dropcap" aria-hidden="true">E</span><span class="dropcap__follow">gghead</span> is
+        built on an unfashionable conviction&thinsp;&mdash;&thinsp;that the records
+        an organization produces are the institution, and the agents that write
+        them are only its staff. In software terms: the knowledge graph
+        outlives any one session, any one model, any one implementation.
+        Sessions come and go. The store persists.
+      </p>
+
+      <p>
+        Records live as plain markdown files on disk. They have optional
+        frontmatter, they link to each other with wikilinks, and they are
+        indexed into a rebuildable SQLite catalog for search. Nothing in this
+        stack is load-bearing in a way that a grep and a text editor could
+        not reconstruct. That is the point.
+      </p>
+
+      <p>
+        Agents are themselves records&thinsp;&mdash;&thinsp;<code>class: agent</code>,
+        with a body that serves as the system prompt and frontmatter that
+        configures the model and capabilities. They collaborate through a
+        shared transcript, self-selecting via <code>@</code>-mentions and
+        yielding with <code>/pass</code>.
+      </p>
+    </div>
+  </section>
+
+  {{/* ───────────── § 2 — ARCHITECTURE ───────────── */}}
+  <section class="feature" aria-labelledby="head-arch">
+    <figure class="feature__figure">
+      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming"></div>
+      <figcaption class="feature__caption">The TUI, records mode &mdash; Notational Velocity-style search over the store.</figcaption>
+    </figure>
+
+    <div class="feature__body">
+      <h2 id="head-arch" class="section-head">
+        <span class="section-head__num">§ 2</span>
+        <span class="section-head__text">Architecture</span>
+      </h2>
+
+      <p>
+        Two supervision strategies, stacked. The record store speaks
+        first&thinsp;&mdash;&thinsp;index and watcher come up before any agent
+        is allowed to breathe. The agent layer sits above, and any failure
+        there stays there.
+      </p>
+
+<pre class="specimen"><code>Egghead.Supervisor (one_for_one)
+├── Phoenix.PubSub
+├── RecordSupervisor (rest_for_one)
+│   ├── Index          — SQLite, derived & rebuildable
+│   └── RecordStore    — file watcher, parser, write barrier
+└── Agent.LayerSupervisor (rest_for_one)
+    ├── LLM.Registry   — multi-provider, env-var detection
+    ├── Chat.Coordinator
+    └── Agent.Supervisor
+        ├── index      — built-in store agent
+        └── agents/*   — records with class: agent</code></pre>
+    </div>
+  </section>
+
+  {{/* ───────────── § 3 — INTERFACES ───────────── */}}
+  <section class="feature feature--inverted" aria-labelledby="head-int">
+    <div class="feature__body">
+      <h2 id="head-int" class="section-head">
+        <span class="section-head__num">§ 3</span>
+        <span class="section-head__text">Interfaces</span>
+      </h2>
+
+      <p>
+        One binary, three mouths. A text-mode interface for the terminal,
+        a Phoenix web application for the browser, and an MCP server
+        speaking the model context protocol over both stdio and HTTP.
+      </p>
+
+      <dl class="commands">
+        <div class="command">
+          <dt><code>egghead</code></dt>
+          <dd>Launch the TUI. Records mode by default; <code>/chat</code> opens a shared transcript with your agents.</dd>
+        </div>
+        <div class="command">
+          <dt><code>egghead serve</code></dt>
+          <dd>Start the web application and MCP HTTP endpoint. Read the store from a browser; wire it to an editor.</dd>
+        </div>
+        <div class="command">
+          <dt><code>egghead mcp</code></dt>
+          <dd>Speak MCP over stdio, for editor integrations. Fifteen tools: search, get, list, create, links, backlinks, prompt, consult.</dd>
+        </div>
+        <div class="command">
+          <dt><code>egghead llm add</code></dt>
+          <dd>Configure a provider. Anthropic, OpenAI, Gemini, Groq, Ollama. Model IDs are <code>provider/model</code>.</dd>
+        </div>
+      </dl>
+    </div>
+
+    <figure class="feature__figure">
+      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming"></div>
+      <figcaption class="feature__caption">The TUI, chat mode &mdash; shared transcript, nick-prefixed, agents yielding with <code>/pass</code>.</figcaption>
+    </figure>
+  </section>
+
+  {{/* ───────────── § 4 — THE RECORD ───────────── */}}
+  <section class="feature" aria-labelledby="head-rec">
+    <figure class="feature__figure">
+      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming"></div>
+      <figcaption class="feature__caption">The web application &mdash; isomorphic markdown, the same records rendered in a browser.</figcaption>
+    </figure>
+
+    <div class="feature__body">
+      <h2 id="head-rec" class="section-head">
+        <span class="section-head__num">§ 4</span>
+        <span class="section-head__text">The Record</span>
+      </h2>
+
+      <p>
+        A record is a markdown file. It may have frontmatter. It may contain
+        wikilinks, tables, footnotes, task lists. It is indexed into an
+        SQLite catalog that is derived and rebuildable; delete the catalog
+        and the truth remains.
+      </p>
+
+      <aside class="card">
+        <dl class="card__dl">
+          <dt>Class</dt>         <dd>agent <span class="small">·</span> design <span class="small">·</span> research <span class="small">·</span> transcript <span class="small">·</span> &hellip;</dd>
+          <dt>Habitat</dt>       <dd><code>~/.egghead/</code> <span class="small">(or <code>$EGGHEAD_RECORDS</code>)</span></dd>
+          <dt>Substrate</dt>     <dd>UTF-8 Markdown, frontmatter optional</dd>
+          <dt>Indexed by</dt>    <dd>SQLite FTS5, derived, rebuildable</dd>
+          <dt>Linked by</dt>     <dd><code>[[wikilinks]]</code>, traversed forwards and back</dd>
+          <dt>Editable by</dt>   <dd>you, your editor, your agents, your scripts</dd>
+        </dl>
+      </aside>
+    </div>
+  </section>
+
+  {{/* ───────────── § 5 — FURTHER READING ───────────── */}}
+  <section class="bibliography" aria-labelledby="head-biblio">
+    <h2 id="head-biblio" class="section-head">
+      <span class="section-head__num">§ 5</span>
+      <span class="section-head__text">Further Reading</span>
+    </h2>
+
+    <ol class="biblio-list">
+      <li>
+        <a href="{{ "guides/" | relURL }}">
+          <span class="biblio__title">Guides.</span>
+          <span class="biblio__desc">Narrative walkthroughs: getting started, writing agents, consulting the ensemble.</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ "reference/" | relURL }}">
+          <span class="biblio__title">Reference.</span>
+          <span class="biblio__desc">Generated module documentation. The public API surface of the <code>Egghead</code> module.</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ .Site.Params.githubURL }}">
+          <span class="biblio__title">Source.</span>
+          <span class="biblio__desc">The implementation, on GitHub. Issues, releases, and the git history.</span>
+        </a>
+      </li>
+    </ol>
+  </section>
+
+  {{/* ───────────── MOTTO ───────────── */}}
+  <figure class="motto">
+    <img src="{{ "assets/img/motto-banner.png" | relURL }}" alt="Ipsa cognitio fructus" class="motto__image">
+  </figure>
+
+  {{/* ───────────── COLOPHON ───────────── */}}
+  <footer class="colophon">
+    <div class="colophon__rule" aria-hidden="true">
+      <span class="rule rule--thin"></span>
+    </div>
+
+    <p class="colophon__issue">Vol. <span class="roman">I</span> · No. <span class="roman">1</span> · Anno MMXXVI</p>
+    <p class="colophon__meta">
+      Egghead &middot; AGPL-3.0-or-later &middot;
+      <a href="{{ .Site.Params.githubURL }}">repository</a>
+    </p>
+  </footer>
+
+</article>
 {{ end }}

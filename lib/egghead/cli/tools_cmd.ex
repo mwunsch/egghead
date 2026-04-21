@@ -321,7 +321,9 @@ defmodule Egghead.CLI.ToolsCmd do
           IO.puts("\n  tools:")
 
           Enum.each(tools, fn t ->
-            IO.puts("    - #{t["name"]} " <> Widgets.dim("— #{short_desc(t["description"] || "")}"))
+            IO.puts(
+              "    - #{t["name"]} " <> Widgets.dim("— #{short_desc(t["description"] || "")}")
+            )
           end)
         end
 

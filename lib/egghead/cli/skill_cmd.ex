@@ -169,7 +169,9 @@ defmodule Egghead.CLI.SkillCmd do
     end)
 
     Enum.each(unknown, fn tok ->
-      IO.puts("  \e[31m?\e[0m #{tok}  " <> Widgets.dim("(unknown tool — capability can't be derived)"))
+      IO.puts(
+        "  \e[31m?\e[0m #{tok}  " <> Widgets.dim("(unknown tool — capability can't be derived)")
+      )
     end)
 
     IO.puts("")

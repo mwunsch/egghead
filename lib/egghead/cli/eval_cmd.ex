@@ -373,7 +373,9 @@ defmodule Egghead.CLI.EvalCmd do
 
   defp token_total_str(%{total: %{input: i, output: o}}) when i + o > 0 do
     "  Tokens:         " <>
-      Widgets.dim("#{format_tokens(i)} in · #{format_tokens(o)} out · #{format_tokens(i + o)} total")
+      Widgets.dim(
+        "#{format_tokens(i)} in · #{format_tokens(o)} out · #{format_tokens(i + o)} total"
+      )
   end
 
   defp token_total_str(_), do: nil
@@ -387,6 +389,7 @@ defmodule Egghead.CLI.EvalCmd do
 
   defp bar(fraction, width) do
     filled = max(0, min(width, round(fraction * width)))
+
     "\e[36m" <>
       String.duplicate("█", filled) <>
       "\e[38;5;245m" <>
@@ -455,7 +458,8 @@ defmodule Egghead.CLI.EvalCmd do
         end
       end)
 
-    (Enum.reverse([last | lines]) |> Enum.reject(&(&1 == "")))
+    Enum.reverse([last | lines])
+    |> Enum.reject(&(&1 == ""))
     |> case do
       [] -> [""]
       list -> list

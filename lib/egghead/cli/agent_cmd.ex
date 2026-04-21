@@ -197,7 +197,7 @@ defmodule Egghead.CLI.AgentCmd do
           label: "Model:",
           render_as: fn model ->
             ctx = Widgets.format_context(model[:context_window])
-            "#{Widgets.pad(model.id, 28)} \e[90m#{ctx}\e[0m"
+            "#{Widgets.pad(model.id, 28)} #{Widgets.dim(ctx)}"
           end
         )
 
@@ -349,7 +349,7 @@ defmodule Egghead.CLI.AgentCmd do
 
   defp render_catalog_entry(%{verb: v, short: short, risk: risk}) do
     marker = risk_marker(risk)
-    "#{marker} #{Widgets.pad("#{v}", 10)} \e[90m#{short}\e[0m"
+    "#{marker} #{Widgets.pad("#{v}", 10)} #{Widgets.dim(short)}"
   end
 
   # If the resource supports scoping, prompt the user for values.

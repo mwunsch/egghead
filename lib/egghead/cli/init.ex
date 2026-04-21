@@ -113,7 +113,7 @@ defmodule Egghead.CLI.Init do
       Widgets.select(@known_providers,
         label: "Select a provider:",
         render_as: fn p ->
-          "#{Widgets.pad(p.name, 14)} \e[90m#{p.hint}\e[0m"
+          "#{Widgets.pad(p.name, 14)} #{Widgets.dim(p.hint)}"
         end
       )
 
@@ -228,7 +228,7 @@ defmodule Egghead.CLI.Init do
         label: "Model for the built-in agent:",
         render_as: fn m ->
           ctx = Widgets.format_context(m[:context_window])
-          "#{Widgets.pad(m.full_id, 36)} \e[90m#{ctx}\e[0m"
+          "#{Widgets.pad(m.full_id, 36)} #{Widgets.dim(ctx)}"
         end
       )
 

@@ -102,7 +102,7 @@ defmodule Egghead.CLI.ToolsCmd do
         # Unavailable: red ○ marker + whole line in grey so this tool
         # recedes visually. Available tools stay in default color so
         # they're the prominent entries for this agent.
-        IO.puts("  \e[31m○\e[0m \e[90m#{line}\e[0m")
+        IO.puts("  \e[31m○\e[0m " <> Widgets.dim(line))
       end
     end)
   end
@@ -231,7 +231,7 @@ defmodule Egghead.CLI.ToolsCmd do
           "  #{name_padded}  failed to start"
 
         _ ->
-          "  #{name_padded}  \e[90mconnecting…\e[0m"
+          "  #{name_padded}  " <> Widgets.dim("connecting…")
       end
 
     "  " <> indicator <> detail
@@ -321,7 +321,7 @@ defmodule Egghead.CLI.ToolsCmd do
           IO.puts("\n  tools:")
 
           Enum.each(tools, fn t ->
-            IO.puts("    - #{t["name"]} \e[90m— #{short_desc(t["description"] || "")}\e[0m")
+            IO.puts("    - #{t["name"]} " <> Widgets.dim("— #{short_desc(t["description"] || "")}"))
           end)
         end
 
@@ -555,7 +555,7 @@ defmodule Egghead.CLI.ToolsCmd do
 
     items =
       Enum.map(resource_options, fn {key, desc} ->
-        {"#{Widgets.pad(key, 12)} \e[90m— #{desc}\e[0m", key}
+        {"#{Widgets.pad(key, 12)} " <> Widgets.dim("— #{desc}"), key}
       end)
 
     picked =

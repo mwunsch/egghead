@@ -165,11 +165,11 @@ defmodule Egghead.CLI.SkillCmd do
 
       {:denied, req, denial} ->
         IO.puts("  \e[33m⚠\e[0m #{format_request(req)}")
-        IO.puts("    \e[90m#{denial.message}\e[0m")
+        IO.puts("    " <> Widgets.dim(denial.message))
     end)
 
     Enum.each(unknown, fn tok ->
-      IO.puts("  \e[31m?\e[0m #{tok}  \e[90m(unknown tool — capability can't be derived)\e[0m")
+      IO.puts("  \e[31m?\e[0m #{tok}  " <> Widgets.dim("(unknown tool — capability can't be derived)"))
     end)
 
     IO.puts("")

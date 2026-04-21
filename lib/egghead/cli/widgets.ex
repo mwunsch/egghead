@@ -141,7 +141,7 @@ defmodule Egghead.CLI.Widgets do
 
     if value && value != "" do
       summary = mask_summary(value, prefix_len, suffix_len)
-      IO.puts("  \e[90m#{summary}\e[0m")
+      IO.puts("  " <> dim(summary))
     end
 
     value
@@ -153,22 +153,73 @@ defmodule Egghead.CLI.Widgets do
 
   @doc "Show a spinner while running an async operation. Returns the callback result."
   def spinner(label, fun) do
-    pid = spawn(fn -> spin_loop(label, 0) end)
+    spinner_start(label)
 
     try do
       fun.()
     after
-      Process.exit(pid, :kill)
-      # Clear the spinner line completely
-      IO.write("\r\e[2K")
+      spinner_stop()
     end
   end
 
-  defp spin_loop(label, idx) do
+  @doc """
+  Start a spinner running in the background and stash its pid in the
+  caller's process dictionary. Returns `:ok`. Pair with `spinner_stop/0`.
+
+  Use when a single call-site wraps an async operation — for that,
+  `spinner/2` is simpler. Use start/stop when you need to pause the
+  spinner to print an intermediate line and then resume (e.g. an
+  event-driven progress stream).
+
+  No-op (plus a single label line) when stdout isn't a real terminal
+  so test output stays clean.
+  """
+  @spec spinner_start(String.t()) :: :ok
+  def spinner_start(label) do
+    spinner_stop()
+
+    if IO.ANSI.enabled?() do
+      started_at = System.monotonic_time(:millisecond)
+      pid = spawn(fn -> spin_loop(label, 0, started_at) end)
+      Process.put(:egghead_widget_spinner, pid)
+    else
+      IO.puts(label)
+    end
+
+    :ok
+  end
+
+  @doc """
+  Stop any spinner started with `spinner_start/1` on this process and
+  clear its line.
+  """
+  @spec spinner_stop() :: :ok
+  def spinner_stop do
+    case Process.delete(:egghead_widget_spinner) do
+      nil ->
+        :ok
+
+      pid when is_pid(pid) ->
+        if Process.alive?(pid), do: Process.exit(pid, :kill)
+        IO.write("\r\e[2K")
+        :ok
+    end
+  end
+
+  defp spin_loop(label, idx, started_at) do
     frame = Enum.at(@frames, rem(idx, length(@frames)))
-    IO.write("\r\e[2K\e[36m#{frame}\e[0m #{label}")
+    elapsed = div(System.monotonic_time(:millisecond) - started_at, 1000)
+
+    elapsed_str =
+      cond do
+        elapsed < 1 -> ""
+        elapsed < 60 -> " " <> dim("(#{elapsed}s)")
+        true -> " " <> dim("(#{div(elapsed, 60)}m#{rem(elapsed, 60)}s)")
+      end
+
+    IO.write("\r\e[2K\e[36m#{frame}\e[0m #{label}#{elapsed_str}")
     Process.sleep(80)
-    spin_loop(label, idx + 1)
+    spin_loop(label, idx + 1, started_at)
   end
 
   # ── Confirm ─────────────────────────────────────────────────
@@ -211,6 +262,19 @@ defmodule Egghead.CLI.Widgets do
   def error(msg), do: IO.puts("\e[31m✗\e[0m #{msg}")
   def warn(msg), do: IO.puts("\e[33m!\e[0m #{msg}")
   def header(msg), do: IO.puts("\n\e[1m#{msg}\e[0m")
+
+  @doc """
+  Wraps text in a muted foreground for secondary/annotation output
+  (hints, descriptions, counts).
+
+  Uses 256-colour grey 245 (#8a8a8a) — readable on both dark and
+  light themes. Avoids SGR 90 "bright-black", which many dark themes
+  render as near-invisible charcoal, and avoids SGR 2 "faint", which
+  some terminals fold into italic. Resets only the foreground so
+  surrounding attributes (bold, underline) survive.
+  """
+  @spec dim(String.t()) :: String.t()
+  def dim(text) when is_binary(text), do: "\e[38;5;245m#{text}\e[39m"
 
   def format_context(nil), do: ""
   def format_context(n) when n >= 1_000_000, do: "#{div(n, 1_000_000)}M ctx"
@@ -356,7 +420,7 @@ defmodule Egghead.CLI.Widgets do
   defp render_select(visible, render_as, cursor, filter, total) do
     filter_line =
       if filter != "" do
-        raw_puts("  \e[90mfilter:\e[0m #{filter}")
+        raw_puts("  " <> dim("filter:") <> " #{filter}")
         1
       else
         0
@@ -364,7 +428,7 @@ defmodule Egghead.CLI.Widgets do
 
     item_lines =
       if visible == [] do
-        raw_puts("  \e[90m(no matches)\e[0m")
+        raw_puts("  " <> dim("(no matches)"))
         1
       else
         visible
@@ -386,7 +450,7 @@ defmodule Egghead.CLI.Widgets do
         ""
       end
 
-    raw_puts("  \e[90m#{match_info}↑/↓ navigate  enter select  esc cancel\e[0m")
+    raw_puts("  " <> dim("#{match_info}↑/↓ navigate  enter select  esc cancel"))
 
     filter_line + item_lines + 1
   end
@@ -467,7 +531,7 @@ defmodule Egghead.CLI.Widgets do
         raw_puts("    #{indicator} #{highlight}#{render_as.(item)}\e[0m")
     end)
 
-    raw_puts("  \e[90m↑/↓ navigate  enter select  esc cancel\e[0m")
+    raw_puts("  " <> dim("↑/↓ navigate  enter select  esc cancel"))
     length(rows) + 1
   end
 
@@ -546,7 +610,7 @@ defmodule Egghead.CLI.Widgets do
       raw_puts("  #{indicator} [#{check}] #{highlight}#{label}\e[0m")
     end)
 
-    raw_puts("  \e[90m↑/↓ navigate  space toggle  enter confirm\e[0m")
+    raw_puts("  " <> dim("↑/↓ navigate  space toggle  enter confirm"))
     length(items) + 1
   end
 
@@ -640,7 +704,7 @@ defmodule Egghead.CLI.Widgets do
 
     if text == "" and default do
       # Ghost text — dim gray, cursor stays at prompt position
-      IO.write("\e[90m#{default}\e[0m")
+      IO.write(dim(default))
       # Move cursor back to just after "> "
       ghost_len = String.length(default)
       IO.write("\e[#{ghost_len}D")

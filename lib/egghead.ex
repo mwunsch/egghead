@@ -190,7 +190,44 @@ defmodule Egghead do
 
     case Egghead.Chat.Room.start_link(room_opts) do
       {:ok, _pid} ->
-        Enum.each(list_agents(), fn agent ->
+        # `agents:` option lets callers (e.g. the eval runner) restrict
+        # the roster to a specific set of agent ids. Default is "every
+        # store-backed agent in `list_agents()`" — which deliberately
+        # excludes transient/non-store processes (see `list_agents_local`
+        # at agent.ex). When `:agents` is provided, we fetch state
+        # directly from the running Agent processes so transient
+        # personas (eval runner) work alongside store-backed agents.
+        joinable =
+          case Keyword.get(opts, :agents) do
+            nil ->
+              list_agents()
+
+            ids when is_list(ids) ->
+              resolved =
+                ids
+                |> Enum.map(fn id -> {id, agent_info_by_id(id)} end)
+
+              missing =
+                resolved
+                |> Enum.filter(fn {_id, info} -> is_nil(info) end)
+                |> Enum.map(fn {id, _} -> id end)
+
+              if missing != [] do
+                require Logger
+
+                Logger.error(
+                  "create_room(agents: …) could not resolve agent process(es): " <>
+                    "#{inspect(missing)}. They must be started (via " <>
+                    "Egghead.Agent.Supervisor.start_agent/3) before create_room/1."
+                )
+              end
+
+              resolved
+              |> Enum.map(fn {_id, info} -> info end)
+              |> Enum.reject(&is_nil/1)
+          end
+
+        Enum.each(joinable, fn agent ->
           Egghead.Chat.Room.join(id, agent.id)
 
           Egghead.Chat.Coordinator.register_agent(agent.id, %{
@@ -395,5 +432,36 @@ defmodule Egghead do
 
   defp maybe_done(deadline, expected, received, responses) do
     do_collect(deadline, expected, received, responses)
+  end
+
+  # Resolve a single running agent by id directly via its registered
+  # name. Unlike `list_agents/0` (which only reports store-backed
+  # agents + index), this works for transient agent processes —
+  # specifically eval personas that are spawned on the supervisor
+  # without a backing record. Returns nil if the process isn't alive.
+  @doc false
+  def agent_info_by_id(agent_id) when is_binary(agent_id) do
+    name = Egghead.Agent.agent_name(agent_id)
+
+    case GenServer.whereis(name) do
+      nil ->
+        nil
+
+      _pid ->
+        try do
+          state = :sys.get_state(name)
+
+          %{
+            id: state.id,
+            name: state.name,
+            capabilities: state.capabilities,
+            tags: state.tags,
+            disposition: state.disposition,
+            model: state.model
+          }
+        catch
+          _, _ -> nil
+        end
+    end
   end
 end

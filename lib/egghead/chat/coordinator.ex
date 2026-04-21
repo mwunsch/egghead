@@ -68,7 +68,14 @@ defmodule Egghead.Chat.Coordinator do
   """
   @spec watch_room(GenServer.server(), String.t()) :: :ok
   def watch_room(server \\ __MODULE__, room_id) do
-    Egghead.Node.cast(server, {:watch_room, room_id})
+    # Synchronous: the caller often immediately sends a message to
+    # the room after this returns. If watch_room were a cast the
+    # Coordinator could still be processing queued work when the
+    # first user_message fires, which means it hasn't subscribed to
+    # the room topic yet and silently misses the event (no agents
+    # activate, room idle-times out 5 min later). A call blocks
+    # until subscription is actually set up.
+    Egghead.Node.call(server, {:watch_room, room_id})
   end
 
   @doc """
@@ -132,11 +139,11 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
-  def handle_cast({:watch_room, room_id}, state) do
+  def handle_call({:watch_room, room_id}, _from, state) do
     Phoenix.PubSub.subscribe(@pubsub, Room.topic(room_id))
     state = %{state | rooms: MapSet.put(state.rooms, room_id)}
     Logger.info("Coordinator: watching room #{room_id}")
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -158,7 +165,13 @@ defmodule Egghead.Chat.Coordinator do
     room_id = msg.room_id || state.rooms |> MapSet.to_list() |> List.first()
 
     if room_id do
-      agents_to_activate = tier1_filter(msg, state.agents)
+      # `state.agents` is a global registry — agents can be joined to
+      # different rooms. Scope candidates to those actually joined to
+      # this room, otherwise an eval run (or any bespoke-roster room)
+      # pulls in every agent the process knows about, regardless of
+      # whether they were invited.
+      candidates = scope_to_room(state.agents, room_id)
+      agents_to_activate = tier1_filter(msg, candidates)
 
       if agents_to_activate == [] do
         Logger.warning("Coordinator: no agents registered, nobody to activate")
@@ -305,6 +318,25 @@ defmodule Egghead.Chat.Coordinator do
   end
 
   # --- Tier 1: Structural filter (zero tokens) ---
+
+  # Returns the subset of `all_agents` that are currently joined to
+  # `room_id`. Falls back to the full set on lookup failure (safer to
+  # be noisy than to silently activate nobody if the room crashed).
+  @doc false
+  def scope_to_room(all_agents, room_id) do
+    try do
+      case Egghead.Chat.Room.get_state(room_id) do
+        %{agents: joined} when is_list(joined) ->
+          wanted = MapSet.new(joined)
+          Map.filter(all_agents, fn {id, _info} -> MapSet.member?(wanted, id) end)
+
+        _ ->
+          all_agents
+      end
+    catch
+      _, _ -> all_agents
+    end
+  end
 
   defp tier1_filter(msg, agents) do
     mentions = msg.mentions || []

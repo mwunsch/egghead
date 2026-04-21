@@ -209,7 +209,7 @@ defmodule Egghead.CLI.LLM do
         |> Enum.sort_by(& &1.id)
         |> Enum.each(fn model ->
           ctx = Widgets.format_context(model[:context_window])
-          IO.puts("    #{Widgets.pad(model.id, 32)} \e[90m#{ctx}\e[0m")
+          IO.puts("    #{Widgets.pad(model.id, 32)} #{Widgets.dim(ctx)}")
         end)
       end)
     end

@@ -45,7 +45,7 @@ defmodule Egghead.CLI.RoomsCmd do
             state = Egghead.Chat.Room.get_state(room_id)
             agents = length(state.agents || [])
             msgs = state.message_count || 0
-            "  \e[90m#{agents} agents, #{msgs} messages\e[0m"
+            "  " <> Widgets.dim("#{agents} agents, #{msgs} messages")
           catch
             _, _ -> ""
           end

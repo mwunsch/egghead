@@ -103,18 +103,18 @@ defmodule Egghead.Agent.Supervisor do
     store = Keyword.get(opts, :store, Egghead.RecordStore)
     agent_records = Egghead.RecordStore.search_by_class(store, :agent)
 
-    # Index override: if any `class: agent` record with id `"index"`
-    # exists in the store, it shadows the built-in default. (The class
-    # filter is implicit — `agent_records` is already class-filtered
-    # above.) Otherwise the built-in runs as fallback so there's always
-    # at least one agent available.
-    default = default_agent()
-    default_name = Egghead.Agent.agent_name(default.id)
-    user_provided_index? = Enum.any?(agent_records, &(&1.id == default.id))
+    # Index + Judge are synthetic built-ins. Either is shadowed by a
+    # `class: agent` record in the store with the matching id; otherwise
+    # the built-in runs so there's always at least one agent available
+    # and the eval pipeline always has a grader.
+    Enum.each([default_agent(), Egghead.Eval.Judge.default_agent()], fn default ->
+      default_name = Egghead.Agent.agent_name(default.id)
+      user_shadow? = Enum.any?(agent_records, &(&1.id == default.id))
 
-    if not user_provided_index? and GenServer.whereis(default_name) == nil do
-      start_agent(supervisor, default, store: store)
-    end
+      if not user_shadow? and GenServer.whereis(default_name) == nil do
+        start_agent(supervisor, default, store: store)
+      end
+    end)
 
     # Start agents that aren't running
     Enum.each(agent_records, fn record ->
@@ -125,11 +125,14 @@ defmodule Egghead.Agent.Supervisor do
       end
     end)
 
-    # Stop agents whose records no longer exist
+    # Stop agents whose records no longer exist. Synthetic defaults
+    # (Index, Judge) are preserved — they have no backing record.
     running_ids =
       agent_records
       |> Enum.map(& &1.id)
       |> MapSet.new()
+
+    synthetic_ids = MapSet.new([default_agent().id, Egghead.Eval.Judge.default_agent().id])
 
     supervisor
     |> DynamicSupervisor.which_children()
@@ -137,7 +140,7 @@ defmodule Egghead.Agent.Supervisor do
       if is_pid(pid) do
         case :sys.get_state(pid) do
           %{id: id} ->
-            unless MapSet.member?(running_ids, id) or id == default.id do
+            unless MapSet.member?(running_ids, id) or MapSet.member?(synthetic_ids, id) do
               Logger.info("Stopping agent: #{id} (record removed)")
               DynamicSupervisor.terminate_child(supervisor, pid)
             end

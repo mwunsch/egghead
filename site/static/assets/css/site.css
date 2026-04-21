@@ -428,7 +428,7 @@ main { display: block; }
 .dropcap {
   float: left;
   font-family: var(--serif-display);
-  font-variation-settings: "opsz" 96, "wght" 600;
+  font-variation-settings: "opsz" 28, "wght" 600;
   font-size: clamp(3em, 8.5vw, 4.75em);
   line-height: 0.82;
   margin: 0.08em 0.15em 0 -0.03em;
@@ -673,7 +673,7 @@ main { display: block; }
   margin: 0;
   font-family: var(--serif-display);
   font-style: italic;
-  font-variation-settings: "opsz" 48, "wght" 450;
+  font-variation-settings: "opsz" 14, "wght" 500;
   font-size: clamp(1.25rem, 2.2vw + 0.4rem, 2.1rem);
   line-height: 1.3;
   color: var(--ink-soft);

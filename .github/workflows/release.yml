@@ -38,6 +38,9 @@ jobs:
           - runner: ubuntu-latest
             target: linux_x64
             asset: egghead-x86_64-linux
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+            asset: egghead-aarch64-linux
           # macos_x64 dropped: GitHub deprecated free Intel macOS
           # runners. Apple has shipped only ARM since 2020. Intel Mac
           # users can build from source or run the arm64 binary under
@@ -71,7 +74,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-prod-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-mix-prod-${{ hashFiles('**/mix.lock') }}
 
       - env:
           MIX_ENV: prod

@@ -27,8 +27,8 @@ defmodule Egghead.TUI.Chat.View do
   alias Egghead.Chat.Stream
   alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer}
   alias Egghead.Theme.Roles
-  alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste}
-  alias Egghead.TUI.{MarkdownCache, SelectList, ThemePicker}
+  alias Egghead.TUI.Chat.{Entry, Mentions.Token, Model, Paste}
+  alias Egghead.TUI.{Completion, MarkdownCache, SelectList, ThemePicker}
   alias Model.AgentPresence
 
   @prompt "❯ "
@@ -103,23 +103,10 @@ defmodule Egghead.TUI.Chat.View do
   defp sidebar_width(w) when w >= 80, do: 18
   defp sidebar_width(_), do: 0
 
-  @max_dropdown_rows 6
+  defp dropdown_height(%Model{completion: completion}), do: Completion.View.height(completion)
 
-  defp dropdown_height(%Model{command: %{candidates: [_ | _] = cs}}),
-    do: min(length(cs), @max_dropdown_rows)
-
-  defp dropdown_height(%Model{mention: %Mentions.Context{candidates: [_ | _] = cs}}),
-    do: min(length(cs), @max_dropdown_rows)
-
-  defp dropdown_height(_), do: 0
-
-  defp dropdown_node(%Model{command: %{candidates: [_ | _]}} = model, width, h) when h > 0 do
-    [command_dropdown(model, width, h)]
-  end
-
-  defp dropdown_node(%Model{mention: %Mentions.Context{candidates: [_ | _]}} = model, width, h)
-       when h > 0 do
-    [mention_dropdown(model, width, h)]
+  defp dropdown_node(%Model{completion: %Completion{} = completion}, width, h) when h > 0 do
+    [Completion.View.render(completion, width, h)]
   end
 
   defp dropdown_node(_, _, _), do: []
@@ -696,94 +683,6 @@ defmodule Egghead.TUI.Chat.View do
 
   defp narrow_strip_node(_, _, _), do: []
 
-  # ---- mention dropdown ----------------------------------------------------
-
-  # Vertical autocomplete list anchored above the input row, much
-  # like Claude Code's @-mention picker. Renders up to
-  # `@max_dropdown_rows` candidates with the selected one in
-  # reverse-video. Up/Down navigate; Enter or Tab accepts; Escape
-  # dismisses (handled in Update).
-  defp mention_dropdown(%Model{mention: %Mentions.Context{} = ctx}, width, h) do
-    sigil =
-      case ctx.kind do
-        :agent -> "@"
-        :record -> "[["
-      end
-
-    rows =
-      ctx.candidates
-      |> Enum.take(h)
-      |> Enum.with_index()
-      |> Enum.map(fn {cand, idx} ->
-        mention_dropdown_row(sigil, cand, ctx.kind, idx == ctx.selected, width)
-      end)
-
-    vbox([height: h], rows)
-  end
-
-  defp mention_dropdown_row(sigil, candidate, kind, selected?, width) do
-    label = mention_label(kind, candidate)
-    line = "  #{sigil}#{label}"
-    pad = max(width - String.length(line), 0)
-    padded = line <> String.duplicate(" ", pad)
-
-    if selected? do
-      text(truncate_line(padded, width),
-        height: 1,
-        fg: Colors.white(),
-        bg: Colors.selected_bg()
-      )
-    else
-      text(truncate_line(padded, width),
-        height: 1,
-        fg: Colors.accent(),
-        bg: Colors.bg()
-      )
-    end
-  end
-
-  defp mention_label(:agent, %{kind: :broadcast, id: id, label: label}),
-    do: "#{id}  — #{label}"
-
-  defp mention_label(:agent, %{id: id}), do: id
-  defp mention_label(:agent, %{"id" => id}), do: id
-  defp mention_label(:record, %{id: id}), do: id
-  defp mention_label(:record, %{"id" => id}), do: id
-
-  # ---- command dropdown ----------------------------------------------------
-
-  defp command_dropdown(%Model{command: %{candidates: candidates, selected: selected}}, width, h) do
-    rows =
-      candidates
-      |> Enum.take(h)
-      |> Enum.with_index()
-      |> Enum.map(fn {cmd, idx} ->
-        command_dropdown_row(cmd, idx == selected, width)
-      end)
-
-    vbox([height: h], rows)
-  end
-
-  defp command_dropdown_row(%{name: name, description: desc}, selected?, width) do
-    line = "  /#{name} — #{desc}"
-    pad = max(width - String.length(line), 0)
-    padded = line <> String.duplicate(" ", pad)
-
-    if selected? do
-      text(truncate_line(padded, width),
-        height: 1,
-        fg: Colors.white(),
-        bg: Colors.selected_bg()
-      )
-    else
-      text(truncate_line(padded, width),
-        height: 1,
-        fg: Colors.accent(),
-        bg: Colors.bg()
-      )
-    end
-  end
-
   defp truncate_line(line, width) do
     if String.length(line) > width, do: String.slice(line, 0, width), else: line
   end
@@ -915,8 +814,8 @@ defmodule Egghead.TUI.Chat.View do
 
   defp maybe_add_cursor_overflow(rows, _cells, _buf_idx, _text_w, false, _cursor_col), do: rows
 
-  defp ghost_text(%Model{mention: nil}), do: ""
-  defp ghost_text(%Model{mention: %Mentions.Context{} = ctx}), do: Mentions.ghost_suffix(ctx)
+  defp ghost_text(%Model{completion: nil}), do: ""
+  defp ghost_text(%Model{completion: %Completion{} = c}), do: Completion.ghost_suffix(c)
 
   defp render_input_row(cells, prompt, on_cursor_row?, cursor_col, ghost) do
     fg = Colors.white()

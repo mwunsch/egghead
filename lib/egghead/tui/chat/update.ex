@@ -19,8 +19,19 @@ defmodule Egghead.TUI.Chat.Update do
   """
 
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Mentions, Model, Paste}
-  alias Egghead.TUI.{SelectList, ThemePicker}
+  alias Egghead.TUI.Chat.{Entry, Model, Paste}
+  alias Egghead.TUI.{Completion, SelectList, ThemePicker}
+
+  # Providers checked in order by Completion.refresh/3. First
+  # match wins. RoomArgument sits above Command so that once the
+  # user has typed "/join " the room picker takes over from the
+  # command-name dropdown.
+  @completion_providers [
+    Completion.RoomArgument,
+    Completion.Command,
+    Completion.Agent,
+    Completion.Record
+  ]
 
   # Canonical command list for the dropdown. Aliases (/exit, /part)
   # are not shown in the dropdown but are accepted on dispatch.
@@ -29,7 +40,7 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
     %{name: "handoff", description: "Handoff an agent's context (space opens picker)"},
-    %{name: "join", description: "Join or create a room (space opens picker)"},
+    %{name: "join", description: "Join or create a room (type to filter, Enter to join/create)"},
     %{name: "list", description: "List all open rooms"},
     %{name: "drop", description: "Drop the current room"},
     %{name: "mute", description: "Mute an agent (space opens picker)"},
@@ -101,20 +112,14 @@ defmodule Egghead.TUI.Chat.Update do
 
   # ---- key bindings: leave / send -----------------------------------------
 
-  # Escape dismisses an open mention dropdown. Otherwise it's a
-  # no-op — screen switching uses F1/F2, and clearing input isn't
-  # expected Esc behavior. Future: interrupt active agents.
-  def update({:key, key}, %Model{command: %{candidates: [_ | _]}} = model)
+  # Escape / Ctrl+G dismisses an open completion dropdown, the
+  # link-nav mode, or falls through as a no-op. Screen switching
+  # is F1/F2; clearing input isn't expected Esc behavior.
+  def update({:key, key}, %Model{completion: %Completion{}} = model)
       when key in [:escape, :ctrl_g] do
-    {%{model | command: nil}, :none}
+    {%{model | completion: nil}, :none}
   end
 
-  def update({:key, key}, %Model{mention: %Mentions.Context{candidates: [_ | _]}} = model)
-      when key in [:escape, :ctrl_g] do
-    {%{model | mention: nil}, :none}
-  end
-
-  # Escape / Ctrl+G dismisses link-nav mode in the transcript.
   def update({:key, key}, %Model{link_index: idx} = model)
       when idx != nil and key in [:escape, :ctrl_g] do
     {Model.link_deselect(model), :none}
@@ -133,43 +138,41 @@ defmodule Egghead.TUI.Chat.Update do
     end
   end
 
-  # When the command dropdown is open, Enter fills the input (same as Tab).
-  def update({:key, :enter}, %Model{command: %{candidates: [_ | _]} = ctx} = model) do
-    chosen = Enum.at(ctx.candidates, ctx.selected)
-    new_buffer = EditBuffer.from_text("/#{chosen.name} ")
-    {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
-  end
+  # When a completion dropdown is open with at least one
+  # candidate, Enter first tries to accept — filling the buffer
+  # with the focused item. If accepting produces the same
+  # buffer (user already has the completed text), Enter falls
+  # through to the normal submit path so they don't get stuck
+  # re-filling the same value.
+  def update(
+        {:key, :enter},
+        %Model{completion: %Completion{candidates: [_ | _]} = completion} = model
+      ) do
+    case Completion.accept(completion, model.input) do
+      {:edit, new_buffer} ->
+        if EditBuffer.to_text(new_buffer) == Model.input_text(model),
+          do: enter_submit(model),
+          else: {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
 
-  def update({:key, :enter}, %Model{} = model) do
-    text = Model.input_text(model)
+      {:submit, _action} ->
+        enter_submit(model)
 
-    cond do
-      Model.input_empty?(model) ->
-        {model, :none}
-
-      String.starts_with?(text, "/") ->
-        dispatch_command(text, model)
-
-      model.room_id == nil ->
-        {model, :none}
-
-      true ->
-        room_id = model.room_id
-        cmd = {:exec, fn -> send_message(room_id, text) end}
-        {%{Model.clear_input(model) | scroll: 0}, cmd}
+      :noop ->
+        enter_submit(model)
     end
   end
 
-  # Tab completes the selected command or mention candidate.
-  def update({:key, :tab}, %Model{command: %{candidates: [_ | _]} = ctx} = model) do
-    chosen = Enum.at(ctx.candidates, ctx.selected)
-    new_buffer = EditBuffer.from_text("/#{chosen.name} ")
-    {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
-  end
+  def update({:key, :enter}, %Model{} = model), do: enter_submit(model)
 
-  def update({:key, :tab}, %Model{mention: %Mentions.Context{candidates: [_ | _]} = ctx} = model) do
-    new_buffer = Mentions.accept(model.input, ctx)
-    {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
+  # Tab accepts the focused completion candidate. Unlike Enter,
+  # Tab never dispatches — it's always a fill operation. A
+  # no-op accept (already at the completed value) just sits
+  # still; the user can then press Enter to submit.
+  def update(
+        {:key, :tab},
+        %Model{completion: %Completion{candidates: [_ | _]} = completion} = model
+      ) do
+    accept_completion(completion, model)
   end
 
   # When input is empty, Tab cycles wikilinks in the transcript.
@@ -211,33 +214,18 @@ defmodule Egghead.TUI.Chat.Update do
     {edit(model, &EditBuffer.move_right/1), :none}
   end
 
-  # Up/Down navigate the command or mention dropdown when open.
-  def update({:key, :up}, %Model{command: %{candidates: [_, _ | _]} = ctx} = model) do
-    n = length(ctx.candidates)
-    {%{model | command: %{ctx | selected: rem(ctx.selected - 1 + n, n)}}, :none}
-  end
-
-  def update(
-        {:key, :up},
-        %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model
-      ) do
-    {%{model | mention: Mentions.move_up(ctx)}, :none}
+  # Up/Down navigate the completion dropdown when open; otherwise
+  # they move the cursor through multiline input (arrow nav).
+  def update({:key, :up}, %Model{completion: %Completion{candidates: [_, _ | _]}} = model) do
+    {%{model | completion: Completion.move_up(model.completion)}, :none}
   end
 
   def update({:key, :up}, %Model{} = model) do
     {edit(model, &EditBuffer.move_up/1), :none}
   end
 
-  def update({:key, :down}, %Model{command: %{candidates: [_, _ | _]} = ctx} = model) do
-    n = length(ctx.candidates)
-    {%{model | command: %{ctx | selected: rem(ctx.selected + 1, n)}}, :none}
-  end
-
-  def update(
-        {:key, :down},
-        %Model{mention: %Mentions.Context{candidates: [_, _ | _]} = ctx} = model
-      ) do
-    {%{model | mention: Mentions.move_down(ctx)}, :none}
+  def update({:key, :down}, %Model{completion: %Completion{candidates: [_, _ | _]}} = model) do
+    {%{model | completion: Completion.move_down(model.completion)}, :none}
   end
 
   def update({:key, :down}, %Model{} = model) do
@@ -472,47 +460,65 @@ defmodule Egghead.TUI.Chat.Update do
 
   # ---- helpers ------------------------------------------------------------
 
+  defp enter_submit(%Model{} = model) do
+    text = Model.input_text(model)
+
+    cond do
+      Model.input_empty?(model) ->
+        {model, :none}
+
+      String.starts_with?(text, "/") ->
+        dispatch_command(text, model)
+
+      model.room_id == nil ->
+        {model, :none}
+
+      true ->
+        room_id = model.room_id
+        cmd = {:exec, fn -> send_message(room_id, text) end}
+        {%{Model.clear_input(model) | scroll: 0}, cmd}
+    end
+  end
+
   # Apply a pure EditBuffer transformation to the model's input,
-  # then re-detect the mention sigil under the cursor and populate
-  # candidates from the live agent roster / record store.
+  # then re-detect completion triggers and refresh candidates.
   defp edit(%Model{input: buffer} = model, fun) when is_function(fun, 1) do
     model
     |> Model.set_buffer(fun.(buffer))
     |> refresh_completion()
   end
 
-  # After every input edit, decide whether to show the mention
-  # dropdown or the command dropdown (mutually exclusive). A
-  # handful of commands jump higher than either: typing
-  # "/<cmd> " auto-opens a selection picker, same shape as the
-  # @-mention dropdown auto-opening on "@". If the picker would
-  # have nothing to show (no rooms to join, no muted agents to
-  # unmute, etc.), we fall through to the normal command dropdown
-  # instead of clearing input and posting a notice — the user
-  # can keep typing.
+  # After every input edit, update the completion dropdown state.
+  # Three of the commands that open modal pickers (/theme, /mute,
+  # /unmute, /handoff) short-circuit at an exact trigger match
+  # since those don't compose with free-form args — the user
+  # just picks one thing. /join is driven by Completion.RoomArgument
+  # so the user can type a brand-new room name while seeing
+  # matching existing rooms.
   defp refresh_completion(model) do
     text = Model.input_text(model)
 
     cond do
       String.downcase(text) == "/theme " ->
-        %{Model.clear_input(model) | command: nil, mention: nil, theme_picker: ThemePicker.open()}
+        %{Model.clear_input(model) | completion: nil, theme_picker: ThemePicker.open()}
 
       action_spec = match_action_trigger(text, model) ->
         {kind, items} = action_spec
         open_action_picker(Model.clear_input(model), kind, items)
 
-      String.starts_with?(text, "/") and not String.contains?(text, "\n") ->
-        refresh_command(model, text)
-
       true ->
-        model
-        |> Map.put(:command, nil)
-        |> refresh_mention()
+        completion_model =
+          Map.merge(model, %{
+            completion_commands: @chat_command_list,
+            agents: agents_by_recency(model)
+          })
+
+        completion = Completion.refresh(@completion_providers, model.input, completion_model)
+        %{model | completion: completion}
     end
   end
 
   @action_triggers %{
-    "/join " => :room,
     "/mute " => :mute,
     "/unmute " => :unmute,
     "/handoff " => :handoff
@@ -520,11 +526,7 @@ defmodule Egghead.TUI.Chat.Update do
 
   # Resolve the trigger AND the candidate list in one pass so
   # `refresh_completion` can cleanly fall through to the normal
-  # command dropdown when a picker would be empty. Returns
-  # `{kind, items}` only when there's something worth showing;
-  # otherwise `nil`. `:room` is freeform-capable and always
-  # opens — even with zero existing rooms the user can still
-  # type a name to create one.
+  # completion dropdown when a picker would be empty.
   defp match_action_trigger(text, model) do
     lower = String.downcase(text)
 
@@ -533,9 +535,6 @@ defmodule Egghead.TUI.Chat.Update do
          end) do
       nil ->
         nil
-
-      :room = kind ->
-        {kind, action_items(kind, model)}
 
       kind ->
         case action_items(kind, model) do
@@ -546,38 +545,18 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   defp open_action_picker(model, kind, items) do
-    opts =
-      [title: action_title(kind), hint: action_hint(kind)] ++
-        freeform_opts(kind)
-
+    opts = [title: action_title(kind), hint: action_hint(kind)]
     list = SelectList.new(items, opts)
-    %{model | command: nil, mention: nil, action_picker: {kind, list}}
+    %{model | completion: nil, action_picker: {kind, list}}
   end
 
-  defp freeform_opts(:room), do: [freeform_prefix: "+ create room: "]
-  defp freeform_opts(_), do: []
-
-  defp action_title(:room), do: "join"
   defp action_title(:mute), do: "mute"
   defp action_title(:unmute), do: "unmute"
   defp action_title(:handoff), do: "handoff"
 
-  defp action_hint(:room), do: "↑↓ select · enter join · esc cancel"
   defp action_hint(:mute), do: "↑↓ select · enter mute · esc cancel"
   defp action_hint(:unmute), do: "↑↓ select · enter unmute · esc cancel"
   defp action_hint(:handoff), do: "↑↓ select · enter handoff · esc cancel"
-
-  defp action_items(:room, %Model{room_id: current}) do
-    try do
-      Egghead.list_rooms()
-      |> Enum.reject(&(&1 == current))
-      |> Enum.map(fn id -> %{id: id, label: id} end)
-    rescue
-      _ -> []
-    catch
-      _, _ -> []
-    end
-  end
 
   defp action_items(:mute, %Model{agents: agents}) do
     Enum.map(agents, fn a -> %{id: a.id, label: a.name, hint: a.id} end)
@@ -604,29 +583,21 @@ defmodule Egghead.TUI.Chat.Update do
     Enum.map(agents, fn a -> %{id: a.id, label: a.name, hint: a.id} end)
   end
 
-  defp refresh_command(model, text) do
-    needle = text |> String.trim_leading("/") |> String.downcase()
+  # ---- completion acceptance ---------------------------------------------
 
-    candidates =
-      @chat_command_list
-      |> Enum.filter(fn cmd -> String.starts_with?(cmd.name, needle) end)
+  defp accept_completion(%Completion{} = completion, model) do
+    case Completion.accept(completion, model.input) do
+      {:edit, new_buffer} ->
+        {refresh_completion(Model.set_buffer(model, new_buffer)), :none}
 
-    ctx = %{candidates: candidates, selected: 0}
-    %{model | command: ctx, mention: nil}
-  end
+      {:submit, _action} ->
+        # Currently no provider returns :submit — left here so a
+        # future "dispatch on select" provider (e.g. pick agent
+        # → immediately send) has a clear hook.
+        {model, :none}
 
-  defp refresh_mention(%Model{input: buffer} = model) do
-    case Mentions.detect(buffer) do
-      nil ->
-        %{model | mention: nil}
-
-      %Mentions.Context{kind: :agent, prefix: prefix} = ctx ->
-        candidates = Mentions.rank_agents(agents_by_recency(model), prefix)
-        %{model | mention: %{ctx | candidates: candidates}}
-
-      %Mentions.Context{kind: :record, prefix: prefix} = ctx ->
-        candidates = Mentions.rank_records(safe_recent_records(), prefix)
-        %{model | mention: %{ctx | candidates: candidates}}
+      :noop ->
+        {model, :none}
     end
   end
 
@@ -655,18 +626,6 @@ defmodule Egghead.TUI.Chat.Update do
         idx -> {0, -idx}
       end
     end)
-  end
-
-  # Records sorted by last modified — `Egghead.recent/1` returns
-  # them in `:updated` desc order already.
-  defp safe_recent_records do
-    try do
-      Egghead.recent(limit: 100)
-    rescue
-      _ -> []
-    catch
-      _, _ -> []
-    end
   end
 
   # Scroll is lines-from-bottom: 0 = pinned to newest.

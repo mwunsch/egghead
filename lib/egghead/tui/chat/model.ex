@@ -23,8 +23,8 @@ defmodule Egghead.TUI.Chat.Model do
 
   alias Egghead.Chat.Stream
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Mentions}
-  alias Egghead.TUI.{SelectList, ThemePicker}
+  alias Egghead.TUI.Chat.Entry
+  alias Egghead.TUI.{Completion, SelectList, ThemePicker}
 
   defmodule AgentPresence do
     @moduledoc """
@@ -61,8 +61,7 @@ defmodule Egghead.TUI.Chat.Model do
           scroll: non_neg_integer(),
           input: EditBuffer.t(),
           next_paste_id: pos_integer(),
-          mention: Mentions.Context.t() | nil,
-          command: map() | nil,
+          completion: Completion.t() | nil,
           status_message: String.t() | nil,
           anim_frame: non_neg_integer(),
           providers?: boolean(),
@@ -81,8 +80,7 @@ defmodule Egghead.TUI.Chat.Model do
             scroll: 0,
             input: %EditBuffer{},
             next_paste_id: 1,
-            mention: nil,
-            command: nil,
+            completion: nil,
             status_message: nil,
             anim_frame: 0,
             providers?: false,
@@ -116,7 +114,7 @@ defmodule Egghead.TUI.Chat.Model do
   Switch to a different room without losing terminal-layout state
   (`:width`, `:height`) or app-mode flags (`:providers?`). Resets the
   per-room state — transcript, streams, pending activations, scroll,
-  input, mention/command dropdowns, status — and rehydrates from the
+  input, completion dropdowns, status — and rehydrates from the
   new room.
 
   Used by `/join` to avoid the brief flash of an 80x24 frame that a
@@ -133,8 +131,7 @@ defmodule Egghead.TUI.Chat.Model do
         pending_activated: MapSet.new(),
         scroll: 0,
         input: %EditBuffer{},
-        mention: nil,
-        command: nil,
+        completion: nil,
         status_message: nil,
         link_index: nil
     }
@@ -209,7 +206,7 @@ defmodule Egghead.TUI.Chat.Model do
 
   @spec clear_input(t()) :: t()
   def clear_input(%__MODULE__{} = m),
-    do: %{m | input: EditBuffer.new(), mention: nil, command: nil}
+    do: %{m | input: EditBuffer.new(), completion: nil}
 
   @spec input_text(t()) :: String.t()
   def input_text(%__MODULE__{input: buffer}), do: EditBuffer.to_text(buffer)

@@ -2,7 +2,8 @@ defmodule Egghead.TUI.Chat.UpdateTest do
   use ExUnit.Case, async: true
 
   alias Egghead.OpenTUI.EditBuffer
-  alias Egghead.TUI.Chat.{Entry, Mentions, Model, Paste, Update}
+  alias Egghead.TUI.Chat.{Entry, Model, Paste, Update}
+  alias Egghead.TUI.Completion
   alias Egghead.Chat.Room.{Message, Sender}
 
   defp put_input(model, text) do
@@ -353,20 +354,20 @@ defmodule Egghead.TUI.Chat.UpdateTest do
   end
 
   describe "mention autocomplete" do
-    test "typing @ sets an :agent mention context" do
+    test "typing @ sets an :agent completion" do
       {m, :none} = Update.update({:char, "@"}, model())
-      assert %Mentions.Context{kind: :agent, prefix: ""} = m.mention
+      assert %Completion{provider: Egghead.TUI.Completion.Agent, prefix: ""} = m.completion
     end
 
-    test "typing [[ sets a :record mention context" do
+    test "typing [[ sets a :record completion" do
       {m, :none} = Update.update({:char, "["}, model())
       {m, :none} = Update.update({:char, "["}, m)
-      assert %Mentions.Context{kind: :record, prefix: ""} = m.mention
+      assert %Completion{provider: Egghead.TUI.Completion.Record, prefix: ""} = m.completion
     end
 
-    test "typing a non-sigil leaves mention nil" do
+    test "typing a non-sigil leaves completion nil" do
       {m, :none} = Update.update({:char, "h"}, model())
-      assert m.mention == nil
+      assert m.completion == nil
     end
 
     test "tab with no candidates is a no-op" do
@@ -375,11 +376,11 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert Model.input_text(m2) == Model.input_text(m)
     end
 
-    test "clear_input wipes the mention context" do
+    test "clear_input wipes the completion context" do
       {m, :none} = Update.update({:char, "@"}, model())
-      assert m.mention != nil
+      assert m.completion != nil
       m = Model.clear_input(m)
-      assert m.mention == nil
+      assert m.completion == nil
     end
   end
 
@@ -447,24 +448,23 @@ defmodule Egghead.TUI.Chat.UpdateTest do
   end
 
   describe "command autocomplete" do
-    test "typing / activates the command dropdown" do
+    test "typing / activates the command completion" do
       {m, :none} = Update.update({:char, "/"}, model())
-      assert m.command != nil
-      assert length(m.command.candidates) > 0
+      assert %Completion{provider: Egghead.TUI.Completion.Command} = m.completion
+      assert length(m.completion.candidates) > 0
     end
 
     test "typing /q narrows to quit" do
       m = put_input(model(), "/q")
-      # Simulate the edit flow by going through a char insert
       {m, :none} = Update.update({:char, "u"}, m)
-      assert m.command != nil
-      assert Enum.any?(m.command.candidates, &(&1.name == "quit"))
+      assert %Completion{provider: Egghead.TUI.Completion.Command} = m.completion
+      assert Enum.any?(m.completion.candidates, &(&1.name == "quit"))
     end
 
     test "tab completes the selected command" do
       {m, :none} = Update.update({:char, "/"}, model())
       {m, :none} = Update.update({:char, "q"}, m)
-      assert m.command != nil
+      assert m.completion != nil
       {m, :none} = Update.update({:key, :tab}, m)
       assert Model.input_text(m) =~ "/quit "
     end
@@ -472,25 +472,25 @@ defmodule Egghead.TUI.Chat.UpdateTest do
     test "enter with dropdown open fills the input (same as tab)" do
       {m, :none} = Update.update({:char, "/"}, model())
       {m, :none} = Update.update({:key, :down}, m)
-      selected_name = Enum.at(m.command.candidates, m.command.selected).name
+      selected_name = Enum.at(m.completion.candidates, m.completion.selected).name
       {m, :none} = Update.update({:key, :enter}, m)
       assert Model.input_text(m) == "/#{selected_name} "
     end
 
-    test "escape dismisses command dropdown" do
+    test "escape dismisses command completion" do
       {m, :none} = Update.update({:char, "/"}, model())
-      assert m.command != nil
+      assert m.completion != nil
       {m, :none} = Update.update({:key, :escape}, m)
-      assert m.command == nil
+      assert m.completion == nil
     end
 
-    test "up/down navigate the command dropdown" do
+    test "up/down navigate the command completion" do
       {m, :none} = Update.update({:char, "/"}, model())
-      assert m.command.selected == 0
+      assert m.completion.selected == 0
       {m, :none} = Update.update({:key, :down}, m)
-      assert m.command.selected == 1
+      assert m.completion.selected == 1
       {m, :none} = Update.update({:key, :up}, m)
-      assert m.command.selected == 0
+      assert m.completion.selected == 0
     end
   end
 

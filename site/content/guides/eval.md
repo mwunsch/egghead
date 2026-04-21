@@ -22,8 +22,8 @@ link to, query, and compare against later runs.
 
 Two distinct questions, both worth measuring:
 
-1. **"How good is my roster at this kind of work?"** You wrote a
-   Scout, an Archivist, a Heckler. Do they cohere on a research
+1. **"How good is my roster at this kind of work?"** You've written
+   a handful of specialised agents. Do they cohere on a research
    synthesis task? Who pulls their weight? Who `/pass`es when they
    should be contributing? Run against your own agents and find out.
 
@@ -80,9 +80,9 @@ every one of them to the eval room. This is the answer to "how is
 specific cast ("the PI should …"). Whoever you have plays whatever
 role fits their disposition.
 
-This is the mode that tells you whether Scout and Archivist are
-actually complementary or whether one of them is dead weight on
-this kind of task.
+This is the mode that tells you whether your researcher and your
+critic are actually complementary, or whether one of them is dead
+weight on this kind of task.
 
 ### `--roster task` — evaluate Egghead against the benchmark
 
@@ -102,6 +102,75 @@ both modes on the same task, compare KPIs.
 The personas shipped with the research tasks are MARBLE's own
 profiles, ported verbatim from their YAML configs. They carry
 MIT-license attribution in their frontmatter `source:` field.
+
+### Roster shapes that tend to do well
+
+If you're running `--roster user` and wondering what mix of agents
+is worth building for an eval-friendly room, the research
+literature and our own observation converge on a handful of
+patterns. None of these require specific names — these are
+dispositions / roles, and any agent in your store can play them.
+
+- **A synthesiser.** One agent whose disposition is "read broadly,
+  integrate across sources, produce the first concrete draft."
+  MARBLE's research profiles have at least one such per roster.
+  Without a synthesiser, rooms trend toward fragmented observations
+  that never coalesce. Needs `records.read` at minimum; `records.create`
+  if you want artifacts to persist.
+
+- **A grounder** — a disposition focused on pulling in prior
+  context from the store and anchoring claims to existing records.
+  Distinct from the synthesiser: less about producing new artifacts,
+  more about keeping the room honest. Cross-references, "we already
+  have a record on this," "what does the design doc say." This
+  role is what distinguishes Egghead rooms from stateless
+  brainstorming — the knowledge graph is the grounding surface.
+
+- **A dissenter.** A disposition that argues against consensus,
+  raises reservations, pushes on weak premises. MARBLE's research
+  findings, and the `Talk Isn't Always Cheap` paper cited in
+  [research influences]({{< ref "research-influences" >}}),
+  both show that collaborative multi-agent systems tend to drift
+  toward agreement regardless of correctness. An explicit dissenter
+  is a partial mitigation — the literature shows capable models
+  still flip from correct positions under persuasive-but-wrong peer
+  pressure, so a dissenter isn't a general solution, but they're a
+  real tool against groupthink in practice.
+
+- **A specialist or two.** Domain expertise relevant to the kind of
+  tasks you run. MARBLE's research personas all have detailed
+  multi-paragraph bios; the specialisation is where the proposals
+  get their texture. Thin personas produce thin proposals; a
+  roster where every agent is "a senior engineer with broad
+  background" converges on generic outputs. For Egghead-native
+  tasks you'd tailor these to your domain (infrastructure,
+  security, data pipelines, whatever the room is about).
+
+- **Optionally: a coordinator-like role.** MARBLE's top-performing
+  research runs often include one agent framed around "read what
+  peers produced and identify the next missing piece." Useful when
+  round counts climb past 3 and rooms start to repeat themselves.
+  In Egghead this emerges naturally from `Index` when a user
+  shadow isn't defined, but an explicit domain-savvy coordinator
+  out-performs Index on specialised tasks.
+
+**Roster size**: 3–5 agents is the sweet spot. Below 3, you lose
+the "diffusion / recall" property MARBLE's topology findings
+depend on. Above 6, the literature starts showing coordination
+cost dominating ("mesh becomes unobservable/undebuggable beyond
+6–8 agents" — see research-influences). MARBLE itself uses 4–5
+per research profile.
+
+**What doesn't tend to help**: redundant specialists (two agents
+with overlapping expertise produce lots of "yes, and" without
+adding perspectives), agents with a tool surface but no domain
+disposition, or agents whose body is just "you are a helpful
+assistant." These end up contributing noise — high turn count,
+low milestone attribution.
+
+**How to know**: run the same task under two roster shapes and
+compare. The eval framework exists precisely so you can test
+roster composition empirically instead of guessing.
 
 ## The Judge
 
@@ -349,7 +418,7 @@ What to look at:
 
 1. Run a baseline:
    `egghead eval run research/profile-1` → run-id `A`.
-2. Edit your agent's disposition — soften the Heckler, add a new
+2. Edit an agent's disposition — soften the critic, add a new
    capability, swap models.
 3. Run again: → run-id `B`.
 4. `egghead eval compare A B`. Writes a durable comparison record.

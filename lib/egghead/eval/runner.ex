@@ -95,7 +95,14 @@ defmodule Egghead.Eval.Runner do
            resolve_roster(task, mode, workspace_path, on_event),
          :ok <- gate_capabilities(task, roster, on_event),
          {:ok, run_state} <-
-           execute(task, roster, Keyword.put(opts, :run_id, run_id), on_event) do
+           execute(
+             task,
+             roster,
+             opts
+             |> Keyword.put(:run_id, run_id)
+             |> Keyword.put(:workspace_path, workspace_path),
+             on_event
+           ) do
       cleanup_transients(transient_ids)
       outcome = finalize(task, run_state, roster, mode, opts, on_event)
 
@@ -133,6 +140,40 @@ defmodule Egghead.Eval.Runner do
 
         err
     end
+  end
+
+  # Prepend a workspace preamble for tasks that have one so agents
+  # know the absolute path to write to and run from. Without this,
+  # `solution.py` expands against the CLI's CWD — outside the
+  # fs.write scope — and every tool call is denied. Pure records-
+  # only tasks get the prompt verbatim.
+  defp build_prompt(%Task{prompt: prompt}, nil), do: prompt
+
+  defp build_prompt(%Task{prompt: prompt}, workspace_root) do
+    workspace_dir = Path.join(workspace_root, "workspace")
+
+    """
+    **Workspace:** `#{workspace_dir}`
+
+    You have been granted `fs.read`, `fs.write`, and `shell.exec`
+    scoped to this directory. **Use absolute paths** rooted at the
+    workspace directory — a bare path like `solution.py` will be
+    denied because it expands outside the allowed scope.
+
+    Examples that work:
+
+        fs_write → `#{workspace_dir}/solution.py`
+        shell.exec → `python3 #{workspace_dir}/solution.py`
+
+    The shell allowlist is limited: `python`, `python3`, `node`,
+    `ruby`, `pytest`, `ls`, `pwd`, `cat`, `head`, `tail`, `file`,
+    `wc`, `find`, `grep`, `diff`, `mkdir`. No destructive, networked,
+    or privileged commands.
+
+    ---
+
+    #{prompt}
+    """
   end
 
   # A task needs filesystem scratch space iff any of its required
@@ -257,7 +298,9 @@ defmodule Egghead.Eval.Runner do
 
         emit(on_event, {:room_opened, %{room_id: room_id, roster: joined}})
         Room.subscribe(room_id)
-        Room.send_message(room_id, task.prompt)
+
+        prompt = build_prompt(task, Keyword.get(opts, :workspace_path))
+        Room.send_message(room_id, prompt)
 
         # `responses` here is our own event-driven capture of each
         # agent turn. The Room's authoritative transcript is fetched

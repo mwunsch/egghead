@@ -148,12 +148,15 @@ defmodule Egghead.Node do
   end
 
   defp discover_from_epmd do
-    case :net_adm.names() do
+    # Query epmd via loopback explicitly. The no-arg `:net_adm.names/0`
+    # defaults to the machine's short hostname, which on macOS can resolve
+    # to a stale IP after a Wi-Fi change and block the TCP connect for
+    # tens of seconds. `localhost` always resolves from /etc/hosts.
+    case :net_adm.names(~c"localhost") do
       {:ok, names} ->
         case Enum.find(names, fn {name, _port} -> name == @server_name end) do
           {_name, _port} ->
-            hostname = node_hostname()
-            {:ok, :"egghead_server@#{hostname}"}
+            {:ok, :"egghead_server@#{node_hostname()}"}
 
           nil ->
             :none
@@ -186,8 +189,10 @@ defmodule Egghead.Node do
     end
   end
 
-  defp node_hostname do
-    {:ok, hostname} = :inet.gethostname()
-    List.to_string(hostname)
-  end
+  # Always use "localhost" for the shortnames suffix so the node name
+  # is stable across network changes. `:inet.gethostname/0` returns the
+  # machine's short name (e.g. "MacBookPro"), which macOS may resolve
+  # to a stale IP after a Wi-Fi switch — any peer that tries to connect
+  # by that name will then stall on the TCP SYN.
+  defp node_hostname, do: "localhost"
 end

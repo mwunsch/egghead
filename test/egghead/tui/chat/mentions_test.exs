@@ -88,6 +88,28 @@ defmodule Egghead.TUI.Chat.MentionsTest do
       # Broadcast tokens count toward the limit.
       assert length(Mentions.rank_agents(agents, "", limit: 2)) == 2
     end
+
+    test "matches on the full id prefix too, not just the basename", %{agents: agents} do
+      # Typing `@agents/` should narrow to all agents in the class
+      # rather than filtering them all out because the basename
+      # doesn't start with "agents/".
+      assert Enum.map(Mentions.rank_agents(agents, "agents/"), & &1.id) ==
+               ["agents/scout", "agents/scribe", "agents/index"]
+
+      # Extending the prefix narrows further.
+      assert Enum.map(Mentions.rank_agents(agents, "agents/sc"), & &1.id) ==
+               ["agents/scout", "agents/scribe"]
+
+      # Full typed id exactly matches.
+      assert Enum.map(Mentions.rank_agents(agents, "agents/scout"), & &1.id) ==
+               ["agents/scout"]
+    end
+
+    test "basename match still works", %{agents: agents} do
+      # Regression: the fix must not break the existing
+      # basename-prefix matching.
+      assert Enum.map(Mentions.rank_agents(agents, "scout"), & &1.id) == ["agents/scout"]
+    end
   end
 
   describe "rank_records/3" do

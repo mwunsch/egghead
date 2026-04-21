@@ -7,6 +7,7 @@ difficulty: medium
 required_capabilities: [records.read]
 personas: ['researcher-p3-1', 'researcher-p3-2', 'researcher-p3-3', 'researcher-p3-4', 'researcher-p3-5']
 dialogue_mode: open
+rounds: 3
 milestones:
   - "Identify overlapping research interests across agents"
   - "Propose a concrete collaborative research direction"

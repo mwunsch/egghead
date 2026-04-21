@@ -18,8 +18,7 @@ defmodule Egghead.CLI.EvalCmd do
           roster: :string,
           judge: :string,
           timeout: :integer,
-          round_budget: :integer,
-          keep: :boolean
+          round_budget: :integer
         ],
         aliases: [h: :help]
       )
@@ -122,7 +121,6 @@ defmodule Egghead.CLI.EvalCmd do
       |> put_if(opts[:judge], :judge_model, opts[:judge])
       |> put_if(opts[:timeout], :timeout, opts[:timeout])
       |> put_if(opts[:round_budget], :round_budget, opts[:round_budget])
-      |> put_if(opts[:keep], :keep, true)
       |> Keyword.put(:on_event, &live_event/1)
 
     IO.puts("")
@@ -200,19 +198,14 @@ defmodule Egghead.CLI.EvalCmd do
     Widgets.spinner_start("preparing room…")
   end
 
-  defp live_event({:workspace_created, path}) do
+  defp live_event({:round_started, %{round: n, of: total}}) when total > 1 do
     Widgets.spinner_stop()
-    IO.puts("  workspace: " <> Widgets.dim(path))
-    Widgets.spinner_start("resolving roster…")
+    IO.puts("")
+    IO.puts("  " <> Widgets.dim("── iteration #{n} of #{total} ──"))
+    Widgets.spinner_start("waiting for agents to engage…")
   end
 
-  defp live_event({:workspace_cleanup, %{path: path, action: :deleted}}) do
-    IO.puts("  " <> Widgets.dim("workspace cleaned up: #{path}"))
-  end
-
-  defp live_event({:workspace_cleanup, %{path: path, action: :kept}}) do
-    IO.puts("  " <> Widgets.dim("workspace kept: #{path}"))
-  end
+  defp live_event({:round_started, _}), do: :ok
 
   defp live_event({:room_opened, %{room_id: room_id, roster: roster}}) do
     Widgets.spinner_stop()
@@ -514,8 +507,6 @@ defmodule Egghead.CLI.EvalCmd do
       --judge PROVIDER/MODEL Override Judge's model for this call
       --timeout MS           Max wait for agent convergence (default: 300000)
       --round-budget N       Max agent turn-rounds (default: 10)
-      --keep                 Keep the workspace dir even on success
-                             (coding tasks only; default keeps on failure)
 
     EXAMPLES
       $ egghead eval list

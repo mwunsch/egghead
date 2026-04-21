@@ -7,6 +7,7 @@ difficulty: medium
 required_capabilities: [records.read]
 personas: [bargain-buyer, bargain-seller]
 dialogue_mode: open
+rounds: 3
 milestones:
   - "Buyer makes an initial offer below the asking price"
   - "Seller responds with a counter-offer or justification"

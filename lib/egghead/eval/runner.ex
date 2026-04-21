@@ -22,7 +22,7 @@ defmodule Egghead.Eval.Runner do
   require Logger
 
   alias Egghead.Chat.Room
-  alias Egghead.Eval.{CapabilityCheck, Judge, Persona, Reporter, Scorer, Task, Workspace}
+  alias Egghead.Eval.{CapabilityCheck, Judge, Persona, Reporter, Scorer, Task}
 
   @type roster_mode :: :user | :task
 
@@ -68,57 +68,16 @@ defmodule Egghead.Eval.Runner do
 
     emit(on_event, {:started, %{run_id: run_id, task: task, mode: mode}})
 
-    # Some tasks need filesystem scratch space — coding tasks, anything
-    # requiring fs.write or shell.exec. Workspace created before
-    # roster spawn so personas can be scoped to it at spawn time.
-    workspace_path =
-      if workspace_required?(task) do
-        case Workspace.create(run_id, %{
-               run_id: run_id,
-               task: task.id,
-               roster: task.personas,
-               started_at: DateTime.utc_now() |> DateTime.to_iso8601()
-             }) do
-          {:ok, path} ->
-            emit(on_event, {:workspace_created, path})
-            path
-
-          {:error, reason} ->
-            Logger.error("Eval run #{run_id}: workspace create failed: #{inspect(reason)}")
-            nil
-        end
-      else
-        nil
-      end
-
-    with {:ok, transient_ids, roster} <-
-           resolve_roster(task, mode, workspace_path, on_event),
+    with {:ok, transient_ids, roster} <- resolve_roster(task, mode, on_event),
          :ok <- gate_capabilities(task, roster, on_event),
          {:ok, run_state} <-
-           execute(
-             task,
-             roster,
-             opts
-             |> Keyword.put(:run_id, run_id)
-             |> Keyword.put(:workspace_path, workspace_path),
-             on_event
-           ) do
+           execute(task, roster, Keyword.put(opts, :run_id, run_id), on_event) do
       cleanup_transients(transient_ids)
       outcome = finalize(task, run_state, roster, mode, opts, on_event)
-
-      if workspace_path do
-        action = Workspace.cleanup(workspace_path, outcome.status, Keyword.get(opts, :keep, false))
-        emit(on_event, {:workspace_cleanup, %{path: workspace_path, action: action}})
-      end
-
       {:ok, outcome}
     else
       {:skipped, reason} ->
         emit(on_event, {:skipped, reason})
-
-        if workspace_path do
-          _ = Workspace.cleanup(workspace_path, :skipped, Keyword.get(opts, :keep, false))
-        end
 
         {:ok,
          %{
@@ -133,63 +92,30 @@ defmodule Egghead.Eval.Runner do
 
       {:error, reason} = err ->
         emit(on_event, {:error, reason})
-
-        if workspace_path do
-          _ = Workspace.cleanup(workspace_path, :error, Keyword.get(opts, :keep, false))
-        end
-
         err
     end
   end
 
-  # Prepend a workspace preamble for tasks that have one so agents
-  # know the absolute path to write to and run from. Without this,
-  # `solution.py` expands against the CLI's CWD — outside the
-  # fs.write scope — and every tool call is denied. Pure records-
-  # only tasks get the prompt verbatim.
-  defp build_prompt(%Task{prompt: prompt}, nil), do: prompt
-
-  defp build_prompt(%Task{prompt: prompt}, workspace_root) do
-    workspace_dir = Path.join(workspace_root, "workspace")
-
+  # MARBLE's engine drives iterations by re-invoking every agent
+  # per round against the accumulated shared memory (no explicit
+  # prompt — the agent.plan_task()/agent.act() cycle happens
+  # programmatically). Our equivalent is a user_message that
+  # triggers the Coordinator's activate path over the room's
+  # joined roster. The nudge is deliberately minimal — the real
+  # context is the transcript the agent already sees.
+  defp round_prompt(round_n, total) do
     """
-    **Workspace:** `#{workspace_dir}`
+    [Iteration #{round_n} of #{total}]
 
-    You have been granted `fs.read`, `fs.write`, and `shell.exec`
-    scoped to this directory. **Use absolute paths** rooted at the
-    workspace directory — a bare path like `solution.py` will be
-    denied because it expands outside the allowed scope.
-
-    Examples that work:
-
-        fs_write → `#{workspace_dir}/solution.py`
-        shell.exec → `python3 #{workspace_dir}/solution.py`
-
-    The shell allowlist is limited: `python`, `python3`, `node`,
-    `ruby`, `pytest`, `ls`, `pwd`, `cat`, `head`, `tail`, `file`,
-    `wc`, `find`, `grep`, `diff`, `mkdir`. No destructive, networked,
-    or privileged commands.
-
-    ---
-
-    #{prompt}
+    Continue working on the task. Review what's been done so far in
+    this conversation (including any files written to the workspace
+    or records created) and take your next action.
     """
-  end
-
-  # A task needs filesystem scratch space iff any of its required
-  # capabilities touch the fs or shell. Avoids creating workspaces
-  # for pure records-only tasks (research, bargaining).
-  defp workspace_required?(%Task{required_capabilities: caps}) do
-    Enum.any?(caps, fn c ->
-      c in ["fs.read", "fs.write", "shell.exec"] or
-        (is_binary(c) and String.starts_with?(c, "fs.")) or
-        (is_binary(c) and String.starts_with?(c, "shell."))
-    end)
   end
 
   # ---- roster resolution -------------------------------------------------
 
-  defp resolve_roster(%Task{} = _task, :user, _workspace, _on_event) do
+  defp resolve_roster(%Task{} = _task, :user, _on_event) do
     roster =
       Egghead.search_by_class(:agent)
       |> Enum.reject(&(&1.id == Judge.id()))
@@ -197,29 +123,17 @@ defmodule Egghead.Eval.Runner do
     {:ok, [], roster}
   end
 
-  defp resolve_roster(%Task{personas: []} = _task, :task, _workspace, _on_event) do
+  defp resolve_roster(%Task{personas: []} = _task, :task, _on_event) do
     {:error, :task_has_no_personas}
   end
 
-  defp resolve_roster(%Task{personas: ids} = _task, :task, workspace, on_event) do
+  defp resolve_roster(%Task{personas: ids} = _task, :task, on_event) do
     case Persona.fetch_all(ids) do
       {:ok, records} ->
-        # Apply workspace scope to persona grants. Unscoped fs.write
-        # becomes fs.write{paths: [workspace/**]}; unscoped shell.exec
-        # becomes shell.exec{cmds: [<allowlist>]}. Pure records-only
-        # personas (research, bargaining) get nothing rewritten because
-        # they have no fs/shell caps to scope.
-        scoped_records =
-          if workspace do
-            Enum.map(records, &Workspace.scope_record(&1, workspace))
-          else
-            records
-          end
-
-        emit(on_event, {:spawning_personas, Enum.map(scoped_records, & &1.id)})
+        emit(on_event, {:spawning_personas, Enum.map(records, & &1.id)})
 
         started =
-          Enum.reduce_while(scoped_records, [], fn record, acc ->
+          Enum.reduce_while(records, [], fn record, acc ->
             case Egghead.Agent.Supervisor.start_agent(Egghead.Agent.Supervisor, record) do
               {:ok, _pid} -> {:cont, [record.id | acc]}
               {:error, {:already_started, _}} -> {:cont, [record.id | acc]}
@@ -232,7 +146,7 @@ defmodule Egghead.Eval.Runner do
             err
 
           ids_list ->
-            {:ok, Enum.reverse(ids_list), scoped_records}
+            {:ok, Enum.reverse(ids_list), records}
         end
 
       {:error, {:missing, missing}} ->
@@ -299,16 +213,37 @@ defmodule Egghead.Eval.Runner do
         emit(on_event, {:room_opened, %{room_id: room_id, roster: joined}})
         Room.subscribe(room_id)
 
-        prompt = build_prompt(task, Keyword.get(opts, :workspace_path))
-        Room.send_message(room_id, prompt)
+        Room.send_message(room_id, task.prompt)
 
-        # `responses` here is our own event-driven capture of each
-        # agent turn. The Room's authoritative transcript is fetched
-        # after the collect loop ends — but the Room may have died
-        # in the meantime (idle timeout, crash, explicit stop), so
-        # every post-loop call has to be guarded. We fall back to
-        # our event log if the Room is gone.
-        {turns, responses} = collect(on_event, deadline(timeout), 0, 0, 0, [])
+        rounds = max(task.rounds || 1, 1)
+        emit(on_event, {:round_started, %{round: 1, of: rounds}})
+
+        # Round 1: wait for the initial activation to settle.
+        # `responses` is our own event-driven capture of each agent
+        # turn (Room transcript is authoritative, fetched after the
+        # loop — but may be gone by then if the Room died, so we
+        # keep our own log as a fallback).
+        {turns_1, responses_1} =
+          collect(on_event, deadline(timeout), 0, 0, 0, [])
+
+        # Rounds 2..N: MARBLE's engine re-invokes every agent per
+        # iteration against the accumulated shared memory. We
+        # reproduce that by posting a lightweight "continue" nudge
+        # — it lands as a user_message, the Coordinator activates
+        # every agent in the room again, and each agent sees the
+        # full prior transcript (including any artifacts that
+        # actually got written to the workspace in round 1).
+        {turns, responses} =
+          if rounds > 1 do
+            Enum.reduce(2..rounds, {turns_1, responses_1}, fn round_n, {t_acc, r_acc} ->
+              emit(on_event, {:round_started, %{round: round_n, of: rounds}})
+              Room.send_message(room_id, round_prompt(round_n, rounds))
+              {t, r} = collect(on_event, deadline(timeout), 0, 0, 0, [])
+              {t_acc + t, r_acc ++ r}
+            end)
+          else
+            {turns_1, responses_1}
+          end
 
         transcript =
           safe_room_call(fn -> Room.get_transcript(room_id) end) ||

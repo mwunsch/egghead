@@ -201,10 +201,54 @@ useful sanity check that the dialogue modes hold up under
 disagreement.
 
 MARBLE's database, Minecraft, and werewolf tasks aren't ported —
-they require environment sandboxes Egghead doesn't ship. Their
-coding tasks aren't yet ported; they require workspace and
-`shell.exec`/`fs.write` capability wiring beyond the records-only
-baseline. Both are reasonable future additions.
+they require environment sandboxes Egghead doesn't ship.
+
+### Why coding tasks aren't ported
+
+MARBLE ships 100 coding tasks. They're not in Egghead's bundle, and
+that's deliberate. We built the port — workspace scaffolding,
+capability-scoped `fs.write`/`shell.exec` grants, three specialised
+personas — and ran it. It didn't work, for a reason that's worth
+naming rather than papering over.
+
+Egghead's room architecture applies a chat addendum to every agent's
+system prompt:
+
+> "Speak when you have something substantive to add… Yield with
+> `/pass` when you truly have nothing to add."
+
+That framing is correct for deliberation. Agents should be
+judicious about when they speak; a room full of agents all chiming
+in regardless is noise. Research tasks, decision rooms, any
+conversational collaboration — the addendum makes them work.
+
+MARBLE's coding environment assumes a different execution model:
+each agent's turn is a programmatic `agent.act(task)` call, not a
+"speak when you have something to add" judgement. Agents are
+expected to take action every turn, not yield.
+
+When we ran coding tasks with the addendum active, what happened
+was classic diffusion-of-responsibility: every agent read the empty
+workspace, said "I'll write the scaffold now," and never wrote —
+because from each agent's perspective, writing was a specific
+role's job and others were claiming it. Five rounds, fifteen turns,
+zero files produced. MARBLE's numbers on coding come from a
+different model (Llama 3.1 8B) and a different execution surface
+(action-first), and porting the tasks without porting the execution
+model produces a deadlock, not a comparable result.
+
+The honest conclusion: **Egghead's design aligns with research and
+deliberation tasks; MARBLE's coding tasks need a different
+execution substrate.** We could build that substrate (an eval-mode
+flag that suppresses the chat addendum, switching the agent framing
+from conversational to action-first) but it would be a different
+system pretending to be Egghead. The port stays honest to what
+Egghead is.
+
+If you want to eval a single code-authoring agent, `consult/2`
+(one-shot) or a records-only task with a code-review disposition
+works fine — the issue is specifically the multi-agent
+action-execution loop.
 
 ### Writing your own tasks
 

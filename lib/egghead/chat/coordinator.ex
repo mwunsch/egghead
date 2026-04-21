@@ -520,8 +520,8 @@ defmodule Egghead.Chat.Coordinator do
     activation = Keyword.get(opts, :activation, :normal)
 
     case run_agent_attempt(agent_id, room_id, message, activation) do
-      {:ok, text, usage} ->
-        handle_agent_result(agent_id, room_id, text, usage, activation)
+      {:ok, text, usage, tool_calls} ->
+        handle_agent_result(agent_id, room_id, text, usage, tool_calls, activation)
 
       {:error, reason} ->
         Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
@@ -610,8 +610,17 @@ defmodule Egghead.Chat.Coordinator do
       end
 
     case result do
-      {:ok, %{text: text, usage: usage}} -> {:ok, text, usage}
-      {:error, reason} -> {:error, reason}
+      {:ok, %Egghead.Agent.Response{text: text, usage: usage, tool_calls: tool_calls}} ->
+        {:ok, text, usage, tool_calls || []}
+
+      {:ok, %{text: text, usage: usage} = plain} ->
+        # Fallback for callers that return a plain map instead of
+        # the Response struct (e.g. future test doubles). Maps
+        # support Access.
+        {:ok, text, usage, Map.get(plain, :tool_calls, [])}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -622,14 +631,20 @@ defmodule Egghead.Chat.Coordinator do
   #   acknowledgment fallback (huddle forbids /pass by design)
   # - agent said /pass normally: commit the pass
   # - agent said something substantive: commit it
-  defp handle_agent_result(agent_id, room_id, text, usage, activation) do
+  defp handle_agent_result(agent_id, room_id, text, usage, tool_calls, activation) do
     pass? = pass_response?(text)
     in_progress = Room.get_in_progress(room_id, agent_id)
 
     cond do
       pass? and has_substantive_content?(in_progress) ->
         Logger.debug("Coordinator: #{agent_id} streamed content, committing despite /pass")
-        Room.agent_respond(room_id, agent_id, String.trim(in_progress), usage: usage)
+
+        Room.agent_respond(
+          room_id,
+          agent_id,
+          decorate_with_tool_log(String.trim(in_progress), tool_calls),
+          usage: usage
+        )
 
       pass? and activation == :huddle ->
         Logger.warning("Coordinator: #{agent_id} passed in huddle mode — re-prompting once")
@@ -642,9 +657,67 @@ defmodule Egghead.Chat.Coordinator do
         Room.agent_pass(room_id, agent_id)
 
       true ->
-        Room.agent_respond(room_id, agent_id, text, usage: usage)
+        Room.agent_respond(
+          room_id,
+          agent_id,
+          decorate_with_tool_log(text, tool_calls),
+          usage: usage
+        )
     end
   end
+
+  # Prepend a terse summary of any tool errors / denials to the
+  # message body so they land in the saved transcript (Judge +
+  # downstream agents can see what was attempted) and render in the
+  # TUI / web / CLI without special-case handling. Successful tool
+  # calls are already evidenced by their output in the text — we
+  # only surface the failures here. No-op when the tool log is
+  # empty or every call succeeded.
+  @doc false
+  def decorate_with_tool_log_for_test(text, tool_calls) do
+    decorate_with_tool_log(text, tool_calls)
+  end
+
+  defp decorate_with_tool_log(text, []), do: text
+  defp decorate_with_tool_log(text, nil), do: text
+
+  defp decorate_with_tool_log(text, tool_calls) when is_list(tool_calls) do
+    failed =
+      Enum.filter(tool_calls, fn call ->
+        Map.get(call, :error, false) == true
+      end)
+
+    case failed do
+      [] ->
+        text
+
+      entries ->
+        summary =
+          entries
+          |> Enum.map(&format_tool_failure/1)
+          |> Enum.join("\n")
+
+        "**Tool errors:**\n\n```\n#{summary}\n```\n\n---\n\n#{text}"
+    end
+  end
+
+  defp format_tool_failure(%{name: name, input: input, result: result}) do
+    # Trim long inputs so the transcript stays readable.
+    compact_input =
+      input
+      |> inspect(limit: 3, printable_limit: 120)
+      |> String.slice(0, 200)
+
+    compact_result =
+      result
+      |> to_string()
+      |> String.replace("\n", " ")
+      |> String.slice(0, 300)
+
+    "#{name}(#{compact_input}) → #{compact_result}"
+  end
+
+  defp format_tool_failure(other), do: inspect(other)
 
   # Huddle mode forbids /pass but agents still try. Re-prompt once with
   # a stronger nudge. If the retry is also a pass, accept it — we've
@@ -659,13 +732,18 @@ defmodule Egghead.Chat.Coordinator do
         "or something adjacent you noticed. Do not pass."
 
     case run_agent_attempt(agent_id, room_id, nudge, :huddle) do
-      {:ok, text, usage} ->
+      {:ok, text, usage, tool_calls} ->
         pass? = pass_response?(text)
         in_progress = Room.get_in_progress(room_id, agent_id)
 
         cond do
           pass? and has_substantive_content?(in_progress) ->
-            Room.agent_respond(room_id, agent_id, String.trim(in_progress), usage: usage)
+            Room.agent_respond(
+              room_id,
+              agent_id,
+              decorate_with_tool_log(String.trim(in_progress), tool_calls),
+              usage: usage
+            )
 
           pass? ->
             Logger.debug("Coordinator: #{agent_id} passed again in huddle — accepting the yield")
@@ -673,7 +751,12 @@ defmodule Egghead.Chat.Coordinator do
             Room.agent_pass(room_id, agent_id)
 
           true ->
-            Room.agent_respond(room_id, agent_id, text, usage: usage)
+            Room.agent_respond(
+              room_id,
+              agent_id,
+              decorate_with_tool_log(text, tool_calls),
+              usage: usage
+            )
         end
 
       {:error, reason} ->

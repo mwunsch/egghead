@@ -36,6 +36,7 @@ defmodule Egghead.Eval.Task do
           required_capabilities: [String.t()],
           personas: [String.t()],
           dialogue_mode: atom(),
+          rounds: pos_integer(),
           milestones: [String.t()],
           prompt: String.t(),
           source_path: String.t() | nil
@@ -52,6 +53,7 @@ defmodule Egghead.Eval.Task do
     required_capabilities: [],
     personas: [],
     dialogue_mode: :open,
+    rounds: 1,
     milestones: [],
     prompt: ""
   ]
@@ -140,6 +142,7 @@ defmodule Egghead.Eval.Task do
       required_capabilities: Map.get(fm, "required_capabilities", []) |> Enum.map(&to_string/1),
       personas: Map.get(fm, "personas", []) |> Enum.map(&to_string/1),
       dialogue_mode: Map.get(fm, "dialogue_mode", "open") |> atomize(),
+      rounds: parse_rounds(Map.get(fm, "rounds")),
       milestones: Map.get(fm, "milestones", []) |> Enum.map(&to_string/1),
       prompt: prompt,
       source_path: path
@@ -167,4 +170,8 @@ defmodule Egghead.Eval.Task do
 
   defp maybe_atomize(nil), do: nil
   defp maybe_atomize(val), do: atomize(val)
+
+  defp parse_rounds(nil), do: 1
+  defp parse_rounds(n) when is_integer(n) and n > 0, do: n
+  defp parse_rounds(_), do: 1
 end

@@ -47,7 +47,9 @@ credentials and per-session overrides.
 
 ## First-run setup
 
-`egghead init` walks a first-run wizard: pick a records directory,
+`egghead init` walks a first-run wizard — see
+[Getting started]({{< ref "getting-started" >}}) for the walkthrough.
+The short version: pick a records directory,
 pick a provider, paste an API key (or confirm use of the env var),
 set a default model. Writes `config.yml` at the end. Skip it if you
 prefer to hand-edit.

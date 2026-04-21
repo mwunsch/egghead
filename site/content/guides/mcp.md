@@ -43,8 +43,10 @@ Fifteen tools, all prefixed `egghead_`. They split into four groups.
 | `egghead_backlinks`   | Reverse graph — who links here?                             |
 | `egghead_recent`      | Recently updated/created, sorted                             |
 
-These are the workhorses. If the MCP client is an editor or a
-knowledge tool, these are what it actually uses.
+These are the workhorses — the same surface the
+[Records guide]({{< ref "records" >}}) covers, just reached for
+over MCP. If the MCP client is an editor or a knowledge tool,
+these are what it actually uses.
 
 ### Agents — four tools
 

@@ -5,9 +5,10 @@ weight: 19
 
 A skill is a packaged way of doing something — instructions for a
 common task, plus a declaration of the tool dependencies that task
-needs. Skills are composable: any agent with the required
-capabilities can invoke one. They're portable: drop a skill into a
-shared directory and every Egghead install picks it up.
+needs. Skills are composable: any [agent]({{< ref "agents" >}})
+with the required capabilities can invoke one. They're portable:
+drop a skill into a shared directory and every Egghead install
+picks it up.
 
 This guide covers where skills live, what goes in a `SKILL.md`, how
 the capability check works at invocation time, and the CLI for

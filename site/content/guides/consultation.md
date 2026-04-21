@@ -148,6 +148,9 @@ See the [Chat rooms guide]({{< ref "chat-rooms" >}}) for the
 addressing model consultation inherits, and the
 [Record classes guide]({{< ref "record-classes" >}}) for what the
 saved transcript record looks like.
+[`egghead eval`]({{< ref "eval" >}}) uses the same
+ephemeral-room pattern with a grader attached — consult plus a
+judge plus a task definition.
 
 ## Turn budget in consult
 

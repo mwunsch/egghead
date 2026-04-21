@@ -230,8 +230,9 @@ choice — reads are safe, writes deserve a thought.
 
 The design closes the loop: the file on disk is the record. There is
 no separate "database of records" that the files synchronize to. The
-index is a cache; the agents are processes; the chat rooms are
-conversations. Everything else can be rebuilt from the directory.
+index is a cache; the [agents]({{< ref "agents" >}}) are processes;
+the [chat rooms]({{< ref "chat-rooms" >}}) are conversations.
+Everything else can be rebuilt from the directory.
 
 That's the practical consequence: `cp -r ~/.egghead/ /backup/`
 preserves your store. `git init ~/.egghead/` gives you version

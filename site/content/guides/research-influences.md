@@ -139,6 +139,24 @@ research of the past three years gives it its coordination model.
 The findings below are from papers that have shipped and been
 peer-reviewed; several are from 2025 alone. The field moves fast.
 
+Du et al.'s *[Improving Factuality and Reasoning in Language Models
+through Multiagent Debate](https://arxiv.org/abs/2305.14325)* (2023)
+is the paper that opened this line of work — multiple agents
+debating each other outperform single-agent baselines on reasoning
+and factuality, and performance scales with both number of agents
+and rounds of debate. Three years on, the research has sharpened
+rather than reversed: the 2025 literature pinpoints *which*
+architectural choices turn the multi-agent premium into a tax
+(ambiguous specs, dispatch topologies, conformity under majority
+pressure) and *which* make it pay off (peer visibility, graph
+topology, parallel context windows, division of labor). Egghead's
+shape is built against the first list and leans on the second,
+with the honest caveat that the final move — "does the record
+store actually beat the shared-context failure mode, or just
+relocate it into stale records?" — is still an empirical question
+rather than a proven win. The sections below walk the individual
+findings.
+
 ### MultiAgentBench / MARBLE — topology matters
 
 *MultiAgentBench: Evaluating the Collaboration and Competition of
@@ -166,7 +184,9 @@ What Egghead takes from this:
   whether to speak. Graph topology, sparse activation.
 - **Milestone-based evaluation.** Deliberation records and
   transcript records map cleanly onto MARBLE's milestone KPI shape,
-  making this style of eval portable to Egghead-native workflows.
+  making this style of eval portable to Egghead-native workflows —
+  it's where [`egghead eval`]({{< ref "eval" >}}) gets its scoring
+  methodology.
 
 ### MAST — the failure taxonomy
 
@@ -208,6 +228,25 @@ What Egghead takes from this:
   have a structural verification layer. It's an open area the
   research says is worth addressing.
 
+Two companion findings from 2025 reinforce the same architectural
+point from different angles. The
+[ICLR 2025 MAD blogpost](https://iclr-blogposts.github.io/2025/blog/debate/)
+evaluated five popular debate frameworks across nine benchmarks on
+GPT-4o-mini and Llama 3.1-8b, and found that naive debate loops
+fail to consistently outperform simpler strategies like
+Self-Consistency when the architecture is weak — throwing more
+rounds or more agents at a broken design doesn't rescue it. And
+Tran & Kiela, 2025
+([arXiv:2508.03049](https://arxiv.org/abs/2508.03049)), show that
+under equal compute a single agent can match or beat a multi-agent
+setup whose only advantage was token budget. Both are
+*architectural* diagnoses: agent count isn't the independent
+variable; how peers see each other, how work is divided, and how
+authority is scoped are. Egghead's coordinator gating, graph
+topology, and scoped [capabilities]({{< ref "capabilities" >}})
+are direct responses — the multi-agent premium shows up when the
+architecture earns it.
+
 ### AutoGen — what not to do with speaker selection
 
 Microsoft [AutoGen](https://github.com/microsoft/autogen) (and its
@@ -242,6 +281,17 @@ peer pressure more often than weaker models learn from stronger
 ones. The asymmetry runs the wrong way — capable agents flip from
 correct positions when exposed to persuasive-but-incorrect peers.
 
+Wu, Li, and Li's 2025 paper
+*[Can LLM Agents Really Debate? The Mechanics of Debate Effects](https://arxiv.org/abs/2505.14652)*
+arrives at the same place from the mechanism side: the dominant
+drivers of debate success are the models' intrinsic reasoning
+strength and the group's *diversity* — structural knobs like
+discussion order or confidence visibility barely move the needle,
+and majority pressure actively suppresses independent correction.
+Agents conform to consensus instead of deliberating. Taken
+together, the two papers make the conformity problem hard to wave
+off, and they shape what "good" multi-agent design has to defeat.
+
 What Egghead takes from this:
 
 - **`/pass` reduces additive noise.** An agent with nothing new to
@@ -262,6 +312,53 @@ What Egghead takes from this:
   yourself, not a built-in role. See the
   [Agents guide]({{< ref "agents" >}}) for how dispositions shape
   behavior.
+
+### Parallel contexts and division of labor — Anthropic's research system
+
+Anthropic's 2025 engineering write-up
+[How we built our multi-agent research system](https://www.anthropic.com/engineering/built-multi-agent-research-system)
+is the clearest modern production case for multi-agent design: a
+lead Claude Opus agent orchestrating Claude Sonnet subagents
+outperformed single-agent Opus by 90.2% on their internal research
+eval. The paper matters less for the headline number than for the
+mechanism Anthropic are explicit about. What's doing the work:
+
+- **Parallel context windows.** Each subagent has its own context.
+  The system can hold more information in play than any single
+  context could fit.
+- **Tool parallelism.** Subagents can hit different sources
+  simultaneously — breadth-first search across a graph of
+  information, not a single sequential chain.
+- **Division of labor.** Different agents with different scopes.
+  The lead decides what to farm out; subagents specialize.
+
+This is exactly the shape Egghead is built in. A chat room is a
+set of BEAM processes, one per agent, each with its own context.
+`@jam` is parallelism as a first-class mode. Different agent
+records carry different tags, dispositions, and
+[capabilities]({{< ref "capabilities" >}}), so division of labor
+is declarative rather than ad-hoc.
+
+The record store adds a second structural move that benchmark MAS
+doesn't have: **compute is amortized over time**. When an agent
+writes a durable record, the reasoning is paid for once; every
+subsequent agent reads rather than re-derives. A single-agent
+baseline with its own persistent memory can get some of this, but
+not the division-of-labor version — one agent with permission to
+synthesize, another with permission to challenge, another with
+read-only access to the accumulated artifacts. That asymmetry is
+what makes the equal-compute comparison (Tran & Kiela's
+discipline) cleaner for Egghead than for debate-loop MAS: the
+extra compute isn't spent in the moment of answering; it was
+spent a week ago when the record was written.
+
+Anthropic's paper also names the failure modes — tasks requiring
+shared context and tight real-time coordination between agents
+aren't a good fit today. The record store is Egghead's answer to
+the first, with the caveat that "store beats shared context"
+holds only when the records are fresh and dense. Stale records
+plus coordination lag is the failure mode we'd inherit if we
+stopped paying attention.
 
 ### Stigmergy
 

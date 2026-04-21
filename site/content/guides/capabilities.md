@@ -3,11 +3,30 @@ title: Capabilities
 weight: 20
 ---
 
-Egghead agents are participants in your record store, not owners of it.
-What any particular agent is *allowed* to do — read records, create
-them, hit the network, run shell commands — is controlled by its
-**capabilities**: a per-agent, record-declared, parameter-scoped list
-of grants.
+Egghead [agents]({{< ref "agents" >}}) are participants in your
+record store, not owners of it. What any particular agent is
+*allowed* to do — read records, create them, hit the network, run
+shell commands — is controlled by its **capabilities**: a
+per-agent, record-declared, parameter-scoped list of grants.
+
+Capabilities do three jobs at once. The obvious one is security:
+least privilege prevents a compromised or confused agent from
+doing damage it shouldn't be able to. The second is separation of
+duties: no single agent can both propose a modification and approve
+it, because the capability to do each is held by different roles
+(standard guidance from the
+[CERT guide to insider threat](https://resources.sei.cmu.edu/library/asset-view.cfm?assetid=540644),
+ported down from human systems to agent systems). The third is
+less obvious but load-bearing for a multi-agent design:
+**capabilities make roles structural rather than prompt-level**.
+If one role is "read-only" and another is "write-with-peer-review,"
+those roles can't flip to match each other under majority pressure
+— the grants are enforced by the runtime, not by the system
+prompt. The [conformity literature]({{< ref "research-influences" >}})
+shows that persona differentiation in prompts is a weak lever;
+capability-scoped authority is a stronger one because an agent
+literally cannot perform a peer's role even if it wanted to agree
+with them.
 
 This guide is for anyone running an Egghead node. It covers what to
 write in an agent's frontmatter, how grants compose, what the CLI and

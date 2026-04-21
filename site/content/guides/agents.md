@@ -196,7 +196,8 @@ GenServer that holds:
 
 Session state is live only — not persisted across node restarts.
 Chat rooms are the persistence story; if you want the conversation
-to survive, `/save` it as a transcript.
+to survive, `/save` it as a
+[transcript]({{< ref "record-classes" >}}).
 
 ## Context threshold and handoff
 
@@ -207,7 +208,8 @@ context_window`, the agent suggests handoff:
 > I'm at 78% of my context window. Want me to hand off to a fresh
 > session? (`/handoff scout`)
 
-Handoff summarizes the session to a `class: deliberation` record,
+Handoff summarizes the session to a
+[`class: deliberation`]({{< ref "record-classes" >}}) record,
 clears the state, and rehydrates from the room's recent transcript.
 See the [Chat rooms guide]({{< ref "chat-rooms" >}}) for the full
 sequence.
@@ -287,8 +289,9 @@ end)
 ```
 
 1:1 prompts use the agent's default session — persistent across
-prompts in the same BEAM lifetime, cleared on handoff. No room,
-no peers, no coordinator — just you and one agent.
+prompts in the same
+[BEAM]({{< ref "why-elixir-otp" >}}) lifetime, cleared on handoff.
+No room, no peers, no coordinator — just you and one agent.
 
 This is the right shape when you want a single model's answer
 without the room machinery. For multi-agent input, use

@@ -211,8 +211,9 @@ you `@scout` directly or when you `@everyone` — both of those are
 explicit requests that the mute yields to.
 
 If you want a long-term "this agent shouldn't talk here," the
-right move is usually a capability narrow or a `disposition:` edit
-on the agent record itself, not a mute.
+right move is usually a
+[capability narrow]({{< ref "capabilities" >}}) or a
+`disposition:` edit on the agent record itself, not a mute.
 
 ## Handoff: `/handoff`
 

@@ -12,6 +12,10 @@ or browse via `egghead` (TUI).
 - **Don't commit `CLAUDE.md`** unless explicitly told.
 - **Don't patch `native/bridge/`** without understanding the Zig NIF
   build. The bridge links against `libopentui.dylib` at compile time.
+- **Run `mix format` before committing any Elixir change.** CI enforces
+  `mix format --check-formatted` and will fail the release workflow
+  (which then requires retagging). Format touched files, or
+  `mix format` the whole tree if unsure, and stage the result.
 - **After every commit, update `records/meta/session-log.md`** with the
   commit hash and a short description, then play back the remaining
   "Next Areas" list to the user so we maintain continuity across sessions.

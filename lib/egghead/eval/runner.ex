@@ -22,7 +22,7 @@ defmodule Egghead.Eval.Runner do
   require Logger
 
   alias Egghead.Chat.Room
-  alias Egghead.Eval.{CapabilityCheck, Judge, Persona, Reporter, Scorer, Task}
+  alias Egghead.Eval.{CapabilityCheck, Judge, Persona, Reporter, Scorer, Task, Workspace}
 
   @type roster_mode :: :user | :task
 
@@ -68,17 +68,50 @@ defmodule Egghead.Eval.Runner do
 
     emit(on_event, {:started, %{run_id: run_id, task: task, mode: mode}})
 
-    with {:ok, transient_ids, roster} <- resolve_roster(task, mode, on_event),
+    # Some tasks need filesystem scratch space — coding tasks, anything
+    # requiring fs.write or shell.exec. Workspace created before
+    # roster spawn so personas can be scoped to it at spawn time.
+    workspace_path =
+      if workspace_required?(task) do
+        case Workspace.create(run_id, %{
+               run_id: run_id,
+               task: task.id,
+               roster: task.personas,
+               started_at: DateTime.utc_now() |> DateTime.to_iso8601()
+             }) do
+          {:ok, path} ->
+            emit(on_event, {:workspace_created, path})
+            path
+
+          {:error, reason} ->
+            Logger.error("Eval run #{run_id}: workspace create failed: #{inspect(reason)}")
+            nil
+        end
+      else
+        nil
+      end
+
+    with {:ok, transient_ids, roster} <-
+           resolve_roster(task, mode, workspace_path, on_event),
          :ok <- gate_capabilities(task, roster, on_event),
          {:ok, run_state} <-
            execute(task, roster, Keyword.put(opts, :run_id, run_id), on_event) do
       cleanup_transients(transient_ids)
-
       outcome = finalize(task, run_state, roster, mode, opts, on_event)
+
+      if workspace_path do
+        action = Workspace.cleanup(workspace_path, outcome.status, Keyword.get(opts, :keep, false))
+        emit(on_event, {:workspace_cleanup, %{path: workspace_path, action: action}})
+      end
+
       {:ok, outcome}
     else
       {:skipped, reason} ->
         emit(on_event, {:skipped, reason})
+
+        if workspace_path do
+          _ = Workspace.cleanup(workspace_path, :skipped, Keyword.get(opts, :keep, false))
+        end
 
         {:ok,
          %{
@@ -93,13 +126,29 @@ defmodule Egghead.Eval.Runner do
 
       {:error, reason} = err ->
         emit(on_event, {:error, reason})
+
+        if workspace_path do
+          _ = Workspace.cleanup(workspace_path, :error, Keyword.get(opts, :keep, false))
+        end
+
         err
     end
   end
 
+  # A task needs filesystem scratch space iff any of its required
+  # capabilities touch the fs or shell. Avoids creating workspaces
+  # for pure records-only tasks (research, bargaining).
+  defp workspace_required?(%Task{required_capabilities: caps}) do
+    Enum.any?(caps, fn c ->
+      c in ["fs.read", "fs.write", "shell.exec"] or
+        (is_binary(c) and String.starts_with?(c, "fs.")) or
+        (is_binary(c) and String.starts_with?(c, "shell."))
+    end)
+  end
+
   # ---- roster resolution -------------------------------------------------
 
-  defp resolve_roster(%Task{} = _task, :user, _on_event) do
+  defp resolve_roster(%Task{} = _task, :user, _workspace, _on_event) do
     roster =
       Egghead.search_by_class(:agent)
       |> Enum.reject(&(&1.id == Judge.id()))
@@ -107,17 +156,29 @@ defmodule Egghead.Eval.Runner do
     {:ok, [], roster}
   end
 
-  defp resolve_roster(%Task{personas: []} = _task, :task, _on_event) do
+  defp resolve_roster(%Task{personas: []} = _task, :task, _workspace, _on_event) do
     {:error, :task_has_no_personas}
   end
 
-  defp resolve_roster(%Task{personas: ids} = _task, :task, on_event) do
+  defp resolve_roster(%Task{personas: ids} = _task, :task, workspace, on_event) do
     case Persona.fetch_all(ids) do
       {:ok, records} ->
-        emit(on_event, {:spawning_personas, Enum.map(records, & &1.id)})
+        # Apply workspace scope to persona grants. Unscoped fs.write
+        # becomes fs.write{paths: [workspace/**]}; unscoped shell.exec
+        # becomes shell.exec{cmds: [<allowlist>]}. Pure records-only
+        # personas (research, bargaining) get nothing rewritten because
+        # they have no fs/shell caps to scope.
+        scoped_records =
+          if workspace do
+            Enum.map(records, &Workspace.scope_record(&1, workspace))
+          else
+            records
+          end
+
+        emit(on_event, {:spawning_personas, Enum.map(scoped_records, & &1.id)})
 
         started =
-          Enum.reduce_while(records, [], fn record, acc ->
+          Enum.reduce_while(scoped_records, [], fn record, acc ->
             case Egghead.Agent.Supervisor.start_agent(Egghead.Agent.Supervisor, record) do
               {:ok, _pid} -> {:cont, [record.id | acc]}
               {:error, {:already_started, _}} -> {:cont, [record.id | acc]}
@@ -130,7 +191,7 @@ defmodule Egghead.Eval.Runner do
             err
 
           ids_list ->
-            {:ok, Enum.reverse(ids_list), records}
+            {:ok, Enum.reverse(ids_list), scoped_records}
         end
 
       {:error, {:missing, missing}} ->

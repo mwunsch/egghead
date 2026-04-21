@@ -481,6 +481,25 @@ defmodule Egghead.LLM.OpenAI do
     end
   end
 
+  # Best-effort stringification of mixed list content from a
+  # rehydrated or malformed history entry. Preserves any
+  # recognizable text; otherwise falls back to inspect so we
+  # never forward a list whose shape we can't guarantee.
+  defp flatten_list_content(content) when is_list(content) do
+    content
+    |> Enum.map_join("\n", fn
+      %{"type" => "text", "text" => t} when is_binary(t) -> t
+      %{type: "text", text: t} when is_binary(t) -> t
+      %{"type" => "tool_result", "content" => t} when is_binary(t) -> t
+      %{type: :tool_result, content: t} when is_binary(t) -> t
+      %{type: "tool_result", content: t} when is_binary(t) -> t
+      t when is_binary(t) -> t
+      other -> inspect(other)
+    end)
+  end
+
+  defp flatten_list_content(other), do: to_string(other)
+
   defp parse_tool_args(nil), do: %{}
 
   defp parse_tool_args(args) when is_binary(args) do
@@ -538,7 +557,12 @@ defmodule Egghead.LLM.OpenAI do
              Enum.all?(tool_results, &Map.has_key?(&1, :tool_call_id)) do
           tool_results
         else
-          [%{role: "user", content: content}]
+          # Mixed / unrecognized list content — flatten to a string
+          # so OpenAI never sees a rogue list it can't parse. Pick
+          # the text payload out of whatever we recognize; worst
+          # case, inspect the whole thing so the API gets some
+          # kind of string instead of null/malformed content.
+          [%{role: "user", content: flatten_list_content(content)}]
         end
 
       %{role: "assistant", content: content} when is_list(content) ->
@@ -562,15 +586,30 @@ defmodule Egghead.LLM.OpenAI do
           end)
 
         msg = %{role: "assistant"}
-        msg = if text != "", do: Map.put(msg, :content, text), else: Map.put(msg, :content, nil)
         msg = if tool_calls != [], do: Map.put(msg, :tool_calls, tool_calls), else: msg
+
+        # OpenAI requires `content` to be a string; `null` is
+        # legal only on assistant messages that carry
+        # `tool_calls`. If the assistant turn filters down to
+        # neither text nor tool_use (thinking blocks, unknown
+        # types, nil-content rehydration), fall back to "" so
+        # the request doesn't 400 with "expected a string, got
+        # null".
+        content_field =
+          cond do
+            text != "" -> text
+            tool_calls != [] -> nil
+            true -> ""
+          end
+
+        msg = Map.put(msg, :content, content_field)
         [msg]
 
       %{role: role, content: content} ->
-        [%{role: role, content: content}]
+        [%{role: role, content: content || ""}]
 
       %{"role" => role, "content" => content} ->
-        [%{role: role, content: content}]
+        [%{role: role, content: content || ""}]
     end)
     |> List.flatten()
   end

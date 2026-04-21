@@ -186,9 +186,17 @@ defmodule Egghead.Chat.Coordinator do
   end
 
   def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids, _content}, state) do
+    muted_set = room_muted_set(room_id)
+
+    # Peer-agent @-mentions do NOT bypass mute. The mute was the
+    # user's choice about what *they* want to hear; an agent
+    # referencing a muted peer in the transcript must not override
+    # that decision. Only a user's direct mention (handled in
+    # `activate/4`) wakes a muted agent.
     agents =
       mentioned_ids
       |> Enum.flat_map(fn id -> find_agent(state.agents, id) end)
+      |> Enum.reject(&MapSet.member?(muted_set, &1.id))
 
     if agents != [] do
       Logger.info("Coordinator: #{from_agent} mentioned #{Enum.map_join(agents, ", ", & &1.id)}")
@@ -368,8 +376,38 @@ defmodule Egghead.Chat.Coordinator do
     Enum.any?(mentions, &(&1 in ["everyone", "channel", "jam"]))
   end
 
-  defp direct_mention?(mentions) do
-    mentions != [] and not Enum.any?(mentions, &(&1 in ["everyone", "channel", "jam"]))
+  defp room_muted_set(room_id) do
+    try do
+      room_id |> Egghead.Chat.Room.muted() |> MapSet.new()
+    catch
+      _, _ -> MapSet.new()
+    end
+  end
+
+  # Resolve raw `@name` tokens from a user message to canonical
+  # agent ids. Accepts full id, basename, or display name —
+  # matching `find_agent/2`. Broadcast pseudo-mentions
+  # (`everyone`/`channel`/`jam`) are excluded: those are
+  # room-wide addressing, not a specific-agent summon, and
+  # must not override mute.
+  defp summoned_ids(agents, mentions) do
+    names =
+      mentions
+      |> Enum.reject(&(&1 in ["everyone", "channel", "jam"]))
+      |> Enum.map(&String.downcase/1)
+
+    agents
+    |> Enum.filter(fn info ->
+      lower_id = String.downcase(info.id)
+      basename = info.id |> String.split("/") |> List.last() |> String.downcase()
+      lower_display = String.downcase(info.name || "")
+
+      Enum.any?(names, fn n ->
+        n == lower_id or n == basename or n == lower_display
+      end)
+    end)
+    |> Enum.map(& &1.id)
+    |> MapSet.new()
   end
 
   # Which activation mode should we use for this message?
@@ -431,16 +469,25 @@ defmodule Egghead.Chat.Coordinator do
         _ -> {:serial, MapSet.new()}
       end
 
-    # Filter out agents mid-handoff and muted agents. Muted agents
-    # are skipped on open messages and @jam, but NOT on @everyone
-    # (explicit intent) or direct @agent (explicit override).
-    skip_muted? = mode != :huddle and not direct_mention?(mentions)
+    # Muted agents stay silent — with one escape hatch: if the user
+    # directly @-mentions them in *this* message, treat it as a
+    # deliberate one-turn override. Peer-agent mentions and
+    # `@everyone` broadcasts do NOT bypass mute; only a user typing
+    # `@agent_id` does. The mute itself stays in effect — next turn
+    # without a user mention and the agent's silent again.
+    user_summoned =
+      if msg.sender.type == :user,
+        do: summoned_ids(agents, mentions),
+        else: MapSet.new()
 
     agents_to_prompt =
       agents
       |> Enum.reject(fn info ->
-        MapSet.member?(state.handoffs_in_progress, {info.id, room_id}) or
-          (skip_muted? and MapSet.member?(muted_set, info.id))
+        handoff? = MapSet.member?(state.handoffs_in_progress, {info.id, room_id})
+        muted? = MapSet.member?(muted_set, info.id)
+        summoned? = MapSet.member?(user_summoned, info.id)
+
+        handoff? or (muted? and not summoned?)
       end)
       |> Enum.sort_by(fn info ->
         index_rank = if info.id == "index", do: 1, else: 0

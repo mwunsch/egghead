@@ -83,11 +83,42 @@ defmodule Egghead.LLM.OpenAITest do
       body =
         OpenAI.build_body([%{role: "user", content: "hello"}],
           model: "gpt-4o",
-          system: "You are Heckler."
+          system: "You are a test."
         )
 
-      assert [%{role: "system", content: "You are Heckler."}, %{role: "user", content: "hello"}] =
+      assert [%{role: "system", content: "You are a test."}, %{role: "user", content: "hello"}] =
                body[:messages]
+    end
+
+    test "assistant message with empty list content coerces to empty string (not null)" do
+      # Regression: OpenAI rejects `{content: null}` unless `tool_calls`
+      # is present. An assistant turn that filters down to neither
+      # text nor tool_use blocks used to emit `content: nil` and
+      # trip a 400 "expected a string, got null" deep in a session.
+      body = OpenAI.build_body([%{role: "assistant", content: []}], model: "gpt-4o")
+
+      assert [%{role: "assistant", content: ""} = msg] = body[:messages]
+      refute Map.has_key?(msg, :tool_calls)
+    end
+
+    test "assistant message with only tool_use blocks keeps null content + tool_calls" do
+      body =
+        OpenAI.build_body(
+          [
+            %{
+              role: "assistant",
+              content: [%{"type" => "tool_use", "id" => "c1", "name" => "search", "input" => %{}}]
+            }
+          ],
+          model: "gpt-4o"
+        )
+
+      assert [%{role: "assistant", content: nil, tool_calls: [_]}] = body[:messages]
+    end
+
+    test "nil-content user message defaults to empty string" do
+      body = OpenAI.build_body([%{role: "user", content: nil}], model: "gpt-4o")
+      assert [%{role: "user", content: ""}] = body[:messages]
     end
   end
 

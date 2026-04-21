@@ -36,6 +36,7 @@ defmodule Egghead.TUI.Chat.Model do
             id: String.t(),
             name: String.t(),
             status: :idle | :active,
+            muted?: boolean(),
             # Current context footprint (last call's input + output tokens).
             # NOT cumulative lifetime spend.
             ctx_tokens: non_neg_integer(),
@@ -45,6 +46,7 @@ defmodule Egghead.TUI.Chat.Model do
     defstruct id: nil,
               name: nil,
               status: :idle,
+              muted?: false,
               ctx_tokens: 0,
               ctx_window: 0,
               ctx_pct: 0.0
@@ -104,7 +106,7 @@ defmodule Egghead.TUI.Chat.Model do
     %__MODULE__{
       room_id: room_id,
       transcript: hydrate_transcript(room_id),
-      agents: hydrate_agents()
+      agents: hydrate_agents(room_id)
     }
   end
 
@@ -126,7 +128,7 @@ defmodule Egghead.TUI.Chat.Model do
       m
       | room_id: room_id,
         transcript: hydrate_transcript(room_id),
-        agents: hydrate_agents(),
+        agents: hydrate_agents(room_id),
         streams: %{},
         pending_activated: MapSet.new(),
         scroll: 0,
@@ -321,16 +323,33 @@ defmodule Egghead.TUI.Chat.Model do
 
   defp message_to_entry(_), do: nil
 
-  defp hydrate_agents do
+  defp hydrate_agents(room_id) do
+    muted = muted_set(room_id)
+
     try do
       Egghead.list_agents()
       |> Enum.map(fn a ->
-        %AgentPresence{id: a.id, name: a.name, status: :idle}
+        %AgentPresence{
+          id: a.id,
+          name: a.name,
+          status: :idle,
+          muted?: MapSet.member?(muted, a.id)
+        }
       end)
     rescue
       _ -> []
     catch
       _, _ -> []
+    end
+  end
+
+  defp muted_set(nil), do: MapSet.new()
+
+  defp muted_set(room_id) do
+    try do
+      room_id |> Egghead.Chat.Room.muted() |> MapSet.new()
+    catch
+      _, _ -> MapSet.new()
     end
   end
 

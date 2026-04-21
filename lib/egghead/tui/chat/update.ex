@@ -435,6 +435,16 @@ defmodule Egghead.TUI.Chat.Update do
     %{model | agents: Enum.reject(model.agents, &(&1.id == agent_id))}
   end
 
+  defp handle_room_event({:muted_changed, agent_id, muted?}, model) do
+    agents =
+      Enum.map(model.agents, fn
+        %Model.AgentPresence{id: ^agent_id} = a -> %{a | muted?: muted?}
+        a -> a
+      end)
+
+    %{model | agents: agents}
+  end
+
   defp handle_room_event({:agent_handoff, _room_id, agent_id, delib_id}, model) do
     display = display_name(agent_id, model)
 

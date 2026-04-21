@@ -248,6 +248,22 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       {m, :none} = Update.update({:room_event, {:agent_passed, "agents/scout"}}, m)
       assert Enum.find(m.agents, &(&1.id == "agents/scout")).status == :idle
     end
+
+    test "muted_changed flips the agent's muted? flag" do
+      m = model()
+      {m, :none} = Update.update({:room_event, {:agent_joined, "agents/scout"}}, m)
+      refute Enum.find(m.agents, &(&1.id == "agents/scout")).muted?
+
+      {m, :none} =
+        Update.update({:room_event, {:muted_changed, "agents/scout", true}}, m)
+
+      assert Enum.find(m.agents, &(&1.id == "agents/scout")).muted?
+
+      {m, :none} =
+        Update.update({:room_event, {:muted_changed, "agents/scout", false}}, m)
+
+      refute Enum.find(m.agents, &(&1.id == "agents/scout")).muted?
+    end
   end
 
   describe "key bindings" do

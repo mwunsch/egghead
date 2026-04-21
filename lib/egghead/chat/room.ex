@@ -588,12 +588,14 @@ defmodule Egghead.Chat.Room do
 
   def handle_call({:mute, agent_id}, _from, state) do
     state = %{state | muted: MapSet.put(state.muted, agent_id)}
+    broadcast(state.id, {:muted_changed, agent_id, true})
     broadcast(state.id, {:system_notice, "#{agent_display_name(agent_id)} muted"})
     {:reply, :ok, state}
   end
 
   def handle_call({:unmute, agent_id}, _from, state) do
     state = %{state | muted: MapSet.delete(state.muted, agent_id)}
+    broadcast(state.id, {:muted_changed, agent_id, false})
     broadcast(state.id, {:system_notice, "#{agent_display_name(agent_id)} unmuted"})
     {:reply, :ok, state}
   end

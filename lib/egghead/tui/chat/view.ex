@@ -562,9 +562,10 @@ defmodule Egghead.TUI.Chat.View do
   # ---- sidebar ---------------------------------------------------------------
 
   # Top-aligned: agent count header, then agent cards on a
-  # tinted background. Remaining space filled with bg.
+  # tinted background. Remaining space filled with bg. A 1-col
+  # left margin separates content from the left border.
   defp sidebar(agents, sb_width, height) do
-    header_label = " #{length(agents)} Agents"
+    header_label = "  #{length(agents)} Agents"
 
     header_row =
       text(pad_to(header_label, sb_width),
@@ -597,15 +598,24 @@ defmodule Egghead.TUI.Chat.View do
   end
 
   defp agent_card(%AgentPresence{} = a, sb_width) do
-    dot = if a.status == :active, do: "●", else: "○"
-    name = truncate_line("#{dot} #{a.name}", sb_width)
+    indicator = status_indicator(a)
+    # 1-col left margin, then indicator, then space, then name.
+    name_raw = " #{indicator} #{a.name}"
+    name = truncate_display(name_raw, sb_width)
+
+    {fg, bold?} =
+      cond do
+        a.muted? -> {Colors.dim(), false}
+        a.status == :active -> {Colors.green(), true}
+        true -> {Colors.dim(), false}
+      end
 
     name_row =
-      text(pad_to(name, sb_width),
+      text(pad_display(name, sb_width),
         height: 1,
-        fg: if(a.status == :active, do: Colors.green(), else: Colors.dim()),
+        fg: fg,
         bg: Roles.sidebar_bg(),
-        attrs: if(a.status == :active, do: Attrs.bold(), else: 0)
+        attrs: if(bold?, do: Attrs.bold(), else: 0)
       )
 
     has_window? = a.ctx_window > 0
@@ -613,13 +623,13 @@ defmodule Egghead.TUI.Chat.View do
     token_label =
       cond do
         has_window? ->
-          "  #{format_tokens(a.ctx_tokens)}/#{format_tokens(a.ctx_window)}"
+          "   #{format_tokens(a.ctx_tokens)}/#{format_tokens(a.ctx_window)}"
 
         a.ctx_tokens > 0 ->
-          "  #{format_tokens(a.ctx_tokens)} tok"
+          "   #{format_tokens(a.ctx_tokens)} tok"
 
         true ->
-          "  —"
+          "   —"
       end
 
     token_row =
@@ -634,9 +644,9 @@ defmodule Egghead.TUI.Chat.View do
     # honest blank row rather than a fake 0% bar.
     ctx_row =
       if has_window? do
-        bar = context_bar(a.ctx_pct, sb_width - 3)
+        bar = context_bar(a.ctx_pct, sb_width - 4)
 
-        text(pad_to("  #{bar}", sb_width),
+        text(pad_to("   #{bar}", sb_width),
           height: 1,
           fg: Colors.muted(),
           bg: Roles.sidebar_bg()
@@ -649,6 +659,33 @@ defmodule Egghead.TUI.Chat.View do
       text(String.duplicate(" ", sb_width), height: 1, bg: Roles.sidebar_bg())
 
     [name_row, token_row, ctx_row, separator]
+  end
+
+  defp status_indicator(%AgentPresence{muted?: true}), do: "🔇"
+  defp status_indicator(%AgentPresence{status: :active}), do: "●"
+  defp status_indicator(_), do: "○"
+
+  # Pad to a fixed display-column width. Needed on sidebar rows
+  # where a 2-col-wide emoji (🔇) would cause `pad_to/2`'s
+  # grapheme-based count to under-pad the background tint.
+  defp pad_display(line, width) do
+    used = display_width(line)
+    if used >= width, do: line, else: line <> String.duplicate(" ", width - used)
+  end
+
+  # Truncate a string so its display width fits within `width`.
+  # Grapheme-by-grapheme so a 2-col emoji at the edge doesn't
+  # half-render into column overflow.
+  defp truncate_display(line, width) do
+    line
+    |> String.graphemes()
+    |> Enum.reduce_while({[], 0}, fn g, {acc, used} ->
+      w = grapheme_width(g)
+      if used + w > width, do: {:halt, {acc, used}}, else: {:cont, {[g | acc], used + w}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> Enum.join()
   end
 
   defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"

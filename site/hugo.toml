@@ -1,4 +1,4 @@
-baseURL = "https://mwunsch.github.io/egghead/"
+baseURL = "https://egghead.computer/"
 languageCode = "en-us"
 title = "Egghead"
 
@@ -14,5 +14,5 @@ title = "Egghead"
   writeStats = false
 
 [params]
-  description = "Record-store-first multi-agent system on Elixir/OTP."
+  description = "A notebook that writes back. Your notes plus a chat room full of AI friends."
   githubURL = "https://github.com/mwunsch/egghead"

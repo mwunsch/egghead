@@ -6,14 +6,27 @@ defmodule Egghead.MCP.Handler do
 
   @protocol_version "2025-03-26"
 
+  # MCP protocol versions this server speaks. During `initialize` we echo
+  # back the client's requested version when it's one we recognise,
+  # otherwise we respond with our own default and let the client decide
+  # whether to continue. Hardcoding a single version regardless of what
+  # the client sent causes strict clients (Claude Code among them) to
+  # reject the handshake.
+  @supported_protocol_versions ~w(2024-11-05 2025-03-26 2025-06-18)
+
   @doc """
   Handles a decoded JSON-RPC message map. Returns a response map, or `:noreply`
   for notifications that don't require a response.
   """
   @spec handle(map()) :: map() | :noreply
-  def handle(%{"method" => "initialize", "id" => id}) do
+  def handle(%{"method" => "initialize", "id" => id} = msg) do
+    requested = get_in(msg, ["params", "protocolVersion"])
+
+    negotiated =
+      if requested in @supported_protocol_versions, do: requested, else: @protocol_version
+
     result(id, %{
-      protocolVersion: @protocol_version,
+      protocolVersion: negotiated,
       capabilities: %{tools: %{}},
       serverInfo: %{name: "egghead", version: "0.1.0"}
     })

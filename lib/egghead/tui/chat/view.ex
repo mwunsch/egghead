@@ -28,7 +28,7 @@ defmodule Egghead.TUI.Chat.View do
   alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer}
   alias Egghead.Theme.Roles
   alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste}
-  alias Egghead.TUI.{MarkdownCache, ThemePicker}
+  alias Egghead.TUI.{MarkdownCache, SelectList, ThemePicker}
   alias Model.AgentPresence
 
   @prompt "❯ "
@@ -45,7 +45,7 @@ defmodule Egghead.TUI.Chat.View do
     text_w = max(width - prompt_w, 1)
     input_height = clamp(EditBuffer.visual_line_count(model.input, text_w), 1, @max_input_rows)
     dd_height = dropdown_height(model)
-    picker_h = if model.theme_picker, do: ThemePicker.height(model.theme_picker), else: 0
+    picker_h = picker_height(model)
     # header(1) + input_border(1) + input + spacer(1) + status(1) = 4 + input
     chrome = 4 + input_height + dd_height + picker_h
     # In narrow mode, the agent summary strip takes 1 row.
@@ -73,22 +73,30 @@ defmodule Egghead.TUI.Chat.View do
 
     hr = text(String.duplicate("─", width), height: 1, fg: Colors.muted())
 
-    picker_node =
-      case model.theme_picker do
-        nil -> []
-        picker -> [ThemePicker.view(picker, width)]
-      end
-
     children =
       [header(model, width), main_region] ++
         narrow_strip_node(model, width, narrow_strip) ++
         [hr, input_box(model, width, input_height)] ++
         dropdown_node(model, width, dd_height) ++
-        picker_node ++
+        picker_node(model, width) ++
         [text("", height: 1), status_bar(model, width)]
 
     vbox(children)
   end
+
+  # Theme picker and action picker share the same inline slot
+  # above the status bar. They are mutually exclusive by
+  # construction (the refresh_completion / picker routing in the
+  # Update module ensures only one is open at a time).
+  defp picker_height(%Model{theme_picker: p}) when not is_nil(p), do: ThemePicker.height(p)
+  defp picker_height(%Model{action_picker: {_, list}}), do: SelectList.height(list)
+  defp picker_height(_), do: 0
+
+  defp picker_node(%Model{theme_picker: p}, width) when not is_nil(p),
+    do: [ThemePicker.view(p, width)]
+
+  defp picker_node(%Model{action_picker: {_, list}}, width), do: [SelectList.view(list, width)]
+  defp picker_node(_, _), do: []
 
   # Stepped sidebar width: 22 at >= 100, 18 at 80–99, 0 below.
   defp sidebar_width(w) when w >= 100, do: 22

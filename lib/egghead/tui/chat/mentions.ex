@@ -162,9 +162,12 @@ defmodule Egghead.TUI.Chat.Mentions do
   ]
 
   @doc """
-  Filter and rank a list of agent maps by basename prefix.
-  Case-insensitive. Preserves the input order (caller is
-  responsible for sorting by recency / activation), then
+  Filter and rank a list of agent maps by agent id. Matches
+  whenever the typed prefix is a prefix of either the full id
+  (e.g. `agents/scout`) or the basename (`scout`), so typing
+  `@agents/` narrows to the agents class and `@scout` still
+  works. Case-insensitive. Preserves the input order (caller
+  is responsible for sorting by recency / activation), then
   returns at most `:limit` results (default 8).
 
   Broadcast tokens (`@everyone`, `@jam`) are prepended when they match
@@ -183,7 +186,10 @@ defmodule Egghead.TUI.Chat.Mentions do
     agents_filtered =
       agents
       |> Enum.filter(fn a ->
-        a |> agent_basename() |> String.downcase() |> String.starts_with?(needle)
+        id = a |> agent_id() |> String.downcase()
+        basename = a |> agent_basename() |> String.downcase()
+
+        String.starts_with?(id, needle) or String.starts_with?(basename, needle)
       end)
 
     (broadcasts ++ agents_filtered) |> Enum.take(limit)
@@ -227,12 +233,31 @@ defmodule Egghead.TUI.Chat.Mentions do
   @spec ghost_suffix(Context.t()) :: String.t()
   def ghost_suffix(%Context{candidates: []}), do: ""
 
-  def ghost_suffix(%Context{kind: kind, prefix: prefix} = ctx) do
-    full =
-      case kind do
-        :agent -> agent_basename(selected_candidate(ctx))
-        :record -> record_id(selected_candidate(ctx))
-      end
+  def ghost_suffix(%Context{kind: :agent, prefix: prefix} = ctx) do
+    candidate = selected_candidate(ctx)
+    needle = String.downcase(prefix)
+
+    # Pick whichever form the prefix strictly extends — full id
+    # (when the user is typing `agents/…`) or basename (when
+    # they're typing `scout`). Falls back to basename so the
+    # old tab-complete UX still works when nothing matches.
+    full = agent_id(candidate)
+    basename = agent_basename(candidate)
+
+    cond do
+      String.starts_with?(String.downcase(full), needle) ->
+        String.slice(full, String.length(prefix)..-1//1)
+
+      String.starts_with?(String.downcase(basename), needle) ->
+        String.slice(basename, String.length(prefix)..-1//1)
+
+      true ->
+        ""
+    end
+  end
+
+  def ghost_suffix(%Context{kind: :record, prefix: prefix} = ctx) do
+    full = record_id(selected_candidate(ctx))
 
     if String.starts_with?(String.downcase(full), String.downcase(prefix)) do
       String.slice(full, String.length(prefix)..-1//1)

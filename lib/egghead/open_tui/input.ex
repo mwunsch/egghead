@@ -16,9 +16,9 @@ defmodule Egghead.OpenTUI.Input do
   Returns one of:
     * `{:char, "x"}` — a printable ASCII byte (0x20–0x7E)
     * `{:key, :escape}` — bare ESC (disambiguated by ~50ms timeout)
-    * `{:key, :ctrl_a | :ctrl_c | :ctrl_e | :ctrl_f | :ctrl_k | :ctrl_l |
-            :ctrl_n | :ctrl_p | :ctrl_q | :ctrl_t | :ctrl_u | :ctrl_w |
-            :ctrl_z}`
+    * `{:key, :ctrl_a | :ctrl_c | :ctrl_e | :ctrl_f | :ctrl_g | :ctrl_k |
+            :ctrl_l | :ctrl_n | :ctrl_p | :ctrl_q | :ctrl_t | :ctrl_u |
+            :ctrl_w | :ctrl_z}`
     * `{:key, :alt_b | :alt_d | :alt_f | :alt_backspace}` — common
       Meta-key (Option-as-Meta) sequences for readline-style word
       movement and kill
@@ -126,6 +126,7 @@ defmodule Egghead.OpenTUI.Input do
   defp dispatch_byte(0x03, _reader), do: {:key, :ctrl_c}
   defp dispatch_byte(0x05, _reader), do: {:key, :ctrl_e}
   defp dispatch_byte(0x06, _reader), do: {:key, :ctrl_f}
+  defp dispatch_byte(0x07, _reader), do: {:key, :ctrl_g}
   defp dispatch_byte(0x09, _reader), do: {:key, :tab}
   defp dispatch_byte(0x0A, _reader), do: {:key, :enter}
   defp dispatch_byte(0x0B, _reader), do: {:key, :ctrl_k}

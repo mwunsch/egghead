@@ -136,7 +136,7 @@ defmodule Egghead.TUI.Records.Update do
   def update({:key, :tab}, model), do: {Model.link_next(model), :none}
   def update({:key, :shift_tab}, model), do: {Model.link_prev(model), :none}
 
-  def update({:key, :escape}, model) do
+  def update({:key, key}, model) when key in [:escape, :ctrl_g] do
     cond do
       Model.link_mode?(model) -> {Model.link_deselect(model), :none}
       Model.help_visible?(model) -> {Model.dismiss_help(model), :none}
@@ -236,7 +236,7 @@ defmodule Egghead.TUI.Records.Update do
 
   # ---- command-mode dispatcher --------------------------------------------
 
-  defp handle_command_mode({:key, :escape}, model),
+  defp handle_command_mode({:key, key}, model) when key in [:escape, :ctrl_g],
     do: {Model.exit_command_mode(model), :none}
 
   defp handle_command_mode({:key, :enter}, model) do

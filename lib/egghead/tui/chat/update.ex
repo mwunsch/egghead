@@ -20,7 +20,7 @@ defmodule Egghead.TUI.Chat.Update do
 
   alias Egghead.OpenTUI.EditBuffer
   alias Egghead.TUI.Chat.{Entry, Mentions, Model, Paste}
-  alias Egghead.TUI.ThemePicker
+  alias Egghead.TUI.{SelectList, ThemePicker}
 
   # Canonical command list for the dropdown. Aliases (/exit, /part)
   # are not shown in the dropdown but are accepted on dispatch.
@@ -28,12 +28,12 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "save", description: "Save transcript as a record"},
     %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
-    %{name: "handoff", description: "Handoff an agent's context"},
-    %{name: "join", description: "Join or create a room"},
+    %{name: "handoff", description: "Handoff an agent's context (space opens picker)"},
+    %{name: "join", description: "Join or create a room (space opens picker)"},
     %{name: "list", description: "List all open rooms"},
     %{name: "drop", description: "Drop the current room"},
-    %{name: "mute", description: "Mute an agent"},
-    %{name: "unmute", description: "Unmute a muted agent"},
+    %{name: "mute", description: "Mute an agent (space opens picker)"},
+    %{name: "unmute", description: "Unmute a muted agent (space opens picker)"},
     %{name: "tools", description: "Summary of tools available to agents"},
     %{name: "mcp", description: "Summary of MCP servers"},
     %{name: "leave", description: "Return to records (F1)"},
@@ -80,6 +80,15 @@ defmodule Egghead.TUI.Chat.Update do
     handle_theme_picker(msg, picker, model)
   end
 
+  # ---- action picker ------------------------------------------------------
+  # /join /mute /unmute /handoff — shared SelectList driven by
+  # a `{kind, list}` tuple so the commit branch knows which
+  # action to dispatch.
+
+  def update(msg, %Model{action_picker: {kind, list}} = model) do
+    handle_action_picker(msg, kind, list, model)
+  end
+
   # ---- room events --------------------------------------------------------
 
   def update({:room_event, event}, %Model{} = model) do
@@ -95,20 +104,23 @@ defmodule Egghead.TUI.Chat.Update do
   # Escape dismisses an open mention dropdown. Otherwise it's a
   # no-op — screen switching uses F1/F2, and clearing input isn't
   # expected Esc behavior. Future: interrupt active agents.
-  def update({:key, :escape}, %Model{command: %{candidates: [_ | _]}} = model) do
+  def update({:key, key}, %Model{command: %{candidates: [_ | _]}} = model)
+      when key in [:escape, :ctrl_g] do
     {%{model | command: nil}, :none}
   end
 
-  def update({:key, :escape}, %Model{mention: %Mentions.Context{candidates: [_ | _]}} = model) do
+  def update({:key, key}, %Model{mention: %Mentions.Context{candidates: [_ | _]}} = model)
+      when key in [:escape, :ctrl_g] do
     {%{model | mention: nil}, :none}
   end
 
-  # Escape dismisses link-nav mode in the transcript.
-  def update({:key, :escape}, %Model{link_index: idx} = model) when idx != nil do
+  # Escape / Ctrl+G dismisses link-nav mode in the transcript.
+  def update({:key, key}, %Model{link_index: idx} = model)
+      when idx != nil and key in [:escape, :ctrl_g] do
     {Model.link_deselect(model), :none}
   end
 
-  def update({:key, :escape}, %Model{} = model), do: {model, :none}
+  def update({:key, key}, %Model{} = model) when key in [:escape, :ctrl_g], do: {model, :none}
 
   # When in link-nav mode, Enter follows the active wikilink to records.
   def update({:key, :enter}, %Model{link_index: idx} = model) when idx != nil do
@@ -470,16 +482,24 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   # After every input edit, decide whether to show the mention
-  # dropdown or the command dropdown (mutually exclusive). One
-  # special case jumps higher than either: typing "/theme "
-  # auto-opens the inline theme picker, same shape as the
-  # @-mention dropdown auto-opening on "@".
+  # dropdown or the command dropdown (mutually exclusive). A
+  # handful of commands jump higher than either: typing
+  # "/<cmd> " auto-opens a selection picker, same shape as the
+  # @-mention dropdown auto-opening on "@". If the picker would
+  # have nothing to show (no rooms to join, no muted agents to
+  # unmute, etc.), we fall through to the normal command dropdown
+  # instead of clearing input and posting a notice — the user
+  # can keep typing.
   defp refresh_completion(model) do
     text = Model.input_text(model)
 
     cond do
       String.downcase(text) == "/theme " ->
         %{Model.clear_input(model) | command: nil, mention: nil, theme_picker: ThemePicker.open()}
+
+      action_spec = match_action_trigger(text, model) ->
+        {kind, items} = action_spec
+        open_action_picker(Model.clear_input(model), kind, items)
 
       String.starts_with?(text, "/") and not String.contains?(text, "\n") ->
         refresh_command(model, text)
@@ -489,6 +509,99 @@ defmodule Egghead.TUI.Chat.Update do
         |> Map.put(:command, nil)
         |> refresh_mention()
     end
+  end
+
+  @action_triggers %{
+    "/join " => :room,
+    "/mute " => :mute,
+    "/unmute " => :unmute,
+    "/handoff " => :handoff
+  }
+
+  # Resolve the trigger AND the candidate list in one pass so
+  # `refresh_completion` can cleanly fall through to the normal
+  # command dropdown when a picker would be empty. Returns
+  # `{kind, items}` only when there's something worth showing;
+  # otherwise `nil`. `:room` is freeform-capable and always
+  # opens — even with zero existing rooms the user can still
+  # type a name to create one.
+  defp match_action_trigger(text, model) do
+    lower = String.downcase(text)
+
+    case Enum.find_value(@action_triggers, fn {trigger, kind} ->
+           if lower == trigger, do: kind
+         end) do
+      nil ->
+        nil
+
+      :room = kind ->
+        {kind, action_items(kind, model)}
+
+      kind ->
+        case action_items(kind, model) do
+          [] -> nil
+          items -> {kind, items}
+        end
+    end
+  end
+
+  defp open_action_picker(model, kind, items) do
+    opts =
+      [title: action_title(kind), hint: action_hint(kind)] ++
+        freeform_opts(kind)
+
+    list = SelectList.new(items, opts)
+    %{model | command: nil, mention: nil, action_picker: {kind, list}}
+  end
+
+  defp freeform_opts(:room), do: [freeform_prefix: "+ create room: "]
+  defp freeform_opts(_), do: []
+
+  defp action_title(:room), do: "join"
+  defp action_title(:mute), do: "mute"
+  defp action_title(:unmute), do: "unmute"
+  defp action_title(:handoff), do: "handoff"
+
+  defp action_hint(:room), do: "↑↓ select · enter join · esc cancel"
+  defp action_hint(:mute), do: "↑↓ select · enter mute · esc cancel"
+  defp action_hint(:unmute), do: "↑↓ select · enter unmute · esc cancel"
+  defp action_hint(:handoff), do: "↑↓ select · enter handoff · esc cancel"
+
+  defp action_items(:room, %Model{room_id: current}) do
+    try do
+      Egghead.list_rooms()
+      |> Enum.reject(&(&1 == current))
+      |> Enum.map(fn id -> %{id: id, label: id} end)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  defp action_items(:mute, %Model{agents: agents}) do
+    Enum.map(agents, fn a -> %{id: a.id, label: a.name, hint: a.id} end)
+  end
+
+  defp action_items(:unmute, %Model{room_id: nil}), do: []
+
+  defp action_items(:unmute, %Model{room_id: room_id, agents: agents}) do
+    muted =
+      try do
+        Egghead.Chat.Room.muted(room_id) |> MapSet.new()
+      rescue
+        _ -> MapSet.new()
+      catch
+        _, _ -> MapSet.new()
+      end
+
+    agents
+    |> Enum.filter(&MapSet.member?(muted, &1.id))
+    |> Enum.map(fn a -> %{id: a.id, label: a.name, hint: a.id} end)
+  end
+
+  defp action_items(:handoff, %Model{agents: agents}) do
+    Enum.map(agents, fn a -> %{id: a.id, label: a.name, hint: a.id} end)
   end
 
   defp refresh_command(model, text) do
@@ -1045,6 +1158,101 @@ defmodule Egghead.TUI.Chat.Update do
         {%{model | theme_picker: updated}, :none}
     end
   end
+
+  # ---- action picker routing ----------------------------------------------
+
+  defp handle_action_picker(msg, kind, list, model) do
+    case SelectList.handle_key(msg, list) do
+      {_, :cancelled} ->
+        {%{model | action_picker: nil}, :none}
+
+      {_, {:committed, item}} ->
+        dispatch_action(kind, item, %{model | action_picker: nil})
+
+      {updated, {:cursor_moved, _item}} ->
+        {%{model | action_picker: {kind, updated}}, :none}
+
+      {updated, :open} ->
+        {%{model | action_picker: {kind, updated}}, :none}
+    end
+  end
+
+  # Dispatch the committed action. Each branch mirrors the
+  # corresponding `apply_command/3` path so the behaviour (async
+  # exec, system notices, transcript annotations) stays identical
+  # whether the user typed "/join <name>" or arrowed through the
+  # picker.
+
+  defp dispatch_action(:room, %{id: target}, model) do
+    cond do
+      target == model.room_id ->
+        {Model.append_entry(model, Entry.system("Already in #{target}.")), :none}
+
+      true ->
+        case resolve_join_target(target) do
+          {:ok, room_id} ->
+            {Model.switch_room(model, room_id), :none}
+
+          {:error, reason} ->
+            {Model.append_entry(model, Entry.system("Cannot join #{inspect(target)}: #{reason}")),
+             :none}
+        end
+    end
+  end
+
+  defp dispatch_action(:mute, %{id: target}, %Model{room_id: room_id} = model)
+       when is_binary(room_id) do
+    cmd =
+      {:exec,
+       fn ->
+         Egghead.Chat.Room.mute(room_id, target)
+         :no_msg
+       end}
+
+    {model, cmd}
+  end
+
+  defp dispatch_action(:unmute, %{id: target}, %Model{room_id: room_id} = model)
+       when is_binary(room_id) do
+    cmd =
+      {:exec,
+       fn ->
+         Egghead.Chat.Room.unmute(room_id, target)
+         :no_msg
+       end}
+
+    {model, cmd}
+  end
+
+  defp dispatch_action(:handoff, %{id: target}, %Model{room_id: room_id} = model)
+       when is_binary(room_id) do
+    cmd =
+      exec_async(room_id, fn ->
+        case Egghead.handoff(target, room_id: room_id) do
+          {:ok, delib_id} ->
+            broadcast_system_notice(
+              room_id,
+              "Handoff complete for #{target} — saved [[#{delib_id}]]"
+            )
+
+          {:ok, delib_id, _response} ->
+            broadcast_system_notice(
+              room_id,
+              "Handoff complete for #{target} — saved [[#{delib_id}]]"
+            )
+
+          {:error, reason} ->
+            broadcast_system_notice(
+              room_id,
+              "Handoff failed for #{target}: #{inspect(reason)}"
+            )
+        end
+      end)
+
+    {Model.append_entry(model, Entry.system("Handoff initiated for #{target}…")), cmd}
+  end
+
+  defp dispatch_action(_kind, _item, model), do: {model, :none}
 
   # Fire a side-effectful function off the runtime process. The
   # `:exec` body spawns a supervised Task and returns immediately so

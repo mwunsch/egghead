@@ -69,7 +69,7 @@ defmodule Egghead.TUI.Records.Update do
   """
 
   alias Egghead.RecordStore
-  alias Egghead.TUI.Records.Model
+  alias Egghead.TUI.{Records.Model, ThemePicker}
 
   @preview_scroll_step 5
 
@@ -94,6 +94,25 @@ defmodule Egghead.TUI.Records.Update do
   end
 
   def update({:record_event, _}, model), do: {model, :none}
+
+  # ---- theme change -------------------------------------------------------
+  #
+  # `preview_rendered` stores markdown rows with fg binaries baked
+  # in — a theme switch leaves those stale. Drop the cached rows
+  # and rebuild at the current width.
+
+  def update({:theme_changed, _name}, model) do
+    {Model.invalidate_preview(model), :none}
+  end
+
+  # ---- theme picker -------------------------------------------------------
+  #
+  # Highest-priority mode: when the picker is open, every key
+  # routes through ThemePicker until it closes on Enter or Esc.
+
+  def update(msg, %Model{theme_picker: picker} = model) when not is_nil(picker) do
+    handle_theme_picker(msg, picker, model)
+  end
 
   # ---- command mode -------------------------------------------------------
   #
@@ -236,8 +255,19 @@ defmodule Egghead.TUI.Records.Update do
   defp handle_command_mode({:key, :backspace}, model),
     do: {Model.command_backspace(model), :none}
 
-  defp handle_command_mode({:char, c}, model) when is_binary(c),
-    do: {Model.command_input_char(model, c), :none}
+  defp handle_command_mode({:char, c}, model) when is_binary(c) do
+    model = Model.command_input_char(model, c)
+
+    # Autoload the theme picker the moment the user types
+    # "theme " — same trigger shape as the @-mention dropdown
+    # in chat. Subsequent keystrokes go to the picker as its
+    # filter query.
+    if String.downcase(model.command_input) == "theme " do
+      {model |> Model.exit_command_mode() |> Model.open_theme_picker(), :none}
+    else
+      {model, :none}
+    end
+  end
 
   # Readline-style cursor + kill commands within the command
   # input. Same key bindings as the search bar — both delegate
@@ -357,8 +387,50 @@ defmodule Egghead.TUI.Records.Update do
     {Model.exit_command_mode(model), :none}
   end
 
+  defp execute_command(%{name: "theme"}, model) do
+    arg =
+      model.command_input
+      |> String.trim()
+      |> String.replace(~r/^theme\s*/i, "")
+      |> String.trim()
+
+    model = Model.exit_command_mode(model)
+
+    case arg do
+      "" ->
+        {Model.open_theme_picker(model), :none}
+
+      name ->
+        case ThemePicker.apply(name) do
+          :ok -> {Model.invalidate_preview(model), :none}
+          {:error, :not_found} -> {model, :none}
+        end
+    end
+  end
+
   defp execute_command(_unknown, model) do
     {Model.exit_command_mode(model), :none}
+  end
+
+  # ---- theme picker routing ----------------------------------------------
+
+  defp handle_theme_picker(msg, picker, model) do
+    case ThemePicker.handle_key(msg, picker) do
+      {_picker, status} when status in [:committed, :cancelled] ->
+        # Picker has already installed the final palette (commit
+        # → chosen theme; cancel → original theme) and
+        # MarkdownCache is flushed. But `preview_rendered` has
+        # fg binaries baked in from the last live-preview step,
+        # so we invalidate it inline — the very next frame
+        # repaints the preview in the now-active palette.
+        {model |> Model.close_theme_picker() |> Model.invalidate_preview(), :none}
+
+      {updated, :open} ->
+        # Live preview: arrow keys switched the palette via
+        # Theme.set/1 and reset the cache. Drop preview_rendered
+        # so the next frame re-renders spans with fresh fg.
+        {%{model | theme_picker: updated} |> Model.invalidate_preview(), :none}
+    end
   end
 
   @valid_room_name ~r/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/

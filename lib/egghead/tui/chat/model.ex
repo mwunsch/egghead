@@ -24,6 +24,7 @@ defmodule Egghead.TUI.Chat.Model do
   alias Egghead.Chat.Stream
   alias Egghead.OpenTUI.EditBuffer
   alias Egghead.TUI.Chat.{Entry, Mentions}
+  alias Egghead.TUI.ThemePicker
 
   defmodule AgentPresence do
     @moduledoc """
@@ -65,7 +66,8 @@ defmodule Egghead.TUI.Chat.Model do
           status_message: String.t() | nil,
           anim_frame: non_neg_integer(),
           providers?: boolean(),
-          link_index: non_neg_integer() | nil
+          link_index: non_neg_integer() | nil,
+          theme_picker: ThemePicker.t() | nil
         }
 
   defstruct room_id: nil,
@@ -83,7 +85,8 @@ defmodule Egghead.TUI.Chat.Model do
             status_message: nil,
             anim_frame: 0,
             providers?: false,
-            link_index: nil
+            link_index: nil,
+            theme_picker: nil
 
   @doc """
   Build a fresh model. The `:room_id` opt is required for the

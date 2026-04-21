@@ -83,6 +83,8 @@ defmodule Egghead.Application do
     opts = [strategy: :one_for_one, name: Egghead.Supervisor]
     result = Supervisor.start_link(children, opts)
 
+    apply_theme()
+
     # Post-startup setup only when running our own supervision tree
     if not Egghead.Node.connected?() and
          Application.get_env(:egghead, :start_record_store, true) do
@@ -281,6 +283,26 @@ defmodule Egghead.Application do
         Egghead.Web.Endpoint,
         Keyword.put(current, :http, Keyword.put(http, :ip, {0, 0, 0, 0}))
       )
+    end
+  end
+
+  # --- Theme ---
+
+  defp apply_theme do
+    configured =
+      case Application.get_env(:egghead, :config) do
+        %{theme: name} when is_binary(name) and name != "" -> name
+        _ -> Egghead.Theme.default_name()
+      end
+
+    case Egghead.Theme.set(configured) do
+      :ok ->
+        :ok
+
+      {:error, :not_found} ->
+        require Logger
+        Logger.warning("unknown theme #{inspect(configured)} — falling back to default")
+        Egghead.Theme.set(Egghead.Theme.default_name())
     end
   end
 

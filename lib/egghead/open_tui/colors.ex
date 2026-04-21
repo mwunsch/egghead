@@ -1,19 +1,39 @@
 defmodule Egghead.OpenTUI.Colors do
   @moduledoc """
-  Default palette as compile-time color binaries.
+  Palette accessors backed by the active theme (`Egghead.OpenTUI.Theme`).
 
-  OpenTUI's C ABI takes colors as four little-endian f32s
-  (r, g, b, a), so the bridge NIF accepts a 16-byte binary in
-  that exact layout. This module precomputes a small palette
-  at compile time so render loops never allocate color values.
+  Every accessor returns a 16-byte little-endian RGBA binary that
+  `Bridge.draw_text/7` and `Bridge.fill_rect/6` accept directly.
+  The `bg/0` and `bg_alt/0` slots may return the empty binary —
+  the bridge reads that as "no background fill," letting the host
+  terminal's own background bleed through.
 
-  Pass `transparent/0` (the empty binary) where the bridge
-  expects a bg argument that should mean "no background fill."
+  Colors resolve through `:persistent_term` at call time, so
+  `Egghead.OpenTUI.Theme.set/1` takes effect on the next frame
+  with no view-tree plumbing.
 
-  Applications that need a richer palette can either build their
-  own binaries with `rgba/4` or define a domain-specific module
-  alongside this one.
+  ## Semantic slots
+
+  The theme defines 17 slots:
+
+      bg              bg_alt          fg              fg_dim       fg_muted
+      selection_bg    accent          border          error        warning
+      success         info            syntax_heading  syntax_link  syntax_code
+      syntax_keyword  syntax_string
+
+  Prefer these over the legacy aliases below when authoring new code.
+
+  ## Legacy aliases
+
+  A handful of older names (`white`, `red`, `green`, `cyan`,
+  `magenta`, `blue`, `yellow`, `dim`, `muted`, `heading`, `code`,
+  `link`, `selected_bg`) still exist and map onto the semantic
+  slots that best fit their historical use. They remain so the
+  refactor doesn't churn 168 call sites in one go — new code
+  should use the semantic names directly.
   """
+
+  alias Egghead.OpenTUI.Theme
 
   @doc "Pack four 0.0–1.0 floats into a 16-byte little-endian color binary."
   @spec rgba(float(), float(), float(), float()) :: binary()
@@ -25,61 +45,44 @@ defmodule Egghead.OpenTUI.Colors do
   @spec transparent() :: binary()
   def transparent, do: <<>>
 
-  # ---- Default palette ----------------------------------------------------
+  # ---- Semantic slots -----------------------------------------------------
+
+  def bg, do: Theme.get(:bg)
+  def bg_alt, do: Theme.get(:bg_alt)
+  def fg, do: Theme.get(:fg)
+  def fg_dim, do: Theme.get(:fg_dim)
+  def fg_muted, do: Theme.get(:fg_muted)
+  def selection_bg, do: Theme.get(:selection_bg)
+  def accent, do: Theme.get(:accent)
+  def border, do: Theme.get(:border)
+  def error, do: Theme.get(:error)
+  def warning, do: Theme.get(:warning)
+  def success, do: Theme.get(:success)
+  def info, do: Theme.get(:info)
+  def syntax_heading, do: Theme.get(:syntax_heading)
+  def syntax_link, do: Theme.get(:syntax_link)
+  def syntax_code, do: Theme.get(:syntax_code)
+  def syntax_keyword, do: Theme.get(:syntax_keyword)
+  def syntax_string, do: Theme.get(:syntax_string)
+
+  # ---- Legacy aliases -----------------------------------------------------
   #
-  # Distinct, saturated, easy to tell apart visually and in spans snapshots.
-  # Compile-time literals so the render loop reuses the same binary refs.
+  # Older code uses hue-named accessors (white/red/green/…) and
+  # role-named ones (heading/code/link/muted/dim/selected_bg).
+  # Map each onto the closest semantic slot so existing views
+  # keep working while theme switching takes effect everywhere.
 
-  @bg <<0.06::float-32-little, 0.06::float-32-little, 0.08::float-32-little,
-        1.0::float-32-little>>
-  @red <<0.95::float-32-little, 0.30::float-32-little, 0.30::float-32-little,
-         1.0::float-32-little>>
-  @green <<0.36::float-32-little, 0.85::float-32-little, 0.40::float-32-little,
-           1.0::float-32-little>>
-  @blue <<0.40::float-32-little, 0.55::float-32-little, 0.95::float-32-little,
-          1.0::float-32-little>>
-  @cyan <<0.36::float-32-little, 0.80::float-32-little, 0.85::float-32-little,
-          1.0::float-32-little>>
-  @magenta <<0.85::float-32-little, 0.40::float-32-little, 0.85::float-32-little,
-             1.0::float-32-little>>
-  @yellow <<0.92::float-32-little, 0.85::float-32-little, 0.30::float-32-little,
-            1.0::float-32-little>>
-  @white <<0.92::float-32-little, 0.92::float-32-little, 0.92::float-32-little,
-           1.0::float-32-little>>
-  @dim <<0.55::float-32-little, 0.55::float-32-little, 0.60::float-32-little,
-         1.0::float-32-little>>
-  @accent <<0.36::float-32-little, 0.80::float-32-little, 0.85::float-32-little,
-            1.0::float-32-little>>
-  @heading <<0.95::float-32-little, 0.90::float-32-little, 0.50::float-32-little,
-             1.0::float-32-little>>
-  @code <<0.75::float-32-little, 0.85::float-32-little, 0.95::float-32-little,
-          1.0::float-32-little>>
-  @link <<0.55::float-32-little, 0.78::float-32-little, 0.95::float-32-little,
-          1.0::float-32-little>>
-  @muted <<0.45::float-32-little, 0.45::float-32-little, 0.50::float-32-little,
-           1.0::float-32-little>>
-  @selected_bg <<0.20::float-32-little, 0.30::float-32-little, 0.45::float-32-little,
-                 1.0::float-32-little>>
-  @sidebar_bg <<0.08::float-32-little, 0.08::float-32-little, 0.11::float-32-little,
-                1.0::float-32-little>>
-  @user_msg_bg <<0.10::float-32-little, 0.12::float-32-little, 0.16::float-32-little,
-                 1.0::float-32-little>>
-
-  def bg, do: @bg
-  def red, do: @red
-  def green, do: @green
-  def blue, do: @blue
-  def cyan, do: @cyan
-  def magenta, do: @magenta
-  def yellow, do: @yellow
-  def white, do: @white
-  def dim, do: @dim
-  def accent, do: @accent
-  def heading, do: @heading
-  def code, do: @code
-  def link, do: @link
-  def muted, do: @muted
-  def selected_bg, do: @selected_bg
-  def sidebar_bg, do: @sidebar_bg
-  def user_msg_bg, do: @user_msg_bg
+  def white, do: Theme.get(:fg)
+  def dim, do: Theme.get(:fg_dim)
+  def muted, do: Theme.get(:fg_muted)
+  def red, do: Theme.get(:error)
+  def yellow, do: Theme.get(:warning)
+  def green, do: Theme.get(:success)
+  def cyan, do: Theme.get(:info)
+  def blue, do: Theme.get(:accent)
+  def magenta, do: Theme.get(:syntax_keyword)
+  def heading, do: Theme.get(:syntax_heading)
+  def code, do: Theme.get(:syntax_code)
+  def link, do: Theme.get(:syntax_link)
+  def selected_bg, do: Theme.get(:selection_bg)
 end

@@ -20,6 +20,7 @@ defmodule Egghead.TUI.Chat.Update do
 
   alias Egghead.OpenTUI.EditBuffer
   alias Egghead.TUI.Chat.{Entry, Mentions, Model, Paste}
+  alias Egghead.TUI.ThemePicker
 
   # Canonical command list for the dropdown. Aliases (/exit, /part)
   # are not shown in the dropdown but are accepted on dispatch.
@@ -36,6 +37,7 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "tools", description: "Summary of tools available to agents"},
     %{name: "mcp", description: "Summary of MCP servers"},
     %{name: "leave", description: "Return to records (F1)"},
+    %{name: "theme", description: "Pick a theme (or /theme <name>)"},
     %{name: "help", description: "Show keybindings & commands"},
     %{name: "quit", description: "Exit the TUI"}
   ]
@@ -57,6 +59,7 @@ defmodule Egghead.TUI.Chat.Update do
     "unmute" => :cmd_unmute,
     "tools" => :cmd_tools,
     "mcp" => :cmd_mcp,
+    "theme" => :cmd_theme,
     "help" => :cmd_help
   }
 
@@ -66,6 +69,15 @@ defmodule Egghead.TUI.Chat.Update do
 
   def update({:resize, w, h}, %Model{} = model) do
     {%{model | width: w, height: h}, :none}
+  end
+
+  # ---- theme picker -------------------------------------------------------
+  #
+  # When the picker is open it consumes every non-resize
+  # keystroke until the user commits (Enter) or cancels (Esc).
+
+  def update(msg, %Model{theme_picker: picker} = model) when not is_nil(picker) do
+    handle_theme_picker(msg, picker, model)
   end
 
   # ---- room events --------------------------------------------------------
@@ -458,11 +470,17 @@ defmodule Egghead.TUI.Chat.Update do
   end
 
   # After every input edit, decide whether to show the mention
-  # dropdown or the command dropdown (mutually exclusive).
+  # dropdown or the command dropdown (mutually exclusive). One
+  # special case jumps higher than either: typing "/theme "
+  # auto-opens the inline theme picker, same shape as the
+  # @-mention dropdown auto-opening on "@".
   defp refresh_completion(model) do
     text = Model.input_text(model)
 
     cond do
+      String.downcase(text) == "/theme " ->
+        %{Model.clear_input(model) | command: nil, mention: nil, theme_picker: ThemePicker.open()}
+
       String.starts_with?(text, "/") and not String.contains?(text, "\n") ->
         refresh_command(model, text)
 
@@ -995,6 +1013,37 @@ defmodule Egghead.TUI.Chat.Update do
       |> Model.append_entry(Entry.system(Egghead.TUI.ToolCatalog.mcp_summary()))
 
     {model, :none}
+  end
+
+  defp apply_command(:cmd_theme, arg, model) do
+    model = Model.clear_input(model)
+    name = String.trim(arg)
+
+    case name do
+      "" ->
+        {%{model | theme_picker: ThemePicker.open()}, :none}
+
+      _ ->
+        case ThemePicker.apply(name) do
+          :ok ->
+            {Model.append_entry(model, Entry.system("Theme set: #{name}")), :none}
+
+          {:error, :not_found} ->
+            {Model.append_entry(model, Entry.system("Unknown theme: #{name}")), :none}
+        end
+    end
+  end
+
+  # ---- theme picker routing ----------------------------------------------
+
+  defp handle_theme_picker(msg, picker, model) do
+    case ThemePicker.handle_key(msg, picker) do
+      {_picker, status} when status in [:committed, :cancelled] ->
+        {%{model | theme_picker: nil}, :none}
+
+      {updated, :open} ->
+        {%{model | theme_picker: updated}, :none}
+    end
   end
 
   # Fire a side-effectful function off the runtime process. The

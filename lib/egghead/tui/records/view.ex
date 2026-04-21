@@ -24,7 +24,7 @@ defmodule Egghead.TUI.Records.View do
 
   import Egghead.OpenTUI.View
   alias Egghead.OpenTUI.Colors
-  alias Egghead.TUI.Records.Model
+  alias Egghead.TUI.{Records.Model, ThemePicker}
 
   @doc """
   Build the view tree for the given model. The model carries
@@ -40,22 +40,36 @@ defmodule Egghead.TUI.Records.View do
   def render(%Model{} = model) do
     width = model.width
     height = model.height
-    body_h = max(height - 6, 1)
+    picker_h = if model.theme_picker, do: ThemePicker.height(model.theme_picker), else: 0
+    body_h = max(height - 6 - picker_h, 1)
     list_h = max(div(body_h, 3), 1)
     preview_h = max(body_h - list_h, 1)
     footer_h = length(model.preview_footer)
     content_h = max(preview_h - 1 - footer_h, 1)
 
-    vbox([
-      header(model, width),
-      search(model, width),
-      separator(width),
-      list_pane(model, width, list_h),
-      blank(width),
-      preview_pane(model, width, preview_h, content_h),
-      blank(width),
-      status_bar(model, width)
-    ])
+    picker_node =
+      case model.theme_picker do
+        nil -> []
+        picker -> [ThemePicker.view(picker, width)]
+      end
+
+    # Records mode's input/filter sits near the top (header → search
+    # → separator), so the picker drops under the search field like
+    # a real autocomplete. In chat mode the input is near the
+    # bottom and the picker lives above the status bar; see
+    # `Egghead.TUI.Chat.View.render/1`.
+    vbox(
+      [header(model, width), search(model, width)] ++
+        picker_node ++
+        [
+          separator(width),
+          list_pane(model, width, list_h),
+          blank(width),
+          preview_pane(model, width, preview_h, content_h),
+          blank(width),
+          status_bar(model, width)
+        ]
+    )
   end
 
   # ---- panes --------------------------------------------------------------

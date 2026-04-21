@@ -35,6 +35,7 @@ defmodule Egghead.Config do
             llm: [],
             default_model: nil,
             default_room: nil,
+            theme: "terminal-dark",
             web: %{port: 4000, host: "localhost", bind: "127.0.0.1"},
             mcp_servers: [],
             server: nil
@@ -62,6 +63,7 @@ defmodule Egghead.Config do
           llm: [llm_entry()],
           default_model: String.t() | nil,
           default_room: String.t() | nil,
+          theme: String.t(),
           web: %{port: non_neg_integer(), host: String.t(), bind: String.t()},
           mcp_servers: [mcp_server()]
         }
@@ -260,6 +262,7 @@ defmodule Egghead.Config do
       llm: parse_llm(data["llm"]),
       default_model: data["default_model"],
       default_room: data["default_room"],
+      theme: data["theme"] || "terminal-dark",
       web: parse_web(data["web"]),
       mcp_servers: parse_mcp_servers(data["mcp_servers"]),
       server: parse_server(data["server"])
@@ -370,6 +373,7 @@ defmodule Egghead.Config do
       emit_llm(config.llm),
       emit_field("default_model", config.default_model),
       emit_field("default_room", config.default_room),
+      emit_field("theme", config.theme),
       emit_web(config.web),
       emit_mcp_servers(config.mcp_servers)
     ]

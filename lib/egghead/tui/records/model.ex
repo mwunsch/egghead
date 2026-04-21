@@ -17,7 +17,7 @@ defmodule Egghead.TUI.Records.Model do
 
   alias Egghead.OpenTUI.{Colors, Markdown, Readline}
   alias Egghead.RecordStore
-  alias Egghead.TUI.MarkdownCache
+  alias Egghead.TUI.{MarkdownCache, ThemePicker}
   alias Egghead.TUI.Records.Slug
 
   @type date_format :: :relative | :iso
@@ -58,7 +58,8 @@ defmodule Egghead.TUI.Records.Model do
           command_input: String.t(),
           command_cursor: non_neg_integer(),
           command_selected: non_neg_integer(),
-          providers?: boolean()
+          providers?: boolean(),
+          theme_picker: ThemePicker.t() | nil
         }
 
   defstruct width: 80,
@@ -85,7 +86,8 @@ defmodule Egghead.TUI.Records.Model do
             command_input: "",
             command_cursor: 0,
             command_selected: 0,
-            providers?: false
+            providers?: false,
+            theme_picker: nil
 
   # The records-mode command palette. Each entry has a `name`
   # (the part the user types after `/`) and a one-line
@@ -100,6 +102,7 @@ defmodule Egghead.TUI.Records.Model do
     %{name: "chat", description: "Enter chat mode"},
     %{name: "join", description: "Join or create a room"},
     %{name: "list", description: "List all open rooms"},
+    %{name: "theme", description: "Pick a theme (or /theme <name>)"},
     %{name: "system", description: "Agent diagnostics (not yet implemented)"}
   ]
 
@@ -1174,6 +1177,37 @@ defmodule Egghead.TUI.Records.Model do
     {new_filter, new_cursor} = fun.(model.filter, model.filter_cursor)
     %{model | filter: new_filter, filter_cursor: new_cursor}
   end
+
+  @doc """
+  Invalidate the preview cache and rebuild at the current width.
+  Call this when the theme changes — `preview_rendered` holds
+  rendered spans with fg binaries baked in from the previous
+  palette, so the cached rows must be discarded and regenerated.
+  """
+  @spec invalidate_preview(t()) :: t()
+  def invalidate_preview(%__MODULE__{} = model) do
+    %{model | preview_rendered: nil, preview_rendered_width: nil}
+    |> recompute_preview()
+  end
+
+  # ---- theme picker -------------------------------------------------------
+
+  @doc "Open the theme picker overlay (captures current theme for revert)."
+  @spec open_theme_picker(t()) :: t()
+  def open_theme_picker(%__MODULE__{} = model) do
+    %{model | theme_picker: ThemePicker.open()}
+  end
+
+  @doc "Dismiss the theme picker overlay. Does not touch the theme itself."
+  @spec close_theme_picker(t()) :: t()
+  def close_theme_picker(%__MODULE__{} = model) do
+    %{model | theme_picker: nil}
+  end
+
+  @doc "Is the theme picker open?"
+  @spec theme_picker_open?(t()) :: boolean()
+  def theme_picker_open?(%__MODULE__{theme_picker: nil}), do: false
+  def theme_picker_open?(_), do: true
 
   # ---- helpers ------------------------------------------------------------
 

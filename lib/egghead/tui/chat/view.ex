@@ -26,8 +26,9 @@ defmodule Egghead.TUI.Chat.View do
 
   alias Egghead.Chat.Stream
   alias Egghead.OpenTUI.{Attrs, Colors, EditBuffer}
+  alias Egghead.Theme.Roles
   alias Egghead.TUI.Chat.{Entry, Mentions, Mentions.Token, Model, Paste}
-  alias Egghead.TUI.MarkdownCache
+  alias Egghead.TUI.{MarkdownCache, ThemePicker}
   alias Model.AgentPresence
 
   @prompt "❯ "
@@ -44,8 +45,9 @@ defmodule Egghead.TUI.Chat.View do
     text_w = max(width - prompt_w, 1)
     input_height = clamp(EditBuffer.visual_line_count(model.input, text_w), 1, @max_input_rows)
     dd_height = dropdown_height(model)
+    picker_h = if model.theme_picker, do: ThemePicker.height(model.theme_picker), else: 0
     # header(1) + input_border(1) + input + spacer(1) + status(1) = 4 + input
-    chrome = 4 + input_height + dd_height
+    chrome = 4 + input_height + dd_height + picker_h
     # In narrow mode, the agent summary strip takes 1 row.
     narrow_strip = if sb_width == 0 and model.agents != [], do: 1, else: 0
     transcript_height = max(height - chrome - narrow_strip, 1)
@@ -71,11 +73,18 @@ defmodule Egghead.TUI.Chat.View do
 
     hr = text(String.duplicate("─", width), height: 1, fg: Colors.muted())
 
+    picker_node =
+      case model.theme_picker do
+        nil -> []
+        picker -> [ThemePicker.view(picker, width)]
+      end
+
     children =
       [header(model, width), main_region] ++
         narrow_strip_node(model, width, narrow_strip) ++
         [hr, input_box(model, width, input_height)] ++
         dropdown_node(model, width, dd_height) ++
+        picker_node ++
         [text("", height: 1), status_bar(model, width)]
 
     vbox(children)
@@ -295,7 +304,7 @@ defmodule Egghead.TUI.Chat.View do
   defp entry_to_rows(%Entry{kind: :user} = e, show_nick?, body_w, full_w, active_target) do
     nick = if show_nick?, do: nick_cell(e.sender_name, :user, e.sender_id), else: blank_nick()
     md_rows = e.text |> MarkdownCache.render(body_w) |> trim_trailing_empty()
-    wrap_markdown(nick, md_rows, full_w, Colors.user_msg_bg(), active_target)
+    wrap_markdown(nick, md_rows, full_w, Roles.user_msg_bg(), active_target)
   end
 
   defp entry_to_rows(%Entry{kind: :action} = e, _show_nick?, body_w, full_w, _active_target) do
@@ -557,8 +566,6 @@ defmodule Egghead.TUI.Chat.View do
 
   # ---- sidebar ---------------------------------------------------------------
 
-  @sidebar_bg Colors.sidebar_bg()
-
   # Top-aligned: agent count header, then agent cards on a
   # tinted background. Remaining space filled with bg.
   defp sidebar(agents, sb_width, height) do
@@ -568,11 +575,11 @@ defmodule Egghead.TUI.Chat.View do
       text(pad_to(header_label, sb_width),
         height: 1,
         fg: Colors.dim(),
-        bg: @sidebar_bg,
+        bg: Roles.sidebar_bg(),
         attrs: Attrs.bold()
       )
 
-    spacer = text(String.duplicate(" ", sb_width), height: 1, bg: @sidebar_bg)
+    spacer = text(String.duplicate(" ", sb_width), height: 1, bg: Roles.sidebar_bg())
 
     cards =
       agents
@@ -584,7 +591,7 @@ defmodule Egghead.TUI.Chat.View do
     fill_rows =
       if remaining > 0 do
         List.duplicate(
-          text(String.duplicate(" ", sb_width), height: 1, bg: @sidebar_bg),
+          text(String.duplicate(" ", sb_width), height: 1, bg: Roles.sidebar_bg()),
           remaining
         )
       else
@@ -602,7 +609,7 @@ defmodule Egghead.TUI.Chat.View do
       text(pad_to(name, sb_width),
         height: 1,
         fg: if(a.status == :active, do: Colors.green(), else: Colors.dim()),
-        bg: @sidebar_bg,
+        bg: Roles.sidebar_bg(),
         attrs: if(a.status == :active, do: Attrs.bold(), else: 0)
       )
 
@@ -624,7 +631,7 @@ defmodule Egghead.TUI.Chat.View do
       text(pad_to(truncate_line(token_label, sb_width), sb_width),
         height: 1,
         fg: Colors.dim(),
-        bg: @sidebar_bg
+        bg: Roles.sidebar_bg()
       )
 
     # Leave 3 chars right margin so e.g. "62.3%" doesn't butt
@@ -637,14 +644,14 @@ defmodule Egghead.TUI.Chat.View do
         text(pad_to("  #{bar}", sb_width),
           height: 1,
           fg: Colors.muted(),
-          bg: @sidebar_bg
+          bg: Roles.sidebar_bg()
         )
       else
-        text(pad_to("", sb_width), height: 1, bg: @sidebar_bg)
+        text(pad_to("", sb_width), height: 1, bg: Roles.sidebar_bg())
       end
 
     separator =
-      text(String.duplicate(" ", sb_width), height: 1, bg: @sidebar_bg)
+      text(String.duplicate(" ", sb_width), height: 1, bg: Roles.sidebar_bg())
 
     [name_row, token_row, ctx_row, separator]
   end

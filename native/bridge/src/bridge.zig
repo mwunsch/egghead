@@ -67,6 +67,7 @@ extern fn resizeRenderer(renderer: *anyopaque, width: u32, height: u32) void;
 extern fn setCursorPosition(renderer: *anyopaque, x: i32, y: i32, visible: bool) void;
 extern fn enableMouse(renderer: *anyopaque, enableMovement: bool) void;
 extern fn disableMouse(renderer: *anyopaque) void;
+extern fn bufferSetRespectAlpha(buf: *anyopaque, respect: bool) void;
 
 // ---- Handle registry -------------------------------------------------------
 
@@ -436,10 +437,25 @@ fn nif_clear(
     var id: u64 = 0;
     if (erl.enif_get_uint64(env, argv[0], &id) == 0) return badarg(env);
 
-    var bg: [4]f32 = .{ 0, 0, 0, 1 };
-    if (!readColorBinary(env, argv[1], &bg)) return badarg(env);
+    // Empty bg binary means "transparent" — paint alpha-0 cells
+    // so the host terminal's own background shows through at
+    // serialization time. `bufferSetRespectAlpha` tells OpenTUI
+    // to emit SGR 49 for cells where alpha == 0 instead of a
+    // literal color triplet.
+    var bg_bin: erl.ErlNifBinary = undefined;
+    if (erl.enif_inspect_binary(env, argv[1], &bg_bin) == 0) return badarg(env);
+
+    var bg: [4]f32 = .{ 0, 0, 0, 0 };
+    var transparent = true;
+    if (bg_bin.size == 16) {
+        if (!readColorBinary(env, argv[1], &bg)) return badarg(env);
+        transparent = false;
+    } else if (bg_bin.size != 0) {
+        return badarg(env);
+    }
 
     const buf = registry().getBuffer(id) orelse return badarg(env);
+    bufferSetRespectAlpha(buf, transparent);
     bufferClear(buf, &bg);
     return atom(env, "ok");
 }
@@ -462,6 +478,15 @@ fn nif_draw_text(
     var y: c_uint = 0;
     if (erl.enif_get_uint(env, argv[2], &x) == 0) return badarg(env);
     if (erl.enif_get_uint(env, argv[3], &y) == 0) return badarg(env);
+
+    // Empty fg binary is a no-op draw — the caller wants whatever
+    // cell is already in the buffer to show through, same contract
+    // the bg arg has. Most common trigger: a view leaf that uses a
+    // transparent theme slot (e.g. Colors.bg() on a fully-transparent
+    // terminal theme) as its fg, where the glyph is a space anyway.
+    var fg_bin: erl.ErlNifBinary = undefined;
+    if (erl.enif_inspect_binary(env, argv[4], &fg_bin) == 0) return badarg(env);
+    if (fg_bin.size == 0) return atom(env, "ok");
 
     var fg: [4]f32 = .{ 1, 1, 1, 1 };
     if (!readColorBinary(env, argv[4], &fg)) return badarg(env);
@@ -518,6 +543,11 @@ fn nif_fill_rect(
     argv: [*c]const erl.ERL_NIF_TERM,
 ) callconv(.c) erl.ERL_NIF_TERM {
     // fill_rect(handle, x, y, w, h, bg_binary)
+    // Empty bg binary is a no-op: the caller wants the underlying
+    // buffer contents (typically already-cleared terminal bg) to
+    // show through this rect. Writing alpha-0 here would punch a
+    // transparent hole through any previously-drawn content, which
+    // is not what any current caller wants.
     if (argc != 6) return badarg(env);
 
     var id: u64 = 0;
@@ -531,6 +561,13 @@ fn nif_fill_rect(
     if (erl.enif_get_uint(env, argv[2], &y) == 0) return badarg(env);
     if (erl.enif_get_uint(env, argv[3], &w) == 0) return badarg(env);
     if (erl.enif_get_uint(env, argv[4], &h) == 0) return badarg(env);
+
+    var bg_bin: erl.ErlNifBinary = undefined;
+    if (erl.enif_inspect_binary(env, argv[5], &bg_bin) == 0) return badarg(env);
+
+    if (bg_bin.size == 0) {
+        return atom(env, "ok");
+    }
 
     var bg: [4]f32 = .{ 0, 0, 0, 1 };
     if (!readColorBinary(env, argv[5], &bg)) return badarg(env);

@@ -91,162 +91,118 @@ main { display: block; }
 .landing > * { position: relative; z-index: 0; }
 
 /* =============================================================
-   DECORATIONS — museum-specimen clip-art floating in the margins.
-   Behind text (z-index: -1), clamp-sized so they bleed off the
-   viewport edges on mobile instead of disappearing, and scroll-
-   parallaxed via animation-timeline: view() so each one drifts at
-   its own rate through its section's viewport window.
+   DECORATIONS — museum-specimen clip-art floated inline with the
+   prose so text wraps around them (shape-outside traces the image
+   alpha). A few stay absolute (Voltaire bust in its own masthead
+   column; Great Sphinx as a wide horizon above the colophon).
+   Parallax drift via translate keyframes still applies — it moves
+   the image visually without disturbing the wrap.
    ============================================================= */
 
 .decoration {
-  position: absolute;
   pointer-events: none;
   user-select: none;
-  z-index: -1;
   height: auto;
-  filter: drop-shadow(0 14px 20px rgba(17, 17, 17, 0.16))
-          drop-shadow(0 2px 3px rgba(17, 17, 17, 0.10));
+  max-width: 100%;
+  /* Tight specimen contact shadow — sits on the paper, not levitating.
+     Low offset, small blur, punchy opacity. */
+  filter: drop-shadow(0 5px 6px rgba(17, 17, 17, 0.24))
+          drop-shadow(0 1px 1px rgba(17, 17, 17, 0.18));
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .decoration {
-    animation-timeline: view();
-    animation-range: entry 0% exit 100%;
-    animation-fill-mode: both;
-    animation-timing-function: linear;
-    will-change: translate;
-  }
+/* ── Shared inline-float base ─────────────────────────────── */
+
+.decoration--float-right {
+  float: right;
+  margin: 0.2em 0 0.8em 1.2em;
+}
+.decoration--float-left {
+  float: left;
+  margin: 0.2em 1.2em 0.8em 0;
 }
 
-@keyframes decoration-drift-slow {
-  from { translate: 0 -30px; }
-  to   { translate: 0  30px; }
-}
-@keyframes decoration-drift-med {
-  from { translate: 0 -60px; }
-  to   { translate: 0  60px; }
-}
-@keyframes decoration-drift-fast {
-  from { translate: 0 -110px; }
-  to   { translate: 0  110px; }
-}
-@keyframes decoration-drift-rise {
-  from { translate: 0  80px; }
-  to   { translate: 0 -80px; }
-}
+/* ── Individual decorations (inline floats inside prose) ──── */
 
-/* ── Individual decorations ───────────────────────────────── */
-
-/* EDITOR'S NOTE — Astrolabe, right, BEHIND text */
 .decoration--astrolabe {
-  right: clamp(-9rem, -11vw, -4rem);
-  top: -2rem;
-  width: clamp(6rem, 13vw, 12rem);
-  rotate: 5deg;
-  opacity: 0.92;
-  animation-name: decoration-drift-slow;
+  float: right;
+  width: clamp(3.5rem, 17vw, 14rem);
+  shape-outside: url("../img/astrolabe.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 0 1em 1.25em;
 }
 
-/* § 1 THESIS — Tengu right (OVER text), NeXT left (BEHIND text) */
-.decoration--tengu {
-  z-index: 1;
-  right: clamp(-3rem, -5vw, -1rem);
-  top: 18%;
-  width: clamp(5rem, 10vw, 8.5rem);
-  rotate: 8deg;
-  opacity: 0.9;
-  animation-name: decoration-drift-med;
+/* Chronometer lives in the install grid; rules in the install block. */
+
+.decoration--greek-sphinx {
+  float: right;
+  width: clamp(3.5rem, 15vw, 13rem);
+  shape-outside: url("../img/greek-sphinx.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 0 1em 1.25em;
+  opacity: 0.96;
 }
+
 .decoration--next {
-  left: clamp(-3.5rem, -5vw, -1rem);
-  top: 55%;
-  width: clamp(7rem, 14vw, 13rem);
-  rotate: -3deg;
-  opacity: 0.88;
-  animation-name: decoration-drift-rise;
+  float: left;
+  width: clamp(4rem, 18vw, 15rem);
+  shape-outside: url("../img/next-computer.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0.1em 1.25em 1em 0;
 }
 
-/* § 2 ARCHITECTURE — Lamassu right, OVER text, starting lower */
-.decoration--lamassu {
-  z-index: 1;
-  right: clamp(-4rem, -6vw, -1rem);
-  top: 58%;
-  width: clamp(6rem, 14vw, 12rem);
-  rotate: 3deg;
-  opacity: 0.88;
-  animation-name: decoration-drift-med;
-  filter: drop-shadow(0 16px 22px rgba(17, 17, 17, 0.18))
-          drop-shadow(0 2px 3px rgba(17, 17, 17, 0.12))
-          sepia(0.1);
-}
-
-/* § 3 INTERFACES — Artemis left (BEHIND text), pushed further left */
 .decoration--artemis {
-  left: clamp(-8rem, -10vw, -4rem);
-  top: -1rem;
-  width: clamp(4.5rem, 10vw, 9rem);
-  rotate: -2deg;
-  opacity: 0.78;
-  animation-name: decoration-drift-fast;
+  float: right;
+  width: clamp(2.75rem, 11vw, 9.5rem);
+  shape-outside: url("../img/artemis-ii.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 0 1em 1.25em;
 }
 
-/* § 4 RECORDS — David right (raised higher), Chronometer OVER the
-   feature figure on the left, starting lower on the figure */
 .decoration--david {
-  right: clamp(-4rem, -5vw, -2rem);
-  top: -2%;
-  width: clamp(5rem, 12vw, 10.5rem);
-  rotate: 1deg;
-  opacity: 0.82;
-  animation-name: decoration-drift-slow;
+  float: right;
+  width: clamp(3.5rem, 13vw, 11rem);
+  shape-outside: url("../img/david.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 0 1em 1.25em;
   -webkit-mask-image: linear-gradient(to bottom, #000 85%, transparent 100%);
           mask-image: linear-gradient(to bottom, #000 85%, transparent 100%);
 }
-.decoration--chronometer {
-  z-index: 1;
-  left: clamp(-2rem, 2vw, 3rem);
-  top: 55%;
-  width: clamp(5.5rem, 12vw, 11rem);
-  rotate: -6deg;
-  opacity: 0.95;
-  animation-name: decoration-drift-rise;
+
+.decoration--lamassu {
+  float: right;
+  width: clamp(4rem, 18vw, 15rem);
+  shape-outside: url("../img/lammasu-2.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 0 1em 1.25em;
+  filter: drop-shadow(0 5px 6px rgba(17, 17, 17, 0.24))
+          drop-shadow(0 1px 1px rgba(17, 17, 17, 0.18))
+          sepia(0.1);
 }
 
-/* § 5 FURTHER READING — Kabuto LEFT (swapped, pushed further left),
-   Greek sphinx RIGHT (swapped) */
 .decoration--kabuto {
-  z-index: 1;
-  left: clamp(-8rem, -10vw, -4.5rem);
-  top: 20%;
-  width: clamp(4.5rem, 9vw, 8rem);
-  rotate: -6deg;
-  opacity: 0.88;
-  animation-name: decoration-drift-fast;
-}
-.decoration--greek-sphinx {
-  z-index: 1;
-  right: clamp(-7rem, -9vw, -3rem);
-  top: 30%;
-  width: clamp(7rem, 15vw, 14rem);
-  rotate: 4deg;
-  opacity: 0.88;
-  animation-name: decoration-drift-med;
+  float: left;
+  width: clamp(3rem, 10vw, 9rem);
+  shape-outside: url("../img/kabuto.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0.1em 1.25em 1em 0;
 }
 
-/* COLOPHON — Great Sphinx panorama on the right, OVER, anchored
-   so its bottom sits at the colophon's top edge — fully ABOVE the
-   footer rule line. */
-.decoration--sphinx {
-  z-index: 1;
-  right: clamp(-4rem, -6vw, -1rem);
-  bottom: 100%;
-  width: clamp(14rem, 40vw, 30rem);
-  opacity: 0.55;
-  filter: grayscale(0.3) sepia(0.15);
-  animation-name: decoration-drift-slow;
-  -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent 100%);
-          mask-image: linear-gradient(to bottom, #000 80%, transparent 100%);
-}
+/* ── Responsive: on narrow viewports (no shape-outside room),
+   unfloat and centre-block the decorations so they become
+   punctuation between paragraphs instead of crowded in-flow
+   thumbnails. ─────────────────────────────────────────────── */
+
+/* Floats and shape-outside work at every width — keep the ragged
+   text wrap on phones instead of unfloating to centred blocks. The
+   individual decorations use smaller clamp minimums so they scale
+   down and text still has a readable column beside them. */
 
 
 
@@ -306,14 +262,14 @@ main { display: block; }
 .masthead__dek {
   margin: clamp(1.25rem, 2vw, 2.25rem) 0 0;
   font-family: var(--serif);
-  font-variation-settings: "opsz" 32, "wght" 400;
-  font-size: clamp(1.05rem, 1.2vw + 0.5rem, 1.45rem);
-  line-height: 1.35;
+  font-style: italic;
+  font-variation-settings: "opsz" 48, "wght" 400;
+  font-size: clamp(1.25rem, 2vw + 0.4rem, 2rem);
+  line-height: 1.25;
   text-align: left;
   color: var(--ink-soft);
   max-width: 44ch;
 }
-.masthead__dek em { font-style: italic; color: var(--stamp); }
 
 @media (max-width: 760px) {
   .masthead {
@@ -335,32 +291,86 @@ main { display: block; }
 }
 
 /* =============================================================
-   EDITOR'S NOTE
+   INSTALL CARD  (the page's call to action)
    ============================================================= */
 
-.editors-note {
-  max-width: var(--measure-narrow);
+.install {
+  max-width: 40rem;
   margin: 0 auto;
-  padding: 1.25rem 1.25rem;
+  padding: 1.5rem clamp(1rem, 3vw, 2rem);
   border-top: 0.5px solid var(--rule);
   border-bottom: 0.5px solid var(--rule);
-  font-family: var(--serif);
-  font-style: italic;
-  font-variation-settings: "opsz" 11;
-  color: var(--ink-soft);
   text-align: center;
-  line-height: 1.6;
 }
-.editors-note p { margin: 0; }
-.editors-note .label {
+/* Chronometer hangs in the left margin of the install card —
+   anchored to the card but living outside its left edge. */
+.install .decoration--chronometer {
+  position: absolute;
+  float: none;
+  shape-outside: none;
+  right: calc(100% + 1.25rem);   /* right edge sits left of card */
+  top: 50%;
+  translate: 0 -50%;
+  width: clamp(5rem, 9vw, 8rem);
+  margin: 0;
+}
+@media (max-width: 760px) {
+  /* No margin to hang in — slide it above the card as a flourish. */
+  .install .decoration--chronometer {
+    position: static;
+    translate: 0;
+    width: clamp(4rem, 22vw, 6rem);
+    margin: 0 auto 1rem;
+    display: block;
+  }
+}
+.install__label {
   font-family: var(--sans-label);
-  font-weight: 600;
-  font-style: normal;
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.28em;
   color: var(--stamp);
-  margin-bottom: 0.45rem;
+  margin: 0 0 0.85rem;
+  font-weight: 600;
+}
+.install__cmd {
+  margin: 0;
+  padding: 0.95rem 1.15rem;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: clamp(0.78rem, 1.3vw, 1rem);
+  line-height: 1.4;
+  text-align: left;
+  border: 0.5px solid var(--ink);
+  font-weight: 500;
+  max-width: 100%;
+  /* Allow the command to wrap rather than require horizontal scroll
+     on narrow viewports — mobile browsers handle overflow-x scroll
+     inconsistently and users can still copy the line. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.install__cmd code {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  white-space: inherit;
+  overflow-wrap: inherit;
+}
+.install__note {
+  margin: 0.9rem 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-variation-settings: "opsz" 14;
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+}
+.install__note code {
+  font-style: normal;
 }
 
 /* =============================================================
@@ -649,30 +659,54 @@ main { display: block; }
 }
 
 /* =============================================================
-   COLOPHON — minimal. Holds the Vol./No. sentiment.
+   PULL-QUOTE  (intermezzo between § 3 and § 4)
+   ============================================================= */
+
+.pull-quote {
+  margin: 0 auto;
+  max-width: 44rem;
+  text-align: center;
+  padding: 1rem 0.5rem;
+}
+.pull-quote p {
+  margin: 0;
+  font-family: var(--serif-display);
+  font-style: italic;
+  font-variation-settings: "opsz" 48, "wght" 450;
+  font-size: clamp(1.25rem, 2.2vw + 0.4rem, 2.1rem);
+  line-height: 1.3;
+  color: var(--ink-soft);
+}
+
+/* =============================================================
+   COLOPHON
    ============================================================= */
 
 .colophon { padding-top: 1.5rem; margin-top: 1rem; }
 .colophon__rule { display: block; margin-bottom: 1.25rem; }
 .rule { display: block; background: var(--ink); }
 .rule--thin { height: 0.5px; }
-.colophon p { margin: 0 0 0.3rem; }
-.colophon__issue {
+.colophon p { margin: 0 0 0.35rem; }
+.colophon__meta {
   font-family: var(--sans-label);
   font-size: 0.72rem;
   text-transform: uppercase;
-  letter-spacing: 0.28em;
+  letter-spacing: 0.22em;
   color: var(--ink-muted);
   font-weight: 600;
 }
-.colophon__issue .roman { font-variant-numeric: lining-nums; }
-.colophon__meta {
-  font-family: var(--sans-label);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
+.colophon__meta a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 0.5px solid var(--rule);
+}
+.colophon__meta a:hover { color: var(--stamp); border-bottom-color: var(--stamp); }
+.colophon__license {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 12, "wght" 400;
+  font-style: italic;
+  font-size: 0.88rem;
   color: var(--ink-muted);
-  font-weight: 500;
 }
 
 /* =============================================================

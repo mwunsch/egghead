@@ -8,10 +8,7 @@
         <span aria-hidden="true">Egghead</span>
       </h1>
 
-      <p class="masthead__dek">
-        A <em>record-store-first</em> multi-agent system &mdash; plain markdown
-        as the substrate, agents as participants in the graph.
-      </p>
+      <p class="masthead__dek">A notebook that writes back.</p>
     </div>
 
     <figure class="masthead__figure">
@@ -22,173 +19,165 @@
     </figure>
   </header>
 
-  {{/* ───────────── EDITOR'S NOTE ───────────── */}}
-  <aside class="editors-note">
-    <img class="decoration decoration--astrolabe" src="{{ "assets/img/astrolabe.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
-    <p class="label">Editor's Note</p>
-    <p>
-      This page describes a small system that treats its own records as the
-      durable institution, and its agents as staff passing through. It is
-      best read top to bottom, like the opening pages of a reference volume.
-    </p>
+  {{/* ───────────── INSTALL ───────────── */}}
+  <aside class="install">
+    <img class="decoration decoration--chronometer" src="{{ "assets/img/chronometer.png" | relURL }}" alt="Marine chronometer in a mahogany case" width="1239" height="1499" decoding="async">
+    <p class="install__label">Install</p>
+    <pre class="install__cmd"><code>curl -fsSL {{ "install.sh" | absURL }} | sh</code></pre>
+    <p class="install__note">Then <code>egghead init</code> to pick a model and a home for your notes.</p>
   </aside>
 
-  {{/* ───────────── § 1 — ESSAY ───────────── */}}
-  <section class="essay" aria-labelledby="essay-head">
-    <img class="decoration decoration--tengu" src="{{ "assets/img/tengu-mask.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
-    <img class="decoration decoration--next" src="{{ "assets/img/next-computer.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
+  {{/* ───────────── § 1 — YOUR KNOWLEDGE BASE ───────────── */}}
+  <section class="feature" aria-labelledby="head-kb">
+    <figure class="feature__figure">
+      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming: TUI records mode"></div>
+      <figcaption class="feature__caption">Records mode &mdash; Notational Velocity for your second brain.</figcaption>
+    </figure>
 
-    <h2 id="essay-head" class="section-head">
-      <span class="section-head__num">§ 1</span>
-      <span class="section-head__text">The Thesis</span>
+    <div class="feature__body">
+      <h2 id="head-kb" class="section-head">
+        <span class="section-head__num">§ 1</span>
+        <span class="section-head__text">Your Knowledge Base</span>
+      </h2>
+
+      <p>
+        Egghead is your notes plus a chat room full of AI friends
+        &mdash; all living in the same folder. The notes are plain
+        markdown files you own. The friends are markdown too, one
+        file per agent. When you want to think out loud, you call
+        them into a shared transcript and they chime in. The notes
+        come first.
+      </p>
+
+      <p>
+        <img class="decoration decoration--astrolabe" src="{{ "assets/img/astrolabe.png" | relURL }}" alt="Medieval Islamic brass astrolabe" width="1563" height="1600" decoding="async">
+        Jot an idea. Link it to another with <code>[[double brackets]]</code>.
+        Search a year of notes and find the right one instantly. Egghead
+        keeps everything as plain markdown &mdash; nothing proprietary,
+        no paid tier to get them back &mdash; and the terminal plays the
+        old Notational Velocity rhythm: type to find, type to create,
+        Tab to walk the link graph. Your library lives in
+        <code>~/.egghead/</code>. <code>rsync</code> it, <code>git</code>
+        it, read it in <code>vim</code>. If Egghead disappeared tomorrow,
+        the notes wouldn't.
+      </p>
+    </div>
+  </section>
+
+  {{/* ───────────── § 2 — YOUR KNOWLEDGE'S FRIENDS ───────────── */}}
+  <section class="feature feature--inverted" aria-labelledby="head-friends">
+    <div class="feature__body">
+      <h2 id="head-friends" class="section-head">
+        <span class="section-head__num">§ 2</span>
+        <span class="section-head__text">Your Knowledge's Friends</span>
+      </h2>
+
+      <p>
+        <img class="decoration decoration--greek-sphinx" src="{{ "assets/img/greek-sphinx.png" | relURL }}" alt="Polychrome reconstruction of an archaic Greek sphinx" width="2381" height="2994" decoding="async" loading="lazy">
+        Your notes have company. An agent in Egghead is just another
+        record &mdash; frontmatter picks the model, the body is the
+        personality, the filename is the handle. Drop a markdown file
+        in your folder and a new friend joins the group. Delete the
+        file and they quietly leave. No deploy step, no database
+        migration, no API keys to shuffle.
+      </p>
+
+      <p>
+        Call them into a chat room and you get a shared transcript,
+        IRC-shaped. You talk; your friends read along, riff off each
+        other, <code>@</code>-mention, quote lines, argue about
+        something someone said two turns ago, and <code>/pass</code>
+        when they have nothing worth adding. It's a little like walking
+        into a well-lit AOL chat room in 1996, except every friend has
+        read everything you've ever written down and has a PhD in
+        something obscure.
+      </p>
+    </div>
+
+    <figure class="feature__figure">
+      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming: TUI chat mode"></div>
+      <figcaption class="feature__caption">Chat mode &mdash; shared transcript, nick-prefixed, <code>/pass</code> on empty.</figcaption>
+    </figure>
+  </section>
+
+  {{/* ───────────── § 3 — BETTER TOGETHER ───────────── */}}
+  <section class="essay" aria-labelledby="head-together">
+    <h2 id="head-together" class="section-head">
+      <span class="section-head__num">§ 3</span>
+      <span class="section-head__text">Better Together</span>
     </h2>
 
     <div class="essay__body prose">
-      <p class="prose__lede">
-        <span class="dropcap" aria-hidden="true">E</span><span class="dropcap__follow">gghead</span> is
-        built on an unfashionable conviction&thinsp;&mdash;&thinsp;that the records
-        an organization produces are the institution, and the agents that write
-        them are only its staff. In software terms: the knowledge graph
-        outlives any one session, any one model, any one implementation.
-        Sessions come and go. The store persists.
+      <p>
+        <img class="decoration decoration--next" src="{{ "assets/img/next-computer.png" | relURL }}" alt="NeXT Computer cube with keyboard" width="1126" height="944" decoding="async" loading="lazy">
+        Ask one agent, get one answer. Ask three agents in a room and
+        they argue, correct each other, cite sources, and come out the
+        other side with a better one. Peer review beats self-review
+        &mdash; as true for language models as it's always been for
+        journal papers. The research backs this up:
+        <a href="https://arxiv.org/abs/2305.14325">Du et al. (2023)</a>
+        showed multi-agent debate beats single-agent reasoning across
+        reasoning, factuality, and question-answering.
+        <a href="https://arxiv.org/abs/2503.01935">MultiAgentBench (Zhu
+        et al., ACL 2025)</a> showed that graph topologies, where
+        agents are peers in a shared room rather than workers in a
+        pipeline, outperform every other coordination pattern tested.
       </p>
 
       <p>
-        Records live as plain markdown files on disk. They have optional
-        frontmatter, they link to each other with wikilinks, and they are
-        indexed into a rebuildable SQLite catalog for search. Nothing in this
-        stack is load-bearing in a way that a grep and a text editor could
-        not reconstruct. That is the point.
-      </p>
-
-      <p>
-        Agents are themselves records&thinsp;&mdash;&thinsp;<code>class: agent</code>,
-        with a body that serves as the system prompt and frontmatter that
-        configures the model and capabilities. They collaborate through a
-        shared transcript, self-selecting via <code>@</code>-mentions and
-        yielding with <code>/pass</code>.
+        <img class="decoration decoration--lamassu" src="{{ "assets/img/lammasu-2.png" | relURL }}" alt="Assyrian Lamassu &mdash; winged bull with a human head" width="746" height="625" decoding="async" loading="lazy">
+        When a conversation runs long, an agent can <code>/handoff</code>
+        to another, carrying a summary along. When nobody has more to
+        say, they <code>/pass</code> and the room falls quiet.
+        Everything said &mdash; every argument, every source checked,
+        every conclusion reached &mdash; gets persisted as a record in
+        the store. The reasoning outlives the session.
       </p>
     </div>
   </section>
 
-  {{/* ───────────── § 2 — ARCHITECTURE ───────────── */}}
-  <section class="feature" aria-labelledby="head-arch">
-    <img class="decoration decoration--lamassu" src="{{ "assets/img/lammasu-2.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
+  {{/* ───────────── INTERMEZZO ───────────── */}}
+  <blockquote class="pull-quote" aria-hidden="true">
+    <p>I'm in the wiki. I'm in the chat room. I'm in the combination wiki/chat room.</p>
+  </blockquote>
 
+  {{/* ───────────── § 4 — CONSULTING YOUR NTH BRAIN ───────────── */}}
+  <section class="feature" aria-labelledby="head-consult">
     <figure class="feature__figure">
-      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming"></div>
-      <figcaption class="feature__caption">The TUI, records mode &mdash; Notational Velocity-style search over the store.</figcaption>
+      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming: web interface"></div>
+      <figcaption class="feature__caption">The web view &mdash; same records, same rooms, rendered in a browser.</figcaption>
     </figure>
 
     <div class="feature__body">
-      <h2 id="head-arch" class="section-head">
-        <span class="section-head__num">§ 2</span>
-        <span class="section-head__text">Architecture</span>
-      </h2>
-
-      <p>
-        Two supervision strategies, stacked. The record store speaks
-        first&thinsp;&mdash;&thinsp;index and watcher come up before any agent
-        is allowed to breathe. The agent layer sits above, and any failure
-        there stays there.
-      </p>
-
-<pre class="specimen"><code>Egghead.Supervisor (one_for_one)
-├── Phoenix.PubSub
-├── RecordSupervisor (rest_for_one)
-│   ├── Index          — SQLite, derived & rebuildable
-│   └── RecordStore    — file watcher, parser, write barrier
-└── Agent.LayerSupervisor (rest_for_one)
-    ├── LLM.Registry   — multi-provider, env-var detection
-    ├── Chat.Coordinator
-    └── Agent.Supervisor
-        ├── index      — built-in store agent
-        └── agents/*   — records with class: agent</code></pre>
-    </div>
-  </section>
-
-  {{/* ───────────── § 3 — INTERFACES ───────────── */}}
-  <section class="feature feature--inverted" aria-labelledby="head-int">
-    <img class="decoration decoration--artemis" src="{{ "assets/img/artemis-ii.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
-
-    <div class="feature__body">
-      <h2 id="head-int" class="section-head">
-        <span class="section-head__num">§ 3</span>
-        <span class="section-head__text">Interfaces</span>
-      </h2>
-
-      <p>
-        One binary, three mouths. A text-mode interface for the terminal,
-        a Phoenix web application for the browser, and an MCP server
-        speaking the model context protocol over both stdio and HTTP.
-      </p>
-
-      <dl class="commands">
-        <div class="command">
-          <dt><code>egghead</code></dt>
-          <dd>Launch the TUI. Records mode by default; <code>/chat</code> opens a shared transcript with your agents.</dd>
-        </div>
-        <div class="command">
-          <dt><code>egghead serve</code></dt>
-          <dd>Start the web application and MCP HTTP endpoint. Read the store from a browser; wire it to an editor.</dd>
-        </div>
-        <div class="command">
-          <dt><code>egghead mcp</code></dt>
-          <dd>Speak MCP over stdio, for editor integrations. Fifteen tools: search, get, list, create, links, backlinks, prompt, consult.</dd>
-        </div>
-        <div class="command">
-          <dt><code>egghead llm add</code></dt>
-          <dd>Configure a provider. Anthropic, OpenAI, Gemini, Groq, Ollama. Model IDs are <code>provider/model</code>.</dd>
-        </div>
-      </dl>
-    </div>
-
-    <figure class="feature__figure">
-      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming"></div>
-      <figcaption class="feature__caption">The TUI, chat mode &mdash; shared transcript, nick-prefixed, agents yielding with <code>/pass</code>.</figcaption>
-    </figure>
-  </section>
-
-  {{/* ───────────── § 4 — THE RECORD ───────────── */}}
-  <section class="feature" aria-labelledby="head-rec">
-    <img class="decoration decoration--david" src="{{ "assets/img/david.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
-    <img class="decoration decoration--chronometer" src="{{ "assets/img/chronometer.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
-
-    <figure class="feature__figure">
-      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming"></div>
-      <figcaption class="feature__caption">The web application &mdash; isomorphic markdown, the same records rendered in a browser.</figcaption>
-    </figure>
-
-    <div class="feature__body">
-      <h2 id="head-rec" class="section-head">
+      <h2 id="head-consult" class="section-head">
         <span class="section-head__num">§ 4</span>
-        <span class="section-head__text">The Record</span>
+        <span class="section-head__text">Consulting Your Second (or Nth&hellip;) Brain</span>
       </h2>
 
       <p>
-        A record is a markdown file. It may have frontmatter. It may contain
-        wikilinks, tables, footnotes, task lists. It is indexed into an
-        SQLite catalog that is derived and rebuildable; delete the catalog
-        and the truth remains.
+        <img class="decoration decoration--david" src="{{ "assets/img/david.png" | relURL }}" alt="Michelangelo's David, marble torso" width="896" height="1195" decoding="async" loading="lazy">
+        Same notes, same friends, however you want in. Open the TUI in a
+        terminal and browse records side by side with a chat room. Run
+        <code>egghead serve</code> and your browser gets an isomorphic
+        web version &mdash; same records, same rooms. Wire it into your
+        editor via <code>egghead mcp</code> and the whole brain is
+        available as tool calls inside your IDE.
       </p>
 
-      <aside class="card">
-        <dl class="card__dl">
-          <dt>Class</dt>         <dd>agent <span class="small">·</span> design <span class="small">·</span> research <span class="small">·</span> transcript <span class="small">·</span> &hellip;</dd>
-          <dt>Habitat</dt>       <dd><code>~/.egghead/</code> <span class="small">(or <code>$EGGHEAD_RECORDS</code>)</span></dd>
-          <dt>Substrate</dt>     <dd>UTF-8 Markdown, frontmatter optional</dd>
-          <dt>Indexed by</dt>    <dd>SQLite FTS5, derived, rebuildable</dd>
-          <dt>Linked by</dt>     <dd><code>[[wikilinks]]</code>, traversed forwards and back</dd>
-          <dt>Editable by</dt>   <dd>you, your editor, your agents, your scripts</dd>
-        </dl>
-      </aside>
+      <p>
+        <img class="decoration decoration--kabuto" src="{{ "assets/img/kabuto.png" | relURL }}" alt="Japanese kabuto helmet with gold horns" width="1136" height="941" decoding="async" loading="lazy">
+        And because the store is just markdown on disk, Egghead isn't
+        the only tool that can read it. Open the folder in Obsidian.
+        Commit it to <code>git</code>. Sync it with iCloud.
+        <code>grep</code> through it from the terminal. Edit a record
+        in <code>vim</code>. Many doors, one store.
+      </p>
     </div>
   </section>
 
   {{/* ───────────── § 5 — FURTHER READING ───────────── */}}
   <section class="bibliography" aria-labelledby="head-biblio">
-    <img class="decoration decoration--greek-sphinx" src="{{ "assets/img/greek-sphinx.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
-    <img class="decoration decoration--kabuto" src="{{ "assets/img/kabuto.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
+    <img class="decoration decoration--artemis" src="{{ "assets/img/artemis-ii.png" | relURL }}" alt="NASA Artemis II rocket on the launchpad" width="582" height="1103" decoding="async" loading="lazy">
 
     <h2 id="head-biblio" class="section-head">
       <span class="section-head__num">§ 5</span>
@@ -199,13 +188,13 @@
       <li>
         <a href="{{ "guides/" | relURL }}">
           <span class="biblio__title">Guides.</span>
-          <span class="biblio__desc">Narrative walkthroughs: getting started, writing agents, consulting the ensemble.</span>
+          <span class="biblio__desc">Getting started, writing an agent, consulting the room. The hands-on walkthroughs.</span>
         </a>
       </li>
       <li>
         <a href="{{ "reference/" | relURL }}">
           <span class="biblio__title">Reference.</span>
-          <span class="biblio__desc">Generated module documentation. The public API surface of the <code>Egghead</code> module.</span>
+          <span class="biblio__desc">Generated module documentation &mdash; the public API surface of the <code>Egghead</code> module.</span>
         </a>
       </li>
       <li>
@@ -224,15 +213,16 @@
 
   {{/* ───────────── COLOPHON ───────────── */}}
   <footer class="colophon">
-    <img class="decoration decoration--sphinx" src="{{ "assets/img/great-sphinx.png" | relURL }}" alt="" aria-hidden="true" loading="lazy">
     <div class="colophon__rule" aria-hidden="true">
       <span class="rule rule--thin"></span>
     </div>
 
-    <p class="colophon__issue">Vol. <span class="roman">I</span> · No. <span class="roman">1</span> · Anno MMXXVI</p>
     <p class="colophon__meta">
-      Egghead &middot; AGPL-3.0-or-later &middot;
-      <a href="{{ .Site.Params.githubURL }}">repository</a>
+      Egghead · MMXXVI · &copy; <a href="https://wunschwerks.com">Wunsch Werks LLC</a>
+    </p>
+    <p class="colophon__license">
+      Licensed under the GNU Affero General Public License.
+      <a href="{{ .Site.Params.githubURL }}">Source</a>.
     </p>
   </footer>
 

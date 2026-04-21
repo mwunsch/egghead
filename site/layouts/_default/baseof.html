@@ -8,6 +8,16 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  {{ if .IsHome }}
+  {{/* Preload above-the-fold decorations so shape-outside has the
+       alpha ready at first paint. Without this, text wraps around
+       the rectangular bounding box and snaps to the traced silhouette
+       after the image decodes. */}}
+  <link rel="preload" as="image" href="{{ "assets/img/chronometer.png" | relURL }}">
+  <link rel="preload" as="image" href="{{ "assets/img/astrolabe.png" | relURL }}">
+  <link rel="preload" as="image" href="{{ "assets/img/voltaire.png" | relURL }}">
+  {{ end }}
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..900;1,6..96,400..900&family=Source+Serif+4:ital,opsz,wght@0,8..60,300..900;1,8..60,300..900&family=Archivo+Narrow:ital,wght@0,400..700;1,400..700&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap">
   <link rel="stylesheet" href="{{ "assets/css/site.css" | relURL }}">
 </head>

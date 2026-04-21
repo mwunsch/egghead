@@ -424,21 +424,22 @@ main { display: block; }
 .prose p + p { text-indent: 1.6em; }
 .prose__lede { text-indent: 0 !important; }
 
-/* Drop cap */
+/* Drop cap + first-word sans treatment (DK Eyewitness opener) */
 .dropcap {
   float: left;
   font-family: var(--serif-display);
   font-variation-settings: "opsz" 96, "wght" 600;
-  font-size: clamp(3em, 9vw, 5em);
+  font-size: clamp(3em, 8.5vw, 4.75em);
   line-height: 0.82;
-  margin: 0.08em 0.12em 0 -0.03em;
+  margin: 0.08em 0.15em 0 -0.03em;
   color: var(--ink);
 }
 .dropcap__follow {
-  font-variant-caps: small-caps;
-  font-feature-settings: "smcp" 1, "c2sc" 1;
-  letter-spacing: 0.08em;
-  font-weight: 500;
+  font-family: var(--sans-label);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  font-size: 0.88em;
 }
 
 /* =============================================================

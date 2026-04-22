@@ -22,8 +22,12 @@ defmodule Egghead.Node do
   At startup, every egghead process that needs the app:
   1. Checks explicit config for a known server (user intent wins).
   2. Queries epmd for a local `egghead_server` node.
-  3. If found, connects → becomes a client.
-  4. If not found → starts as `egghead_server`, registers with epmd.
+  3. If found, verifies the remote version matches the local build; on
+     mismatch, refuses to connect and falls back to standalone. This
+     catches the case where a stale MCP server is still running from
+     an earlier commit while a newer binary tries to become a client.
+  4. If versions match, connects → becomes a client.
+  5. If not found → starts as `egghead_server`, registers with epmd.
   """
 
   require Logger
@@ -174,9 +178,27 @@ defmodule Egghead.Node do
     case Node.start(client_name, :shortnames) do
       {:ok, _pid} ->
         if Node.connect(node_name) do
-          :persistent_term.put(@persistent_term_key, node_name)
-          Logger.info("Connected to Egghead server: #{node_name}")
-          :connected
+          case version_check(node_name) do
+            :ok ->
+              :persistent_term.put(@persistent_term_key, node_name)
+              Logger.info("Connected to Egghead server: #{node_name}")
+              :connected
+
+            {:mismatch, remote, local} ->
+              Logger.warning("""
+              Version mismatch with Egghead server at #{node_name}:
+                remote: #{remote}
+                local:  #{local}
+              Refusing to connect; starting standalone.
+
+              A stale `egghead mcp` server is likely running from an
+              earlier commit. Stop it (`pkill -f 'egghead mcp'`) and
+              retry if you want this process to share its state.
+              """)
+
+              Node.stop()
+              :standalone
+          end
         else
           Logger.info("Server node #{node_name} unreachable, starting standalone")
           Node.stop()
@@ -186,6 +208,33 @@ defmodule Egghead.Node do
       {:error, _reason} ->
         Logger.info("Could not start client node, starting standalone")
         :standalone
+    end
+  end
+
+  # Compare our compiled `:egghead` app version against the remote's.
+  # Uses `Application.spec/2` on both sides — an OTP primitive that
+  # works regardless of whether the remote has any Egghead module we
+  # might have renamed. RPC timeout is short: the handshake should
+  # complete in milliseconds, and a slow reply is itself a red flag.
+  defp version_check(node_name) do
+    local = local_version()
+    remote = remote_version(node_name)
+
+    if remote == local, do: :ok, else: {:mismatch, remote, local}
+  end
+
+  defp local_version do
+    case Application.spec(:egghead, :vsn) do
+      nil -> "unknown"
+      vsn -> to_string(vsn)
+    end
+  end
+
+  defp remote_version(node_name) do
+    case :rpc.call(node_name, Application, :spec, [:egghead, :vsn], 2_000) do
+      {:badrpc, _} -> "unknown"
+      nil -> "unknown"
+      vsn -> to_string(vsn)
     end
   end
 

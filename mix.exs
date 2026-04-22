@@ -173,18 +173,30 @@ defmodule Egghead.MixProject do
   @zig_target :host
 
   # CalVer + short git SHA. Computed at compile time:
-  #   2026.4.14+61d171a  (release build from a commit)
-  #   2026.4.14+dirty    (release build from a dirty tree)
-  #   0.0.0+nogit        (no git available — shouldn't happen)
+  #   2026.4.14+61d171a       (clean tree at a commit)
+  #   2026.4.14+dirty         (dirty tree, dev build)
+  #   2026.4.14+dirty.1713... (dirty tree, release build — epoch suffix busts
+  #                            Burrito's version-keyed unpack cache)
+  #   0.0.0+nogit             (no git available — shouldn't happen)
   #
-  # Every commit produces a new version string, which is exactly what
-  # Burrito needs: it keys its on-disk unpack cache on the version,
-  # so a fresh version forces a clean unpack. Zero-padding is avoided
-  # (2026.4.14, not 2026.04.14) so Version.parse/1 still accepts it.
+  # Burrito keys its on-disk unpack cache on the version, so a fresh
+  # version forces a clean unpack. Two dirty release builds at the
+  # same CalVer+SHA would otherwise share a cache dir and the launcher
+  # would run the first build's code. Dev builds keep a plain +dirty
+  # so two local invocations (e.g. `mix egghead mcp` and `bin/egghead`)
+  # see matching versions and can cluster via Egghead.Node. Zero-padding
+  # is avoided (2026.4.14, not 2026.04.14) so Version.parse/1 accepts it.
   @version (case System.cmd("git", ["rev-parse", "--short=7", "HEAD"], stderr_to_stdout: true) do
               {sha, 0} ->
                 {out, _} = System.cmd("git", ["status", "--porcelain"], stderr_to_stdout: true)
-                suffix = if String.trim(out) == "", do: String.trim(sha), else: "dirty"
+
+                suffix =
+                  cond do
+                    String.trim(out) == "" -> String.trim(sha)
+                    Mix.env() == :prod -> "dirty.#{System.os_time(:second)}"
+                    true -> "dirty"
+                  end
+
                 today = Date.utc_today()
                 "#{today.year}.#{today.month}.#{today.day}+#{suffix}"
 

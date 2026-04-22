@@ -21,13 +21,13 @@
 
   {{/* ───────────── INSTALL ───────────── */}}
   <aside class="install">
-    <img class="decoration decoration--chronometer" src="{{ "assets/img/chronometer.png" | relURL }}" alt="Marine chronometer in a mahogany case" width="1239" height="1499" decoding="async">
     <p class="install__label">Install</p>
     <pre class="install__cmd"><code>curl -fsSL {{ "install.sh" | absURL }} | sh</code></pre>
     <p class="install__note">Then <code>egghead init</code> to pick a model and a home for your notes.</p>
+    <img class="decoration decoration--chronometer" src="{{ "assets/img/chronometer.png" | relURL }}" alt="Marine chronometer in a mahogany case" width="1239" height="1499" decoding="async">
   </aside>
 
-  {{/* ───────────── § 1 — YOUR KNOWLEDGE BASE ───────────── */}}
+  {{/* ───────────── § 1 — A KNOWLEDGE BASE ───────────── */}}
   <section class="feature" aria-labelledby="head-kb">
     <figure class="feature__figure">
       <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming: TUI records mode"></div>
@@ -37,60 +37,50 @@
     <div class="feature__body">
       <h2 id="head-kb" class="section-head">
         <span class="section-head__num">§ 1</span>
-        <span class="section-head__text">Your Knowledge Base</span>
+        <span class="section-head__text">A Knowledge Base</span>
       </h2>
 
       <p>
-        <span class="dropcap">E</span><span class="dropcap__follow">gghead is your notes</span>
-        plus a chat room full of AI friends &mdash; all living in the
-        same folder. The notes are plain markdown files you own. The
-        friends are markdown too, one file per agent. When you want to
-        think out loud, you call them into a shared transcript and
-        they chime in. The notes come first.
+        <span class="dropcap">E</span><span class="dropcap__follow">gghead is a plain-text record store</span>
+        at its most basic. An interface for browsing and editing a folder full of plain text files &mdash;
+        Markdown preferably. You own these records. Create a knowledge graph by using a
+        <code>[[wikilink]]</code> to link notes to each other, and browse them through
+        <a href="https://obsidian.md" target="_blank">Obsidian</a>, read them in your text editor,
+        <code>rsync</code> it to where you&rsquo;d like, or use Egghead&rsquo;s
+        <a href="https://notational.net" target="_blank"><em>Notational Velocity</em></a>-inspired
+        Terminal User Interface. In Egghead, your notes come first.
       </p>
 
       <p>
         <img class="decoration decoration--astrolabe" src="{{ "assets/img/astrolabe.png" | relURL }}" alt="Medieval Islamic brass astrolabe" width="1563" height="1600" decoding="async">
-        Jot an idea. Link it to another with <code>[[double brackets]]</code>.
-        Search a year of notes and find the right one instantly. Egghead
-        keeps everything as plain markdown &mdash; nothing proprietary,
-        no paid tier to get them back &mdash; and the terminal plays the
-        old Notational Velocity rhythm: type to find, type to create,
-        Tab to walk the link graph. Your library lives in
-        <code>~/.egghead/</code>. <code>rsync</code> it, <code>git</code>
-        it, read it in <code>vim</code>. If Egghead disappeared tomorrow,
-        the notes wouldn't.
+        But it&rsquo;s when you give a smidgen of metadata in the YAML frontmatter of your note
+        that things get a little more interesting. Most tools give you agents first and bolt a
+        knowledge base on later. Egghead inverts&nbsp;that.
       </p>
     </div>
   </section>
 
-  {{/* ───────────── § 2 — YOUR KNOWLEDGE'S FRIENDS ───────────── */}}
+  {{/* ───────────── § 2 — AND ITS FRIENDS ───────────── */}}
   <section class="feature feature--inverted" aria-labelledby="head-friends">
     <div class="feature__body">
       <h2 id="head-friends" class="section-head">
         <span class="section-head__num">§ 2</span>
-        <span class="section-head__text">Your Knowledge's Friends</span>
+        <span class="section-head__text">And Its Friends</span>
       </h2>
 
       <p>
         <img class="decoration decoration--greek-sphinx" src="{{ "assets/img/greek-sphinx.png" | relURL }}" alt="Polychrome reconstruction of an archaic Greek sphinx" width="2381" height="2994" decoding="async" loading="lazy">
-        <span class="dropcap">Y</span><span class="dropcap__follow">our notes have company</span>.
-        An agent in Egghead is just another record &mdash; frontmatter
-        picks the model, the body is the personality, the filename is
-        the handle. Drop a markdown file in your folder and a new
-        friend joins the group. Delete the file and they quietly leave.
-        No deploy step, no database migration, no API keys to shuffle.
+        <span class="dropcap">A</span><span class="dropcap__follow">n agent is just a note</span>.
+        Add <code>class: agent</code> to the frontmatter. That&apos;s it &mdash; you have an agent. Model in
+        the header, personality in the body, filename is the handle. Drop a markdown file in your folder and a
+        new friend joins the group. Delete the file and they quietly leave. No deploy step, no extra Python to wrangle.
       </p>
 
       <p>
-        Call them into a chat room and you get a shared transcript,
-        IRC-shaped. You talk; your friends read along, riff off each
-        other, <code>@</code>-mention, quote lines, argue about
-        something someone said two turns ago, and <code>/pass</code>
-        when they have nothing worth adding. It's a little like walking
-        into a well-lit AOL chat room in 1996, except every friend has
-        read everything you've ever written down and has a PhD in
-        something obscure.
+        You and your agents hang out in a chat room. Talk, riff, consult your notes, expand your knowledge base.
+        You can <code>@</code>-mention them, mute them if they&apos;re a little too chatty, or just watch them
+        argue with each other. You&apos;d think it was AOL in 1995 &mdash; except the more friends you invite,
+        the smarter the room gets.
       </p>
     </div>
 
@@ -100,11 +90,11 @@
     </figure>
   </section>
 
-  {{/* ───────────── § 3 — BETTER TOGETHER ───────────── */}}
+  {{/* ───────────── § 3 — ROLL YOUR OWN GREEK CHORUS ───────────── */}}
   <section class="essay" aria-labelledby="head-together">
     <h2 id="head-together" class="section-head">
       <span class="section-head__num">§ 3</span>
-      <span class="section-head__text">Better Together</span>
+      <span class="section-head__text">Roll Your Own Greek Chorus</span>
     </h2>
 
     <div class="essay__body prose">
@@ -112,34 +102,32 @@
         <img class="decoration decoration--next" src="{{ "assets/img/next-computer.png" | relURL }}" alt="NeXT Computer cube with keyboard" width="1126" height="944" decoding="async" loading="lazy">
         <span class="dropcap">A</span><span class="dropcap__follow">sk one agent</span>,
         get one answer. Ask three and they argue, correct each other,
-        cite sources, and come out with a better one. Peer review
+        cite sources, and come out with a better one. Five agents and you have yourself a research lab. Peer review
         beats self-review &mdash; as true for language models as
-        it's always been for journal papers. Egghead puts them in a
-        room, not a pipeline. Everyone sees every message. Nobody's
-        the dispatcher. The best-validated shape in the multi-agent
-        literature, built the way the research
-        <a href="{{ "guides/research-influences/" | relURL }}">actually
-        points</a>.
+        it&rsquo;s always been for journal papers. Egghead puts them in a
+        room, not a carefully constructed hierarchy. Everyone sees every message. Nobody&rsquo;s
+        the dispatcher. The best-validated shape in multi-agent
+        architectures, according to
+        <a href="{{ "guides/research-influences/" | relURL }}">the research</a>.
       </p>
 
       <p>
         <img class="decoration decoration--lamassu" src="{{ "assets/img/lammasu-2.png" | relURL }}" alt="Assyrian Lamassu &mdash; winged bull with a human head" width="746" height="625" decoding="async" loading="lazy">
-        When a conversation runs long, an agent can <code>/handoff</code>
-        to another, carrying a summary along. When nobody has more to
-        say, they <code>/pass</code> and the room falls quiet.
-        Everything said &mdash; every argument, every source checked,
-        every conclusion reached &mdash; gets persisted as a record in
-        the store. The reasoning outlives the session.
+        Run a <code>/handoff</code> to have an agent summarize its work and return fresh.
+        <code>/save</code> a chat room to persist its transcript as a record in your store; re-hydrate it into
+        a live room later with <code>/join</code>. And when an agent has nothing to add it keeps quiet rather
+        than eating your tokens to announce it. Every conversation ends up back in the store.
       </p>
     </div>
   </section>
 
   {{/* ───────────── INTERMEZZO ───────────── */}}
   <blockquote class="pull-quote" aria-hidden="true">
-    <p>I'm at the wiki. I'm at the chat room. I'm at the combination wiki/chat room.</p>
+    <img class="decoration decoration--socrates" src="{{ "assets/img/socrates.png" | relURL }}" alt="Bust of Socrates with an apple atop an open cranium, after the Louvre-type portrait" title="After the Louvre-type portrait of Socrates" width="1086" height="1448" decoding="async" loading="lazy">
+    <p>I&rsquo;m at the wiki. I&rsquo;m at the chat room. I&rsquo;m at the combination wiki/chat&nbsp;room.</p>
   </blockquote>
 
-  {{/* ───────────── § 4 — CONSULTING YOUR NTH BRAIN ───────────── */}}
+  {{/* ───────────── § 4 — N BRAINS IS BETTER THAN N-1 ───────────── */}}
   <section class="feature" aria-labelledby="head-consult">
     <figure class="feature__figure">
       <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming: web interface"></div>
@@ -149,23 +137,22 @@
     <div class="feature__body">
       <h2 id="head-consult" class="section-head">
         <span class="section-head__num">§ 4</span>
-        <span class="section-head__text">Consulting Your Second (or Nth&hellip;) Brain</span>
+        <span class="section-head__text">N brains is better than N-1</span>
       </h2>
 
       <p>
         <img class="decoration decoration--david" src="{{ "assets/img/david.png" | relURL }}" alt="Michelangelo's David, marble torso" width="896" height="1195" decoding="async" loading="lazy">
-        <span class="dropcap">S</span><span class="dropcap__follow">ame notes, same friends</span>,
-        however you want in. Open the TUI in a terminal and browse
-        records side by side with a chat room. Run
-        <code>egghead serve</code> and your browser gets an isomorphic
-        web version &mdash; same records, same rooms. Wire it into your
-        editor via <code>egghead mcp</code> and the whole brain is
-        available as tool calls inside your IDE.
+        <span class="dropcap">H</span><span class="dropcap__follow">ave knowledge, will travel.</span>
+        Bring your notes and their friends to wherever you work. Run <code>egghead</code> in a terminal and browse
+        records side by side with a chat room. Run <code>egghead serve</code> and explore your notes on the web
+        and chat alongside them &mdash; same records, same rooms. Wire it into your harness via
+        <code>egghead mcp</code> and the whole brain is available as tool calls inside your IDE: ask Claude Code
+        or Codex to consult with your agents directly.
       </p>
 
       <p>
         <img class="decoration decoration--kabuto" src="{{ "assets/img/kabuto.png" | relURL }}" alt="Japanese kabuto helmet with gold horns" width="1136" height="941" decoding="async" loading="lazy">
-        And because the store is just markdown on disk, Egghead isn't
+        And because the store is just your files on disk, Egghead isn&rsquo;t
         the only tool that can read it. Open the folder in Obsidian.
         Commit it to <code>git</code>. Sync it with iCloud.
         <code>grep</code> through it from the terminal. Edit a record

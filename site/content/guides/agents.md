@@ -58,6 +58,7 @@ Reasonable defaults fill in where you don't declare.
 | `model`             | LLM identifier (`provider/model` or bare)                               |
 | `provider`          | Optional provider, combined with `model` if both are set                |
 | `capabilities`      | Capability grants — see the [Capabilities guide]({{< ref "capabilities" >}}) |
+| `access`            | Shorthand (`r`, `w`, or `rw`) for common records-capability bundles; unions with `capabilities:` |
 | `tags`              | Activation hints; matched against incoming messages                     |
 | `thinking`          | `"enabled"` to request reasoning blocks from providers that support them |
 | `temperature`       | Float passed to the provider                                            |
@@ -79,6 +80,26 @@ You are a helpful assistant. Keep it tight.
 
 That's enough. The agent loads, inherits `records.read` as its
 default capability, and shows up in rosters.
+
+If you want this agent to write records too, the shortest path is
+the `access:` key — a chmod-flavored shorthand for the common
+records-family bundles:
+
+```yaml
+---
+id: agents/newbie
+class: agent
+model: anthropic/claude-haiku-4-5
+access: rw
+---
+```
+
+`r` gives read, `w` gives create + update, `rw` gives all three.
+Delete is deliberately not in the shortcut. See the
+[Capabilities guide]({{< ref "capabilities" >}}) for the mapping,
+how `access:` composes with an explicit `capabilities:` list, and
+why the shortcut dissolves into explicit grants the moment anyone
+widens the agent through `egghead agents grant`.
 
 ## Model resolution
 
@@ -136,17 +157,20 @@ activation mechanics.
 
 ## Capabilities
 
-The `capabilities:` list declares what tools the agent can use. It's
-the entire authority surface. An agent with no capabilities list
-inherits `records.read` and can't do anything destructive.
+The `capabilities:` list (and the `access:` shortcut) declares what
+tools the agent can use. It's the entire authority surface. An agent
+with neither key set inherits `records.read` — useful enough to
+inspect the store, safe enough to drop into any room.
 
-Capabilities are the main topic of its own
+Capabilities are the main topic of their own
 [guide]({{< ref "capabilities" >}}) — read that one next if you're
 authoring agents that need more than read access.
 
-Short version: grants are `resource.verb` pairs with optional scope,
-widening is a human edit (no runtime prompts), and attenuation
-(agents granting each other) is enforced as subset-only.
+Short version: grants are `resource.verb` pairs with optional scope;
+the `access:` shorthand (`r`, `w`, `rw`) covers the common records
+bundles without spelling each verb out; widening is a human edit
+(no runtime prompts); and attenuation (agents granting each other)
+is enforced as subset-only.
 
 ## The built-in Index agent
 
@@ -199,6 +223,14 @@ Chat rooms are the persistence story; if you want the conversation
 to survive, `/save` it as a
 [transcript]({{< ref "record-classes" >}}).
 
+Sessions are also independently disposable. `/kick <agent>` in a
+room evicts the agent and stops that room's session — its slot is
+returned, its history wiped. The agent process keeps serving any
+other rooms it's in. If you re-invite later, a fresh session spins
+up and rehydrates from the room's current transcript, the same way
+a brand-new join would. See [Chat rooms]({{< ref "chat-rooms" >}})
+for the full roster vocabulary (`/invite`, `/kick`, `/whois`).
+
 ## Context threshold and handoff
 
 The session tracks `current_context_tokens` from the last exchange
@@ -250,6 +282,21 @@ Egghead.Agent.Wizard.create(
 Returns `{:ok, record}` or `{:error, errors}`. Slug and `agents/`
 prefix are auto-derived from the name if you don't specify `id`.
 
+`:access` works here too, and composes with `:capabilities`:
+
+```elixir
+Egghead.Agent.Wizard.create(
+  name: "Scribe",
+  model: "anthropic/claude-haiku-4-5",
+  access: "rw",
+  instructions: "You are Scribe..."
+)
+```
+
+If you omit both `:capabilities` and `:access`, the key is left out
+of the written frontmatter and the load-time default (`records.read`)
+applies.
+
 ### Just write a file
 
 Drop a record with `class: agent` in your records directory. Same
@@ -275,6 +322,13 @@ Egghead.list_agents()   # [%{id, name, model, capabilities, usage, ...}]
 The usage fields tell you how much context the agent has accumulated
 and when handoff is likely to trigger. Useful during longer sessions
 to know who's getting full.
+
+From inside a chat room, `/whois <agent>` is the conversational form
+— a system notice with model, capabilities, and the rooms the agent
+is currently joined to, plus a `[[<id>]]` wikilink to the source
+record. The picker (`/whois ` then space) lists every agent the
+system knows about, including those whose record exists but whose
+process isn't running yet.
 
 ## Prompting 1:1
 

@@ -215,6 +215,46 @@ right move is usually a
 [capability narrow]({{< ref "capabilities" >}}) or a
 `disposition:` edit on the agent record itself, not a mute.
 
+## Roster: `/invite`, `/kick`, `/whois`
+
+Mute silences. Roster commands change who's actually present.
+
+```
+/invite kiwi        # bring Kiwi into this room (starts the process if needed)
+/kick kiwi          # evict Kiwi from this room
+/whois kiwi         # model, capabilities, rooms-joined
+```
+
+All three open a picker if you stop after the space — `/invite ` lists
+agents who aren't here yet, `/kick ` lists agents who are, `/whois `
+lists every known agent (running or just present as a record).
+
+`/invite` reads the agent record (from `agents/<name>.md` or wherever
+your store keeps it), starts the process if it isn't already running,
+and joins it to the room. The agent appears in the sidebar and starts
+participating on the next activation pass. Inviting an agent that's
+already here is a no-op with a friendly notice.
+
+`/kick` is distinct from `/mute` in one important way: kick clears
+the agent's per-room session. The session is the LLM-side conversation
+history the agent holds for this room — every turn, every tool call,
+every token spent. Mute leaves that book on the shelf; kick shreds
+it. Re-invite later and the agent rebuilds from the current room
+transcript, with no recollection of what was said before the kick.
+The agent process itself keeps running for any other rooms it's in.
+
+`/kick` refuses to remove the last agent from the default room. The
+default room is reserved as a fallback chat surface; it always has
+at least one inhabitant.
+
+`/whois` is read-only. It prints a system notice with the agent's
+model, the capability grants it holds, and every live room it's
+currently joined to. If the agent is backed by a record in your
+store, `/whois` includes a `[[agents/<id>]]` wikilink — Tab to it in
+records mode to jump to the source. The built-in Index agent is
+marked `(built-in — no backing record)` until you shadow it with
+your own `id: index` record.
+
 ## Handoff: `/handoff`
 
 Agents have context windows. When one fills up, you have a choice:
@@ -280,6 +320,11 @@ running at once, each with its own roster, transcript, and budget:
 /drop               # stop the current room, auto-saves
 /drop --no-save     # stop without saving
 ```
+
+Within a room, the participant set is yours to shape. Use `/invite`
+and `/kick` (above) for membership; `/mute` and `/unmute` for
+silence without eviction; `/whois` to inspect anyone the room has
+opinions about.
 
 `/drop` is reversible by default — the transcript is saved, so
 rejoining later resumes.

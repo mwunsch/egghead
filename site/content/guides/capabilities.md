@@ -147,12 +147,87 @@ Capabilities are inert until the record is loaded. Widening them is a
 directory is version-controlled. There is no "always allow" prompt at
 call time. This is intentional: the ratchet is the review.
 
+### Useful by default
+
+An agent record with no `capabilities:` key at all — and no `access:`
+either, introduced below — loads with `records.read` as its only
+grant. The principle: a fresh agent can inspect the store (find other
+records, cite prior work), but nothing else. That's enough to be
+useful in a room without being dangerous.
+
+A zero-authority agent takes an explicit declaration — `capabilities: []`
+and the load-time default is suppressed. The agent loads, shows up
+in rosters, and can't do anything but talk. Useful occasionally (a
+persona whose only job is to react in prose), but it's the deliberate
+case, not the default.
+
+### The `access:` shortcut
+
+For the common `records.*` bundles, `access:` is a chmod-flavored
+shorthand. Three values, nothing else:
+
+| `access:` | Expands to                                              |
+|-----------|---------------------------------------------------------|
+| `r`       | `records.read`                                          |
+| `w`       | `records.create`, `records.update`                      |
+| `rw`      | `records.read`, `records.create`, `records.update`      |
+
+```yaml
+---
+id: agents/scribe
+class: agent
+model: anthropic/claude-haiku-4-5
+access: rw
+---
+
+# Scribe
+
+You are Scribe. You write down what gets said...
+```
+
+Three things to know about it:
+
+**It's sugar, not a new primitive.** At load time, `access:` is
+expanded into real capability grants before anything else sees it.
+The catalog, the attenuation check, the denial renderer — all of
+them work with the expanded form. Nothing downstream knows the
+shortcut exists.
+
+**It unions with explicit `capabilities:`.** Write both, they combine
+(deduped). The shortcut covers the records family; everything else —
+scoped grants, external resources, agent verbs — still goes through
+the full `capabilities:` list.
+
+```yaml
+access: r
+capabilities:
+  - net.get:
+      hosts: ["api.github.com"]
+```
+
+**`records.delete` is deliberately excluded.** The catalog flags
+deletion `:high` risk; shortcuts should never bundle risky verbs.
+If you want a destructive agent, write `capabilities: [records.delete]`
+explicitly — the extra keystrokes are the review.
+
+A `w` without `r` is not a mistake. Write-blind agents — drop-boxes,
+ingestion workers, crash reporters, producer-only pipelines — are a
+real pattern, not a typo. Unix `w` on a directory has meant "can add
+entries without reading the listing" since the 1970s. An agent that
+can file reports but can't see other agents' reports is a
+compartmentalization boundary, not a broken configuration.
+
 ## Attenuation — how agents grant other agents
 
 The heaviest capability in the catalog is `agent.grant`. An agent that
-holds it can write the `capabilities:` field on other agent records
-(through `create_record` or `update_record`). Two rules keep this from
-turning into a capability escape:
+holds it can write the `capabilities:` or `access:` field on other
+agent records (through `create_record` or `update_record`). Both keys
+route through the same check: `access:` is expanded into its
+capability set first, unioned with any explicit `capabilities:` list,
+and the *union* is what attenuation validates. The shortcut cannot be
+used to slip a grant past the granter's authority.
+
+Two rules keep this from turning into a capability escape:
 
 **Self-modification is always denied.** An agent cannot use
 `agent.grant` to widen itself, regardless of which grants it holds.
@@ -187,6 +262,27 @@ egghead agents revoke scout records.update
 
 `egghead agents grant <agent-id>` with no spec opens an interactive
 picker over the catalog, sorted low-risk first.
+
+### Grant, revoke, and the `access:` shortcut
+
+When you `grant` or `revoke` on an agent declared with `access:`, the
+CLI dissolves the shortcut: the record is rewritten with an explicit
+`capabilities:` list covering the unified set (access-expanded plus
+whatever was already there, plus or minus your change) and the
+`access:` key is removed. The contract is that the frontmatter on
+disk always reflects the agent's real authority — you never see
+`access: rw` sitting next to an out-of-sync `capabilities:` list.
+
+Shortcut-only agents that you don't touch with tooling keep their
+shorthand indefinitely. The dissolution fires only when you mutate.
+
+The same dissolution applies when agents grant each other via
+`create_record` / `update_record` — a write that touches
+`capabilities:` or `access:` on an agent record always lands as
+explicit `capabilities:` with no `access:` key. This also closes the
+escalation hole where an agent with `agent.update` (but not
+`agent.grant`) might otherwise write `access: rw` to widen another
+agent silently.
 
 ## The built-in Index agent
 

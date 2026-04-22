@@ -125,18 +125,18 @@ main { display: block; }
 
 .decoration--astrolabe {
   float: right;
-  width: clamp(3.5rem, 17vw, 14rem);
+  width: clamp(9rem, 17vw, 14rem);
   shape-outside: url("../img/astrolabe.png");
   shape-margin: 1.25rem;
   shape-image-threshold: 0.5;
-  margin: 0 0 1em 1.25em;
+  margin: -1.5em 0 1em 1.25em;
 }
 
 /* Chronometer lives in the install grid; rules in the install block. */
 
 .decoration--greek-sphinx {
   float: right;
-  width: clamp(3.5rem, 15vw, 13rem);
+  width: clamp(12rem, 15vw, 13rem);
   shape-outside: url("../img/greek-sphinx.png");
   shape-margin: 1.25rem;
   shape-image-threshold: 0.5;
@@ -146,25 +146,27 @@ main { display: block; }
 
 .decoration--next {
   float: left;
-  width: clamp(4rem, 18vw, 15rem);
+  width: clamp(10rem, 18vw, 15rem);
   shape-outside: url("../img/next-computer.png");
   shape-margin: 1.25rem;
   shape-image-threshold: 0.5;
-  margin: 0.1em 1.25em 1em 0;
+  margin: 0.1em 1.25em 1em -6em;
 }
 
 .decoration--artemis {
   float: right;
-  width: clamp(2.75rem, 11vw, 9.5rem);
+  width: clamp(10rem, 11vw, 13rem);
   shape-outside: url("../img/artemis-ii.png");
   shape-margin: 1.25rem;
   shape-image-threshold: 0.5;
   margin: 0 0 1em 1.25em;
+  position: relative;
+  z-index: 10;
 }
 
 .decoration--david {
   float: right;
-  width: clamp(3.5rem, 13vw, 11rem);
+  width: clamp(9rem, 13vw, 11rem);
   shape-outside: url("../img/david.png");
   shape-margin: 1.25rem;
   shape-image-threshold: 0.5;
@@ -175,23 +177,56 @@ main { display: block; }
 
 .decoration--lamassu {
   float: right;
-  width: clamp(4rem, 18vw, 15rem);
+  width: clamp(11rem, 18vw, 15rem);
   shape-outside: url("../img/lammasu-2.png");
   shape-margin: 1.25rem;
   shape-image-threshold: 0.5;
-  margin: 0 0 1em 1.25em;
+  margin: 0 -5em 1em 1.25em;
   filter: drop-shadow(0 5px 6px rgba(17, 17, 17, 0.24))
           drop-shadow(0 1px 1px rgba(17, 17, 17, 0.18))
           sepia(0.1);
 }
 
+@media (max-width: 860px) {
+    .decoration--next { margin-left: 0; }
+    .decoration--lamassu { margin-right: 0; }
+}
+
 .decoration--kabuto {
   float: left;
-  width: clamp(3rem, 10vw, 9rem);
+  width: clamp(7rem, 10vw, 9rem);
   shape-outside: url("../img/kabuto.png");
   shape-margin: 1.25rem;
   shape-image-threshold: 0.5;
   margin: 0.1em 1.25em 1em 0;
+}
+
+.decoration--socrates {
+  float: left;
+  width: clamp(11.5rem, 15vw, 15rem);
+  shape-outside: url("../img/socrates.png");
+  shape-margin: 0.75rem;
+  shape-image-threshold: 0.5;
+  margin: 0 1em 0.25em 0;
+  transform: scaleX(-1) rotate(12deg);
+}
+
+.decoration--davinci {
+  float: left;
+  width: clamp(10rem, 22vw, 17rem);
+  shape-outside: url("../img/davinci-flying-machine.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0.1em 1.25em 1em 0;
+}
+
+.decoration--mercator {
+  float: right;
+  width: clamp(8rem, 13vw, 11rem);
+  shape-outside: url("../img/mercator-celestial-globe.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 0 1em 1.25em;
 }
 
 /* ── Responsive: on narrow viewports (no shape-outside room),
@@ -605,6 +640,7 @@ main { display: block; }
   padding: 1rem 0 1rem 3rem;
   border-bottom: 0.5px solid var(--rule);
   position: relative;
+  z-index: 5;
 }
 .biblio-list li::before {
   content: counter(bib, upper-roman) ".";
@@ -671,10 +707,11 @@ main { display: block; }
 }
 .pull-quote p {
   margin: 0;
+  padding-top: 2.5rem;
   font-family: var(--serif-display);
   font-style: italic;
   font-variation-settings: "opsz" 14, "wght" 500;
-  font-size: clamp(1.25rem, 2.2vw + 0.4rem, 2.1rem);
+  font-size: clamp(1.5rem, 2.8vw + 0.4rem, 2.6rem);
   line-height: 1.3;
   color: var(--ink-soft);
 }

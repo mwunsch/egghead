@@ -45,6 +45,12 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "drop", description: "Drop the current room"},
     %{name: "mute", description: "Mute an agent (space opens picker)"},
     %{name: "unmute", description: "Unmute a muted agent (space opens picker)"},
+    %{name: "invite", description: "Invite an agent into this room (space opens picker)"},
+    %{name: "kick", description: "Evict an agent from this room (space opens picker)"},
+    %{
+      name: "whois",
+      description: "Show an agent's model, capabilities, rooms (space opens picker)"
+    },
     %{name: "tools", description: "Summary of tools available to agents"},
     %{name: "mcp", description: "Summary of MCP servers"},
     %{name: "leave", description: "Return to records (F1)"},
@@ -68,6 +74,9 @@ defmodule Egghead.TUI.Chat.Update do
     "drop" => :cmd_drop,
     "mute" => :cmd_mute,
     "unmute" => :cmd_unmute,
+    "invite" => :cmd_invite,
+    "kick" => :cmd_kick,
+    "whois" => :cmd_whois,
     "tools" => :cmd_tools,
     "mcp" => :cmd_mcp,
     "theme" => :cmd_theme,
@@ -542,7 +551,10 @@ defmodule Egghead.TUI.Chat.Update do
   @action_triggers %{
     "/mute " => :mute,
     "/unmute " => :unmute,
-    "/handoff " => :handoff
+    "/handoff " => :handoff,
+    "/invite " => :invite,
+    "/kick " => :kick,
+    "/whois " => :whois
   }
 
   # Resolve the trigger AND the candidate list in one pass so
@@ -574,18 +586,24 @@ defmodule Egghead.TUI.Chat.Update do
   defp action_title(:mute), do: "mute"
   defp action_title(:unmute), do: "unmute"
   defp action_title(:handoff), do: "handoff"
+  defp action_title(:invite), do: "invite"
+  defp action_title(:kick), do: "kick"
+  defp action_title(:whois), do: "whois"
 
   defp action_hint(:mute), do: "↑↓ select · enter mute · esc cancel"
   defp action_hint(:unmute), do: "↑↓ select · enter unmute · esc cancel"
   defp action_hint(:handoff), do: "↑↓ select · enter handoff · esc cancel"
+  defp action_hint(:invite), do: "↑↓ select · enter invite · esc cancel"
+  defp action_hint(:kick), do: "↑↓ select · enter kick · esc cancel"
+  defp action_hint(:whois), do: "↑↓ select · enter whois · esc cancel"
 
-  defp action_items(:mute, %Model{agents: agents}) do
-    Enum.map(agents, fn a -> %{id: a.id, label: a.name, hint: a.id} end)
+  defp action_items(:mute, %Model{agents: agents} = model) do
+    agents |> Enum.map(& &1.id) |> agent_picker_items(model)
   end
 
   defp action_items(:unmute, %Model{room_id: nil}), do: []
 
-  defp action_items(:unmute, %Model{room_id: room_id, agents: agents}) do
+  defp action_items(:unmute, %Model{room_id: room_id, agents: agents} = model) do
     muted =
       try do
         Egghead.Chat.Room.muted(room_id) |> MapSet.new()
@@ -597,11 +615,101 @@ defmodule Egghead.TUI.Chat.Update do
 
     agents
     |> Enum.filter(&MapSet.member?(muted, &1.id))
-    |> Enum.map(fn a -> %{id: a.id, label: a.name, hint: a.id} end)
+    |> Enum.map(& &1.id)
+    |> agent_picker_items(model)
   end
 
-  defp action_items(:handoff, %Model{agents: agents}) do
-    Enum.map(agents, fn a -> %{id: a.id, label: a.name, hint: a.id} end)
+  defp action_items(:handoff, %Model{agents: agents} = model) do
+    agents |> Enum.map(& &1.id) |> agent_picker_items(model)
+  end
+
+  defp action_items(:invite, %Model{room_id: nil}), do: []
+
+  defp action_items(:invite, %Model{room_id: room_id} = model) do
+    in_room = room_member_set(room_id)
+
+    all_known_agent_ids()
+    |> Enum.reject(&MapSet.member?(in_room, &1))
+    |> Enum.sort()
+    |> agent_picker_items(model)
+  end
+
+  defp action_items(:kick, %Model{room_id: nil}), do: []
+
+  defp action_items(:kick, %Model{room_id: room_id} = model) do
+    room_id
+    |> room_member_set()
+    |> MapSet.to_list()
+    |> Enum.sort()
+    |> agent_picker_items(model)
+  end
+
+  defp action_items(:whois, model) do
+    all_known_agent_ids()
+    |> Enum.sort()
+    |> agent_picker_items(model)
+  end
+
+  # Build SelectList items for an agent-id list. Display label
+  # prefers the running agent's name (from the model's presence
+  # list), falls back to the agent record's title, and as a last
+  # resort uses the id verbatim. Hint is always the id, so the
+  # picker reads as `Title  agents/id` — same shape as /mute and
+  # /handoff have always had.
+  defp agent_picker_items(ids, %Model{agents: agents}) do
+    presence_by_id = Map.new(agents, fn a -> {a.id, a.name} end)
+    Enum.map(ids, fn id -> agent_picker_item(id, presence_by_id) end)
+  end
+
+  defp agent_picker_item(id, presence_by_id) do
+    label =
+      case Map.get(presence_by_id, id) do
+        name when is_binary(name) and name != "" -> name
+        _ -> agent_record_title(id) || id
+      end
+
+    %{id: id, label: label, hint: id}
+  end
+
+  defp agent_record_title(id) do
+    case safe_get_record(id) do
+      {:ok, %{title: title}} when is_binary(title) and title != "" -> title
+      _ -> nil
+    end
+  end
+
+  # Union of running agents and agent-class records, plus the
+  # built-in "index". Used by /invite and /whois pickers — both
+  # need to surface agents whose record exists but whose process
+  # may or may not be running yet.
+  defp all_known_agent_ids do
+    running =
+      try do
+        Egghead.list_agents() |> Enum.map(& &1.id)
+      rescue
+        _ -> []
+      catch
+        _, _ -> []
+      end
+
+    records =
+      try do
+        Egghead.search_by_class(:agent) |> Enum.map(& &1.id)
+      rescue
+        _ -> []
+      catch
+        _, _ -> []
+      end
+
+    Enum.uniq(["index" | running ++ records])
+  end
+
+  defp room_member_set(room_id) do
+    try do
+      room_id |> Egghead.Chat.Room.get_state() |> Map.get(:agents, []) |> MapSet.new()
+    catch
+      _, _ -> MapSet.new()
+    end
   end
 
   # ---- completion acceptance ---------------------------------------------
@@ -1074,10 +1182,59 @@ defmodule Egghead.TUI.Chat.Update do
     end
   end
 
+  defp apply_command(:cmd_invite, arg, model) do
+    target = String.trim(arg)
+
+    cond do
+      target == "" ->
+        msg = Entry.system("Usage: /invite <agent-id>")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      model.room_id == nil ->
+        msg = Entry.system("/invite requires an active room")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      MapSet.member?(room_member_set(model.room_id), target) ->
+        msg = Entry.system("#{target} is already in this room.")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      true ->
+        do_invite(target, model)
+    end
+  end
+
+  defp apply_command(:cmd_kick, arg, model) do
+    target = String.trim(arg)
+
+    cond do
+      target == "" ->
+        msg = Entry.system("Usage: /kick <agent-id>")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      model.room_id == nil ->
+        msg = Entry.system("/kick requires an active room")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      true ->
+        do_kick(target, model)
+    end
+  end
+
+  defp apply_command(:cmd_whois, arg, model) do
+    target = String.trim(arg)
+
+    if target == "" do
+      msg = Entry.system("Usage: /whois <agent-id>")
+      {Model.append_entry(Model.clear_input(model), msg), :none}
+    else
+      do_whois(target, model)
+    end
+  end
+
   defp apply_command(:cmd_help, _arg, model) do
     help_text = """
     Key bindings: ⏎ send │ ⇧⏎ newline │ @agent mention │ [[record]] link │ Tab accept
-    Commands: /save /copy /continue /handoff <agent> /join <room> /list /drop /mute /unmute /tools /mcp /leave /help /quit
+    Commands: /save /copy /continue /handoff <agent> /join <room> /list /drop /mute /unmute /invite /kick /whois /tools /mcp /leave /help /quit
     Navigation: F1 records │ F2 chat │ Esc dismiss
     Copy: hold Shift + drag to select text\
     """
@@ -1232,7 +1389,211 @@ defmodule Egghead.TUI.Chat.Update do
     {Model.append_entry(model, Entry.system("Handoff initiated for #{target}…")), cmd}
   end
 
+  defp dispatch_action(:invite, %{id: target}, %Model{room_id: room_id} = model)
+       when is_binary(room_id) do
+    cond do
+      MapSet.member?(room_member_set(room_id), target) ->
+        {Model.append_entry(model, Entry.system("#{target} is already in this room.")), :none}
+
+      true ->
+        do_invite(target, model)
+    end
+  end
+
+  defp dispatch_action(:kick, %{id: target}, %Model{room_id: room_id} = model)
+       when is_binary(room_id) do
+    do_kick(target, model)
+  end
+
+  defp dispatch_action(:whois, %{id: target}, model) do
+    do_whois(target, model)
+  end
+
   defp dispatch_action(_kind, _item, model), do: {model, :none}
+
+  # ---- /invite /kick /whois shared bodies ---------------------------------
+  #
+  # Picker dispatch and direct slash dispatch funnel into these so the
+  # behaviour stays identical regardless of how the user committed.
+
+  defp do_invite(agent_id, %Model{room_id: room_id} = model) do
+    case resolve_invite_record(agent_id) do
+      {:error, reason} ->
+        {Model.append_entry(Model.clear_input(model), Entry.system("/invite: #{reason}")), :none}
+
+      {:ok, record} ->
+        cmd =
+          exec_async(room_id, fn ->
+            ensure_agent_started(record)
+            Egghead.Chat.Room.join(room_id, agent_id)
+            # Coordinator only fires :agent_roster_changed on lifecycle
+            # events (`:started` etc). When invite reuses an
+            # already-running agent process, no lifecycle fires and the
+            # chat sidebar's `:agent_joined` handler is left with the
+            # id-as-placeholder name. Trigger the refresh ourselves so
+            # the sidebar pulls the real title from `list_agents/0`.
+            broadcast_roster_changed(room_id)
+            broadcast_system_notice(room_id, "#{agent_id} invited")
+          end)
+
+        {Model.clear_input(model), cmd}
+    end
+  end
+
+  defp do_kick(agent_id, %Model{room_id: room_id} = model) do
+    members = room_member_set(room_id)
+    default = Egghead.default_room()
+
+    cond do
+      not MapSet.member?(members, agent_id) ->
+        msg = Entry.system("#{agent_id} is not in this room.")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      room_id == default and MapSet.size(members) == 1 ->
+        msg = Entry.system("Cannot kick the last agent from the default room.")
+        {Model.append_entry(Model.clear_input(model), msg), :none}
+
+      true ->
+        cmd =
+          exec_async(room_id, fn ->
+            Egghead.Chat.Room.leave(room_id, agent_id)
+            _ = Egghead.Agent.drop_session(agent_id, room_id)
+            broadcast_system_notice(room_id, "#{agent_id} kicked")
+          end)
+
+        {Model.clear_input(model), cmd}
+    end
+  end
+
+  defp do_whois(agent_id, model) do
+    text = format_whois(agent_id)
+    {Model.append_entry(Model.clear_input(model), Entry.system(text)), :none}
+  end
+
+  # Resolve an /invite target to the record we'll start an agent from.
+  # "index" without a shadowing record falls back to the synthetic
+  # Egghead.Agent.Supervisor.default_agent/0.
+  defp resolve_invite_record(agent_id) do
+    case safe_get_record(agent_id) do
+      {:ok, %{class: :agent} = record} ->
+        {:ok, record}
+
+      {:ok, _other_class} ->
+        {:error, "#{agent_id} is not an agent record"}
+
+      {:error, :not_found} ->
+        if agent_id == "index" do
+          {:ok, Egghead.Agent.Supervisor.default_agent()}
+        else
+          {:error, "no agent record for #{agent_id}"}
+        end
+
+      {:error, reason} ->
+        {:error, "could not load #{agent_id}: #{inspect(reason)}"}
+    end
+  end
+
+  defp ensure_agent_started(record) do
+    name = Egghead.Agent.agent_name(record.id)
+
+    case GenServer.whereis(name) do
+      nil ->
+        case Egghead.Agent.Supervisor.start_agent(record) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, _reason} -> :ok
+        end
+
+      _pid ->
+        :ok
+    end
+  end
+
+  defp format_whois(agent_id) do
+    info = whois_info(agent_id)
+    record = whois_record(agent_id)
+    rooms = whois_rooms(agent_id)
+
+    header =
+      case record do
+        {:ok, _} -> "#{agent_id} — [[#{agent_id}]]"
+        :builtin -> "#{agent_id} (built-in — no backing record)"
+        :missing -> "#{agent_id} (no backing record)"
+      end
+
+    model_line =
+      case info do
+        %{model: m} when is_binary(m) and m != "" -> "  model: #{m}"
+        _ -> "  model: (not running)"
+      end
+
+    caps_line =
+      case info do
+        %{capabilities: caps} when is_list(caps) and caps != [] ->
+          "  caps: #{caps |> Enum.map(&Egghead.Capability.grant_to_spec/1) |> Enum.join(", ")}"
+
+        %{capabilities: _} ->
+          "  caps: (none)"
+
+        _ ->
+          "  caps: (not running)"
+      end
+
+    rooms_line =
+      case rooms do
+        [] -> "  rooms: (none)"
+        list -> "  rooms: #{Enum.join(list, ", ")}"
+      end
+
+    Enum.join([header, model_line, caps_line, rooms_line], "\n")
+  end
+
+  defp whois_info(agent_id) do
+    try do
+      Egghead.list_agents()
+      |> Enum.find(&(&1.id == agent_id))
+    rescue
+      _ -> nil
+    catch
+      _, _ -> nil
+    end
+  end
+
+  defp whois_record(agent_id) do
+    case safe_get_record(agent_id) do
+      {:ok, _} ->
+        {:ok, agent_id}
+
+      {:error, :not_found} ->
+        if agent_id == "index", do: :builtin, else: :missing
+
+      _ ->
+        if agent_id == "index", do: :builtin, else: :missing
+    end
+  end
+
+  defp safe_get_record(id) do
+    try do
+      Egghead.get_record(id)
+    rescue
+      _ -> {:error, :unavailable}
+    catch
+      _, _ -> {:error, :unavailable}
+    end
+  end
+
+  defp whois_rooms(agent_id) do
+    try do
+      Egghead.list_rooms()
+      |> Enum.filter(fn room_id ->
+        MapSet.member?(room_member_set(room_id), agent_id)
+      end)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
 
   # Fire a side-effectful function off the runtime process. The
   # `:exec` body spawns a supervised Task and returns immediately so
@@ -1265,6 +1626,16 @@ defmodule Egghead.TUI.Chat.Update do
       Egghead.PubSub,
       Egghead.Chat.Room.topic(room_id),
       {:system_notice, text}
+    )
+  end
+
+  defp broadcast_roster_changed(nil), do: :ok
+
+  defp broadcast_roster_changed(room_id) do
+    Phoenix.PubSub.broadcast(
+      Egghead.PubSub,
+      Egghead.Chat.Room.topic(room_id),
+      {:agent_roster_changed}
     )
   end
 

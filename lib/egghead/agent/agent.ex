@@ -118,6 +118,25 @@ defmodule Egghead.Agent do
   end
 
   @doc """
+  Drops the per-room session for `agent_id` in `room_id`. Stops the
+  Session GenServer (if any) and removes its entry from the agent's
+  sessions map. Used by `/kick` so a re-invited agent rebuilds its
+  LLM context against the current room transcript instead of resuming
+  with stale history.
+
+  Returns `:ok` whether or not a session was present.
+  """
+  @spec drop_session(String.t(), String.t()) :: :ok | {:error, :agent_not_found}
+  def drop_session(agent_id, room_id) when is_binary(room_id) do
+    name = agent_name(agent_id)
+
+    case whereis_node_aware(name) do
+      nil -> {:error, :agent_not_found}
+      _pid -> Egghead.Node.call(name, {:drop_session, room_id})
+    end
+  end
+
+  @doc """
   Lists all running agents.
   """
   @spec list_agents() :: [map()]
@@ -306,6 +325,25 @@ defmodule Egghead.Agent do
       pid ->
         forward_async(from, fn -> Session.save(pid) end)
         {:noreply, state}
+    end
+  end
+
+  def handle_call({:drop_session, room_id}, _from, state) do
+    case Map.pop(state.sessions, room_id) do
+      {nil, _} ->
+        {:reply, :ok, state}
+
+      {pid, sessions} ->
+        # Best-effort stop. The :DOWN handler also cleans the map, but
+        # popping eagerly avoids a race where a re-invite + prompt comes
+        # in before the monitor message is delivered.
+        try do
+          GenServer.stop(pid, :normal, 1_000)
+        catch
+          :exit, _ -> :ok
+        end
+
+        {:reply, :ok, %{state | sessions: sessions}}
     end
   end
 

@@ -139,6 +139,54 @@ defmodule Egghead.AgentTest do
       assert Agent.agent_name("test") == :egghead_agent_test
     end
 
+    test "drop_session stops the per-room session pid and removes the entry" do
+      record = %Record{
+        id: "drop-test",
+        title: "Drop Test",
+        class: :agent,
+        tags: ["agent"],
+        meta: %{},
+        body: "You are a drop-session test agent.",
+        source_path: "/tmp/drop-test.md"
+      }
+
+      {:ok, pid} = Agent.start_link(record)
+
+      # Inject a fake session for room "alpha". A bare GenServer that
+      # does nothing is enough — drop_session/2 only needs a stoppable pid.
+      {:ok, fake_session} = GenServer.start(Agent, record)
+      :sys.replace_state(pid, fn s -> %{s | sessions: %{"alpha" => fake_session}} end)
+      assert :sys.get_state(pid).sessions == %{"alpha" => fake_session}
+
+      assert :ok = GenServer.call(pid, {:drop_session, "alpha"})
+
+      assert :sys.get_state(pid).sessions == %{}
+      refute Process.alive?(fake_session)
+
+      GenServer.stop(pid)
+    end
+
+    test "drop_session is a no-op when the room has no session" do
+      record = %Record{
+        id: "drop-noop",
+        title: "Drop Noop",
+        class: :agent,
+        tags: ["agent"],
+        meta: %{},
+        body: "noop",
+        source_path: "/tmp/drop-noop.md"
+      }
+
+      {:ok, pid} = Agent.start_link(record)
+      assert :sys.get_state(pid).sessions == %{}
+
+      assert :ok = GenServer.call(pid, {:drop_session, "no-such-room"})
+
+      assert :sys.get_state(pid).sessions == %{}
+
+      GenServer.stop(pid)
+    end
+
     test "agent survives linked session exit" do
       record = %Record{
         id: "exit-test",

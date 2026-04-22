@@ -486,6 +486,78 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert match?({:exec, _}, cmd)
     end
 
+    test "/invite without arg shows usage" do
+      m = put_input(model(), "/invite")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "Usage"
+    end
+
+    test "/invite with no active room is rejected" do
+      m = put_input(model(room_id: nil), "/invite agents/alpha")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "active room"
+    end
+
+    test "/invite with an unknown / unreachable agent reports an error" do
+      # Egghead.get_record either returns :not_found or exits (no
+      # RecordStore in this test env). do_invite must surface an
+      # /invite-prefixed system notice either way and not fire :exec.
+      m = put_input(model(), "/invite agents/alpha")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "/invite:"
+    end
+
+    test "/kick without arg shows usage" do
+      m = put_input(model(), "/kick")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "Usage"
+    end
+
+    test "/kick with no active room is rejected" do
+      m = put_input(model(room_id: nil), "/kick agents/alpha")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "active room"
+    end
+
+    test "/kick of an agent not in the room is rejected" do
+      # In the test env room_member_set is empty, so any target is
+      # treated as "not in room" rather than firing the kick.
+      m = put_input(model(), "/kick agents/alpha")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "not in this room"
+    end
+
+    test "/whois without arg shows usage" do
+      m = put_input(model(), "/whois")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "Usage"
+    end
+
+    test "/whois of an unknown agent renders the no-record header and (not running) lines" do
+      m = put_input(model(), "/whois agents/alpha")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "agents/alpha"
+      assert text =~ "no backing record"
+      assert text =~ "model: (not running)"
+      assert text =~ "rooms:"
+    end
+
+    test "/whois of \"index\" without a shadowing record marks it built-in" do
+      m = put_input(model(), "/whois index")
+      {m, :none} = Update.update({:key, :enter}, m)
+      assert [%Entry{kind: :system, text: text}] = m.transcript
+      assert text =~ "built-in"
+      refute text =~ "[[index]]"
+    end
+
     test "unknown command appends error" do
       m = put_input(model(), "/nope")
       {m, :none} = Update.update({:key, :enter}, m)

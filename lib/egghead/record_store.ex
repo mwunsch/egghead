@@ -41,10 +41,21 @@ defmodule Egghead.RecordStore do
             records_dir: String.t(),
             skills_dir: String.t() | nil,
             watcher_pid: pid() | nil,
-            index: GenServer.server()
+            index: GenServer.server(),
+            last_fingerprints: %{String.t() => term()}
           }
 
-    defstruct records_dir: nil, skills_dir: nil, watcher_pid: nil, index: Index
+    # `last_fingerprints` keys a path to the `(mtime, size)` of the
+    # last file event we processed for it. macOS FSEvents fires
+    # twice per editor save (atomic write-then-rename); the second
+    # event has the same fingerprint as the first, so we use this
+    # map to skip the redundant reparse, reindex, agent restart,
+    # and reload narration.
+    defstruct records_dir: nil,
+              skills_dir: nil,
+              watcher_pid: nil,
+              index: Index,
+              last_fingerprints: %{}
   end
 
   # --- Public API ---
@@ -255,6 +266,7 @@ defmodule Egghead.RecordStore do
           case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
             {:ok, record} ->
               Index.upsert_record(state.index, record)
+              apply_agent_transition(state, classify_agent_transition(:none, record))
               broadcast_record_change(record.id)
               {:reply, {:ok, record}, state}
 
@@ -270,6 +282,7 @@ defmodule Egghead.RecordStore do
     case Index.get_record_meta(state.index, id) do
       {:ok, meta} ->
         path = meta.source_path
+        prev_lookup = {:ok, %{id: meta.id, class: Egghead.Record.parse_class(meta.class)}}
 
         case hydrate(path, state.records_dir) do
           {:ok, existing} ->
@@ -289,7 +302,7 @@ defmodule Egghead.RecordStore do
             case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
               {:ok, record} ->
                 Index.upsert_record(state.index, record)
-                maybe_restart_agent(record)
+                apply_agent_transition(state, classify_agent_transition(prev_lookup, record))
                 broadcast_record_change(record.id)
                 {:reply, {:ok, record}, state}
 
@@ -313,6 +326,7 @@ defmodule Egghead.RecordStore do
         rel = Path.relative_to(src_path, state.records_dir)
         trash_path = Path.join([state.records_dir, ".trash", rel])
         final_path = resolve_trash_collision(trash_path)
+        prev_lookup = {:ok, %{id: meta.id, class: Egghead.Record.parse_class(meta.class)}}
 
         case File.read(src_path) do
           {:ok, content} ->
@@ -322,6 +336,7 @@ defmodule Egghead.RecordStore do
               File.rm!(src_path)
               hydrate_cache_evict(src_path)
               Index.delete_by_path(state.index, src_path)
+              apply_agent_transition(state, classify_agent_transition(prev_lookup, nil))
               broadcast_record_change(id)
 
               # Cleanup now-empty intermediate dirs left behind by the move.
@@ -398,16 +413,18 @@ defmodule Egghead.RecordStore do
 
   @impl true
   def handle_info({:file_event, _pid, {path, _events}}, state) do
-    cond do
-      in_dir?(path, state.skills_dir) and skill_manifest?(path) ->
-        handle_skill_change(state, path)
+    state =
+      cond do
+        in_dir?(path, state.skills_dir) and skill_manifest?(path) ->
+          handle_skill_change(state, path)
+          state
 
-      in_dir?(path, state.records_dir) and record_file?(path, state.records_dir) ->
-        handle_file_change(state, path)
+        in_dir?(path, state.records_dir) and record_file?(path, state.records_dir) ->
+          handle_file_change(state, path)
 
-      true ->
-        :ok
-    end
+        true ->
+          state
+      end
 
     {:noreply, state}
   end
@@ -419,30 +436,58 @@ defmodule Egghead.RecordStore do
   # --- Private helpers ---
 
   defp handle_file_change(state, path) do
-    hydrate_cache_evict(path)
+    fingerprint = Parser.file_fingerprint(path)
+    last = Map.get(state.last_fingerprints, path)
 
-    if File.exists?(path) do
-      case File.read(path) do
-        {:ok, content} ->
-          case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
-            {:ok, record} ->
-              record = maybe_promote_to_skill(record)
-              Index.upsert_record(state.index, record)
-              maybe_restart_agent(record)
-              broadcast_record_change(record.id)
+    cond do
+      # Same (mtime, size) as the previously-processed event — this
+      # is the FSEvents-debounce no-op. Skip everything; the prior
+      # event already reindexed and broadcast for identical content.
+      fingerprint != nil and fingerprint == last ->
+        state
 
-            {:error, reason} ->
-              Logger.warning("Skipping #{path}: #{inspect(reason)}")
-          end
+      # File has gone away. Drop our fingerprint cache entry along
+      # with the index row so a future re-create at this path
+      # is correctly seen as new.
+      fingerprint == nil ->
+        do_handle_removal(state, path)
 
-        {:error, _} ->
-          :skip
-      end
-    else
-      Index.delete_by_path(state.index, path)
-      broadcast_record_change(nil)
-      sync_agents_async()
+      true ->
+        do_handle_change(state, path, fingerprint)
     end
+  end
+
+  defp do_handle_change(state, path, fingerprint) do
+    hydrate_cache_evict(path)
+    prev_lookup = Index.lookup_by_path(state.index, path)
+
+    case File.read(path) do
+      {:ok, content} ->
+        case Parser.parse(content, source_path: path, records_dir: state.records_dir) do
+          {:ok, record} ->
+            record = maybe_promote_to_skill(record)
+            Index.upsert_record(state.index, record)
+            apply_agent_transition(state, classify_agent_transition(prev_lookup, record))
+            broadcast_record_change(record.id)
+            %{state | last_fingerprints: Map.put(state.last_fingerprints, path, fingerprint)}
+
+          {:error, reason} ->
+            Logger.warning("Skipping #{path}: #{inspect(reason)}")
+            state
+        end
+
+      {:error, _} ->
+        state
+    end
+  end
+
+  defp do_handle_removal(state, path) do
+    hydrate_cache_evict(path)
+    prev_lookup = Index.lookup_by_path(state.index, path)
+    Index.delete_by_path(state.index, path)
+    apply_agent_transition(state, classify_agent_transition(prev_lookup, nil))
+    broadcast_record_change(nil)
+    %{state | last_fingerprints: Map.delete(state.last_fingerprints, path)}
   end
 
   # Source 3 of the skill vocabulary: records in records_dir matching
@@ -538,18 +583,110 @@ defmodule Egghead.RecordStore do
     end
   end
 
-  defp maybe_restart_agent(%{class: :agent} = record) do
-    if Process.whereis(Egghead.Agent.Supervisor) do
-      Task.start(fn -> Egghead.Agent.Supervisor.start_agent(record) end)
+  # Classify what an incoming write means for the agent-supervisor and
+  # for chat-room narration. Inputs:
+  #
+  # - `prev` — `Index.lookup_by_path/2` result for this path before the
+  #   write: `{:ok, %{id, class}}` if a row was there, `:none` otherwise.
+  # - `incoming` — the freshly-parsed `%Record{}`, or `nil` when the file
+  #   was removed.
+  #
+  # Returns one of `{:promoted | :reloaded | :renamed | :demoted | :removed, ...}`
+  # or `:noop` for the boring case (non-agent ↔ non-agent).
+  @doc false
+  def classify_agent_transition(prev, incoming) do
+    case {prev, incoming} do
+      {:none, %{class: :agent} = r} ->
+        {:promoted, r}
+
+      {{:ok, %{class: :agent, id: prev_id}}, nil} ->
+        {:removed, prev_id}
+
+      {{:ok, %{class: :agent, id: prev_id}}, %{class: :agent, id: prev_id} = r} ->
+        {:reloaded, r}
+
+      {{:ok, %{class: :agent, id: prev_id}}, %{class: :agent} = r} ->
+        {:renamed, prev_id, r}
+
+      {{:ok, %{class: :agent, id: prev_id}}, _non_agent_or_nil} when not is_nil(incoming) ->
+        {:demoted, prev_id}
+
+      {{:ok, %{class: _other}}, %{class: :agent} = r} ->
+        {:promoted, r}
+
+      _ ->
+        :noop
     end
   end
 
-  defp maybe_restart_agent(_), do: :ok
+  defp apply_agent_transition(_state, :noop), do: :ok
 
-  defp sync_agents_async do
-    if Process.whereis(Egghead.Agent.Supervisor) do
-      Task.start(fn -> Egghead.Agent.Supervisor.sync_agents() end)
+  defp apply_agent_transition(_state, {:promoted, record} = transition) do
+    log_transition(transition)
+    broadcast_agent_change({:promoted, record})
+    start_agent_async(record)
+  end
+
+  defp apply_agent_transition(_state, {:reloaded, record} = transition) do
+    log_transition(transition)
+    broadcast_agent_change({:reloaded, record})
+    # `start_agent` doubles as restart — terminates any existing process
+    # under this id before bringing a fresh one up.
+    start_agent_async(record)
+  end
+
+  defp apply_agent_transition(_state, {:renamed, prev_id, record} = transition) do
+    log_transition(transition)
+    broadcast_agent_change({:renamed, prev_id, record})
+    stop_agent_async(prev_id)
+    start_agent_async(record)
+  end
+
+  defp apply_agent_transition(_state, {:demoted, prev_id} = transition) do
+    log_transition(transition)
+    broadcast_agent_change({:demoted, prev_id})
+    stop_agent_async(prev_id)
+  end
+
+  defp apply_agent_transition(_state, {:removed, prev_id} = transition) do
+    log_transition(transition)
+    broadcast_agent_change({:removed, prev_id})
+    stop_agent_async(prev_id)
+  end
+
+  defp log_transition({:promoted, %{id: id}}), do: Logger.info("Agent transition: promoted #{id}")
+  defp log_transition({:reloaded, %{id: id}}), do: Logger.info("Agent transition: reloaded #{id}")
+
+  defp log_transition({:renamed, prev_id, %{id: new_id}}),
+    do: Logger.info("Agent transition: renamed #{prev_id} → #{new_id}")
+
+  defp log_transition({:demoted, id}), do: Logger.info("Agent transition: demoted #{id}")
+  defp log_transition({:removed, id}), do: Logger.info("Agent transition: removed #{id}")
+
+  defp broadcast_agent_change(change) do
+    if Process.whereis(Egghead.PubSub) do
+      Phoenix.PubSub.broadcast(
+        Egghead.PubSub,
+        records_topic(),
+        {:agent_record_changed, change}
+      )
     end
+  end
+
+  defp start_agent_async(record) do
+    if Process.whereis(Egghead.Agent.Supervisor) do
+      Task.start(fn -> Egghead.Agent.Supervisor.start_agent(record) end)
+    end
+
+    :ok
+  end
+
+  defp stop_agent_async(agent_id) do
+    if Process.whereis(Egghead.Agent.Supervisor) do
+      Task.start(fn -> Egghead.Agent.Supervisor.stop_agent(agent_id) end)
+    end
+
+    :ok
   end
 
   # A skill manifest in SKILLS_DIR is specifically a `SKILL.md` file —

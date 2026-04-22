@@ -323,7 +323,39 @@ defmodule Egghead.TUI.Chat.Model do
 
   defp message_to_entry(_), do: nil
 
-  defp hydrate_agents(room_id) do
+  @doc """
+  Re-fetch the agent roster from the live system, merging fresh
+  metadata (id, name, mute) with whatever per-row state the chat
+  screen was already tracking (status, ctx_pct, ctx_window,
+  ctx_tokens). Order is preserved: existing rows keep their
+  position; new rows append in `Egghead.list_agents/0` order.
+
+  Used both at room entry (`init/1`) and at hot-reload broadcast
+  (`{:agent_roster_changed}` on the room topic).
+  """
+  @spec hydrate_agents(t() | String.t() | nil) :: [AgentPresence.t()]
+  def hydrate_agents(%__MODULE__{} = m) do
+    fresh = fetch_agents(m.room_id)
+    by_id = Map.new(m.agents, fn a -> {a.id, a} end)
+
+    {existing_ordered, _} =
+      Enum.reduce(m.agents, {[], MapSet.new()}, fn a, {acc, seen} ->
+        case Enum.find(fresh, &(&1.id == a.id)) do
+          nil -> {acc, seen}
+          updated -> {acc ++ [merge(a, updated)], MapSet.put(seen, a.id)}
+        end
+      end)
+
+    seen_ids = MapSet.new(existing_ordered, & &1.id)
+    new_rows = Enum.reject(fresh, &MapSet.member?(seen_ids, &1.id))
+
+    existing_ordered ++
+      Enum.map(new_rows, fn a -> Map.merge(%AgentPresence{}, sanitize(a, by_id)) end)
+  end
+
+  def hydrate_agents(room_id), do: fetch_agents(room_id)
+
+  defp fetch_agents(room_id) do
     muted = muted_set(room_id)
 
     try do
@@ -343,6 +375,14 @@ defmodule Egghead.TUI.Chat.Model do
     end
   end
 
+  defp merge(%AgentPresence{} = old, %AgentPresence{} = new) do
+    # Carry forward live UI state (status, ctx_*); refresh identity (name,
+    # muted?) from the new snapshot.
+    %{old | name: new.name, muted?: new.muted?}
+  end
+
+  defp sanitize(a, _by_id), do: Map.from_struct(a)
+
   defp muted_set(nil), do: MapSet.new()
 
   defp muted_set(room_id) do
@@ -355,8 +395,8 @@ defmodule Egghead.TUI.Chat.Model do
 
   defp display_name(agent_id, %__MODULE__{agents: agents}) do
     case Enum.find(agents, &(&1.id == agent_id)) do
-      %AgentPresence{name: name} -> name
-      _ -> agent_id |> String.split("/") |> List.last() |> String.capitalize()
+      %AgentPresence{name: name} when is_binary(name) and name != "" -> name
+      _ -> agent_id
     end
   end
 end

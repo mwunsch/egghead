@@ -73,6 +73,21 @@ defmodule Egghead.Index do
   end
 
   @doc """
+  Looks up the row currently stored at `path`. Returns `{:ok, %{id, class}}`
+  or `:none`. Used by the RecordStore to detect what was at this path
+  before a file change so it can classify agent-record transitions
+  (promote / demote / rename / reload) before doing the upsert.
+
+  Lighter than `get_record_meta/2` — only returns the two fields needed
+  for classification, no tag/link/meta hydration.
+  """
+  @spec lookup_by_path(GenServer.server(), String.t()) ::
+          {:ok, %{id: String.t(), class: atom()}} | :none
+  def lookup_by_path(server \\ __MODULE__, path) do
+    GenServer.call(server, {:lookup_by_path, path})
+  end
+
+  @doc """
   Lists all records as lightweight metadata maps.
   """
   @spec list_records(GenServer.server()) :: [Record.t()]
@@ -180,6 +195,16 @@ defmodule Egghead.Index do
       case query_one(state.conn, "SELECT * FROM records WHERE id = ?1", [id]) do
         nil -> {:error, :not_found}
         row -> {:ok, row_to_meta(state.conn, row)}
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:lookup_by_path, path}, _from, state) do
+    result =
+      case query_one(state.conn, "SELECT id, class FROM records WHERE source_path = ?1", [path]) do
+        nil -> :none
+        row -> {:ok, %{id: row.id, class: Egghead.Record.parse_class(row.class)}}
       end
 
     {:reply, result, state}

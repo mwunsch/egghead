@@ -186,6 +186,34 @@ defmodule Egghead.CapabilityTest do
       ctx = %{agent_id: "agents/scout"}
       assert :ok = Capability.check(grants, request, ctx)
     end
+
+    test "denies agent.delete with target == caller" do
+      grants = Capability.parse(["agent.delete"])
+
+      request = %Request{
+        resource: :agent,
+        verb: :delete,
+        scope: %{id: "agents/alpha"},
+        tool: "delete_record"
+      }
+
+      ctx = %{agent_id: "agents/alpha"}
+      assert {:denied, %Denial{code: :self_modification}} = Capability.check(grants, request, ctx)
+    end
+
+    test "allows agent.delete on a different agent" do
+      grants = Capability.parse(["agent.delete"])
+
+      request = %Request{
+        resource: :agent,
+        verb: :delete,
+        scope: %{id: "agents/beta"},
+        tool: "delete_record"
+      }
+
+      ctx = %{agent_id: "agents/alpha"}
+      assert :ok = Capability.check(grants, request, ctx)
+    end
   end
 
   describe "check/3 — attenuation" do

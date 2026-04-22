@@ -149,6 +149,22 @@ defmodule Egghead.Capability do
   end
 
   defp check_self_modification(_grants, %Request{resource: :agent, verb: :grant} = req, ctx) do
+    deny_self_target(
+      req,
+      ctx,
+      "agent cannot grant capabilities to itself — human must edit the agent record directly"
+    )
+  end
+
+  defp check_self_modification(_grants, %Request{resource: :agent, verb: :delete} = req, ctx) do
+    # `delete_record` on an agent's own record would terminate the
+    # caller mid-tool-use. Denied; trash by hand.
+    deny_self_target(req, ctx, "agent cannot delete its own record")
+  end
+
+  defp check_self_modification(_grants, _req, _ctx), do: :ok
+
+  defp deny_self_target(req, ctx, message) do
     agent_id = Map.get(ctx, :agent_id)
     target_id = Map.get(req.scope, :id)
 
@@ -159,16 +175,13 @@ defmodule Egghead.Capability do
          request: req,
          agent_id: agent_id,
          tool: req.tool,
-         message:
-           "agent cannot grant capabilities to itself — human must edit the agent record directly",
+         message: message,
          suggested_grant: nil
        }}
     else
       :ok
     end
   end
-
-  defp check_self_modification(_grants, _req, _ctx), do: :ok
 
   defp check_attenuation(
          grants,

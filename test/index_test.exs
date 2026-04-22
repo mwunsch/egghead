@@ -63,6 +63,42 @@ defmodule Egghead.IndexTest do
     end
   end
 
+  describe "lookup_by_path/2" do
+    test "returns id and class for a row at the given path" do
+      idx = start_index()
+
+      rec =
+        make_record(%{
+          id: "agents/alpha",
+          class: :agent,
+          source_path: "/tmp/test/agents/alpha.md"
+        })
+
+      :ok = Index.upsert_record(idx, rec)
+
+      assert {:ok, %{id: "agents/alpha", class: :agent}} =
+               Index.lookup_by_path(idx, "/tmp/test/agents/alpha.md")
+    end
+
+    test "returns :none when no row at that path" do
+      idx = start_index()
+      assert :none = Index.lookup_by_path(idx, "/tmp/missing.md")
+    end
+
+    test "reflects an in-place id rename (same path, new id)" do
+      idx = start_index()
+      path = "/tmp/test/beta.md"
+
+      :ok =
+        Index.upsert_record(idx, make_record(%{id: "alpha", class: :agent, source_path: path}))
+
+      assert {:ok, %{id: "alpha"}} = Index.lookup_by_path(idx, path)
+
+      :ok = Index.upsert_record(idx, make_record(%{id: "beta", class: :agent, source_path: path}))
+      assert {:ok, %{id: "beta", class: :agent}} = Index.lookup_by_path(idx, path)
+    end
+  end
+
   describe "list_records" do
     test "returns all records" do
       idx = start_index()

@@ -418,15 +418,26 @@ defmodule Egghead.TUI.Chat.Update do
   defp handle_room_event(:continued, model), do: clear_status(model)
 
   defp handle_room_event({:system_notice, text}, model) do
+    require Logger
+    Logger.info("TUI chat received :system_notice: #{inspect(text)}")
     Model.append_entry(model, Entry.system(text))
+  end
+
+  defp handle_room_event({:agent_roster_changed} = ev, model) do
+    require Logger
+    Logger.info("TUI chat received #{inspect(ev)} — re-hydrating roster")
+    %{model | agents: Model.hydrate_agents(model)}
   end
 
   defp handle_room_event({:agent_joined, agent_id}, model) do
     if Enum.any?(model.agents, &(&1.id == agent_id)) do
       model
     else
-      name = agent_id |> String.split("/") |> List.last() |> String.capitalize()
-      presence = %Model.AgentPresence{id: agent_id, name: name, status: :idle}
+      # Don't fabricate a display name from the id — the next
+      # :agent_roster_changed broadcast will arrive moments later
+      # with the real name from `Egghead.list_agents/0`. Use the id
+      # itself as a placeholder until then.
+      presence = %Model.AgentPresence{id: agent_id, name: agent_id, status: :idle}
       %{model | agents: model.agents ++ [presence]}
     end
   end
@@ -706,8 +717,8 @@ defmodule Egghead.TUI.Chat.Update do
 
   defp display_name(agent_id, %Model{agents: agents}) do
     case Enum.find(agents, &(&1.id == agent_id)) do
-      %{name: name} -> name
-      _ -> agent_id |> String.split("/") |> List.last() |> String.capitalize()
+      %{name: name} when is_binary(name) and name != "" -> name
+      _ -> agent_id
     end
   end
 

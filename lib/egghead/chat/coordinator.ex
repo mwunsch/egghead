@@ -32,12 +32,26 @@ defmodule Egghead.Chat.Coordinator do
 
   defmodule AgentInfo do
     @moduledoc false
-    defstruct [:id, :name, :capabilities, :tags, :disposition]
+    defstruct [:id, :name, :model, :capabilities, :tags, :disposition]
   end
 
   defmodule State do
     @moduledoc false
-    defstruct agents: %{}, rooms: MapSet.new(), handoffs_in_progress: MapSet.new(), corpus: %{}
+    # `pending_transitions` keys an agent_id to one of:
+    #   - `{:reload, prev_info}` — a record edit landed; expect a fresh
+    #     `:terminated`+`:started` lifecycle pair. The :terminated should
+    #     swallow; the :started narrates the diff.
+    #   - `{:rename, prev_id, prev_info}` — same, but the id changed; the
+    #     :started narrates "<old> became <new>".
+    #   - `:demote` — agent class dropped; on :terminated narrate
+    #     "<name> is no longer an agent" and unregister.
+    #   - `:remove` — record was deleted; on :terminated narrate
+    #     "<name>'s record was removed" and unregister.
+    defstruct agents: %{},
+              rooms: MapSet.new(),
+              handoffs_in_progress: MapSet.new(),
+              pending_transitions: %{},
+              corpus: %{}
   end
 
   # --- Public API ---
@@ -94,6 +108,12 @@ defmodule Egghead.Chat.Coordinator do
     # restarts and terminations into the rooms we're watching.
     Phoenix.PubSub.subscribe(@pubsub, Egghead.Agent.lifecycle_topic())
 
+    # Subscribe to record-store events so we can pre-empt the
+    # lifecycle pair with a "reloading…" hint and compute a diff
+    # before the agent's register_agent cast overwrites the prior
+    # AgentInfo. See `handle_info({:agent_record_changed, ...})`.
+    Phoenix.PubSub.subscribe(@pubsub, Egghead.RecordStore.records_topic())
+
     # Rebuild state from whatever agents and rooms are already running.
     # On initial boot this is a no-op (supervision order starts us
     # before Agent.Supervisor), but after a crash-restart the agent
@@ -119,6 +139,7 @@ defmodule Egghead.Chat.Coordinator do
     info = %AgentInfo{
       id: agent_id,
       name: metadata[:name] || agent_id,
+      model: metadata[:model],
       capabilities: metadata[:capabilities] || [],
       tags: metadata[:tags] || [],
       disposition: metadata[:disposition] || ""
@@ -127,6 +148,7 @@ defmodule Egghead.Chat.Coordinator do
     agents = Map.put(state.agents, agent_id, info)
     corpus = Egghead.Chat.Relevance.build_corpus(agents)
     state = %{state | agents: agents, corpus: corpus}
+    broadcast_roster_changed(state)
     Logger.debug("Coordinator: registered agent #{agent_id}")
     {:noreply, state}
   end
@@ -135,6 +157,7 @@ defmodule Egghead.Chat.Coordinator do
     agents = Map.delete(state.agents, agent_id)
     corpus = Egghead.Chat.Relevance.build_corpus(agents)
     state = %{state | agents: agents, corpus: corpus}
+    broadcast_roster_changed(state)
     Logger.debug("Coordinator: unregistered agent #{agent_id}")
     {:noreply, state}
   end
@@ -257,34 +280,24 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:system_notice, _text}, state), do: {:noreply, state}
 
   def handle_info({:agent_lifecycle, event, agent_id, reason}, state) do
-    # Translate global agent lifecycle events into per-room system
-    # notices so users see when an agent restarts or exits.
-    display = display_name(state, agent_id)
-
-    text =
-      case {event, reason} do
-        {:started, _} ->
-          "#{display} joined"
-
-        {:terminated, :normal} ->
-          "#{display} left"
-
-        {:terminated, :shutdown} ->
-          "#{display} left"
-
-        {:terminated, {:shutdown, _}} ->
-          "#{display} left"
-
-        {:terminated, reason} ->
-          "#{display} crashed: #{format_reason(reason)}"
-      end
-
-    for room_id <- state.rooms do
-      broadcast_system_notice(room_id, text)
-    end
-
-    {:noreply, state}
+    handle_lifecycle(event, agent_id, reason, state)
   end
+
+  # Pre-empt the lifecycle handler with a "reloading…" hint when the
+  # record store classifies a write as a change to an agent record.
+  # Stashing happens here, narration of the diff happens when the
+  # subsequent `:started` lifecycle event lands. Crucial that the
+  # snapshot is captured BEFORE the agent's `register_agent` cast
+  # overwrites state.agents[agent_id] with the new metadata.
+  def handle_info({:agent_record_changed, change}, state) do
+    Logger.info("Coordinator: received :agent_record_changed #{inspect(change, limit: 3)}")
+    handle_record_change(change, state)
+  end
+
+  # Older single-tag record events fired by RecordStore for non-agent
+  # records. Ignore — this handler exists only to silence the catch-all
+  # debug log for routine record edits.
+  def handle_info({:record_changed, _id_or_nil}, state), do: {:noreply, state}
 
   def handle_info({:agent_handoff_started, room_id, agent_id}, state) do
     # Mark the agent as in-handoff at the START of summarisation so
@@ -324,6 +337,341 @@ defmodule Egghead.Chat.Coordinator do
     Logger.debug("Coordinator: ignoring unknown message #{inspect(msg, limit: 5)}")
     {:noreply, state}
   end
+
+  # --- Lifecycle + record-change narration ---
+
+  # Hint events from RecordStore.apply_agent_transition. We snapshot
+  # the prior AgentInfo here (before the agent's restart fires its
+  # register_agent cast) so the subsequent :started can narrate the
+  # diff. For demote/remove there's no follow-up :started — the
+  # narration runs at :terminated time.
+  defp handle_record_change({:reloaded, %{id: id} = _record}, state) do
+    prev_info = Map.get(state.agents, id)
+
+    # Always identify by agent id, not display name. The user may
+    # have edited the title in this very save — the old name would
+    # mislead, the new name isn't loaded yet, the id is stable.
+    announce_to_rooms(state, "#{id} reloading…")
+
+    state = %{
+      state
+      | pending_transitions: Map.put(state.pending_transitions, id, {:reload, prev_info})
+    }
+
+    {:noreply, state}
+  end
+
+  defp handle_record_change({:renamed, prev_id, %{id: new_id}}, state) do
+    prev_info = Map.get(state.agents, prev_id)
+
+    # Drop the old AgentInfo immediately; the new one will land via
+    # refresh_agent_info on the followup :started lifecycle. No
+    # "reloading…" announcement — the `<old> became <new>` line
+    # carries enough.
+    agents = Map.delete(state.agents, prev_id)
+    corpus = Egghead.Chat.Relevance.build_corpus(agents)
+
+    state = %{
+      state
+      | agents: agents,
+        corpus: corpus,
+        pending_transitions:
+          Map.put(state.pending_transitions, new_id, {:rename, prev_id, prev_info})
+    }
+
+    # Mirror the rename in each watched room's roster: anywhere
+    # prev_id was joined, swap in new_id so activation continues.
+    swap_in_watched_rooms(state, prev_id, new_id)
+
+    broadcast_roster_changed(state)
+    {:noreply, state}
+  end
+
+  defp handle_record_change({:demoted, prev_id}, state) do
+    state = %{state | pending_transitions: Map.put(state.pending_transitions, prev_id, :demote)}
+    {:noreply, state}
+  end
+
+  defp handle_record_change({:removed, prev_id}, state) do
+    state = %{state | pending_transitions: Map.put(state.pending_transitions, prev_id, :remove)}
+    {:noreply, state}
+  end
+
+  defp handle_record_change({:promoted, %{id: id} = _record}, state) do
+    # New agents fold into every watched room. Same semantic as
+    # `create_room/1`, which joins all existing agents at room
+    # creation — agents created LATER need to be added explicitly
+    # somewhere, and the Coordinator is the only piece that knows
+    # about all live rooms.
+    join_in_watched_rooms(state, id)
+
+    # Stash a :promote marker so the followup :started lifecycle
+    # narrates with the agent id (`agents/kiwi joined`) rather than
+    # the display name. Record-driven transitions identify by id.
+    state = %{state | pending_transitions: Map.put(state.pending_transitions, id, :promote)}
+    {:noreply, state}
+  end
+
+  # Translate global agent lifecycle events into per-room system
+  # notices, coalescing with any record-change hint stashed by
+  # handle_record_change. Always refreshes AgentInfo from the live
+  # process so renames and metadata edits propagate to the sidebar
+  # / pickers via the followup roster broadcast. On truly-terminal
+  # terminations, frees the AgentInfo so it can't leak.
+  defp handle_lifecycle(:started, agent_id, _reason, state) do
+    {pending, remaining} = Map.pop(state.pending_transitions, agent_id)
+    state = %{state | pending_transitions: remaining}
+
+    # Pull fresh AgentInfo from the new process. The agent layer
+    # never calls register_agent itself; the Coordinator drives the
+    # refresh so the agent module stays unaware of the chat layer.
+    state = refresh_agent_info(state, agent_id)
+    broadcast_roster_changed(state)
+
+    case pending do
+      {:reload, prev_info} ->
+        announce_to_rooms(state, reload_text(prev_info, agent_id, state))
+
+      {:rename, prev_id, prev_info} ->
+        announce_to_rooms(state, rename_text(prev_id, prev_info, agent_id, state))
+
+      :promote ->
+        # Record-driven join: identify by id for stability.
+        announce_to_rooms(state, "#{agent_id} joined")
+
+      _ ->
+        # Lifecycle-only :started (boot, supervisor restart) — fine
+        # to use the live display name; identity is what's relevant.
+        announce_to_rooms(state, "#{display_name(state, agent_id)} joined")
+    end
+
+    {:noreply, state}
+  end
+
+  defp handle_lifecycle(:terminated, agent_id, reason, state) do
+    # Rename markers are keyed by the NEW id (the side that fires
+    # :started), so a rename-source :terminated has no direct match.
+    # Detect that case by walking pending_transitions for a :rename
+    # whose source matches us.
+    rename_source? =
+      Enum.any?(state.pending_transitions, fn
+        {_, {:rename, ^agent_id, _}} -> true
+        _ -> false
+      end)
+
+    cond do
+      rename_source? ->
+        # Swallow; the matching :started for the new id will narrate.
+        {:noreply, state}
+
+      pending = Map.get(state.pending_transitions, agent_id) ->
+        case pending do
+          {:reload, _} ->
+            # Leave the marker in place — :started narrates the diff.
+            {:noreply, state}
+
+          :demote ->
+            announce_to_rooms(state, "#{agent_id} is no longer an agent")
+            unregister_agent(self(), agent_id)
+
+            {:noreply,
+             %{state | pending_transitions: Map.delete(state.pending_transitions, agent_id)}}
+
+          :remove ->
+            announce_to_rooms(state, "#{agent_id}'s record was removed")
+            unregister_agent(self(), agent_id)
+
+            {:noreply,
+             %{state | pending_transitions: Map.delete(state.pending_transitions, agent_id)}}
+
+          _ ->
+            do_terminate(agent_id, reason, state)
+        end
+
+      true ->
+        do_terminate(agent_id, reason, state)
+    end
+  end
+
+  # Fire-and-forget room joins for a newly-promoted agent — one
+  # task per watched room. Off-process so the Coordinator's mailbox
+  # doesn't block on Room.call latencies.
+  defp join_in_watched_rooms(state, agent_id) do
+    for room_id <- state.rooms do
+      run_off_process(fn ->
+        try do
+          Room.join(room_id, agent_id)
+        catch
+          _, _ -> :ok
+        end
+      end)
+    end
+
+    :ok
+  end
+
+  # For a rename: drop the old id, add the new id, only in rooms
+  # where the old id was actually joined. Avoids over-joining the
+  # new id into bespoke-roster rooms (eval, etc.) that didn't have
+  # the old one.
+  defp swap_in_watched_rooms(state, prev_id, new_id) do
+    for room_id <- state.rooms do
+      run_off_process(fn ->
+        try do
+          %{agents: joined} = Room.get_state(room_id)
+
+          if prev_id in joined do
+            Room.leave(room_id, prev_id)
+            Room.join(room_id, new_id)
+          end
+        catch
+          _, _ -> :ok
+        end
+      end)
+    end
+
+    :ok
+  end
+
+  # Run `fun` under the application's Task.Supervisor when it's
+  # available (production); fall back to bare `Task.start/1` in
+  # contexts that don't have it (focused unit tests, escripts).
+  defp run_off_process(fun) do
+    if Process.whereis(Egghead.Tool.TaskSupervisor) do
+      Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fun)
+    else
+      Task.start(fun)
+    end
+  end
+
+  # Read AgentInfo from the live process by registered name. If the
+  # process is gone or the read fails, leave state.agents unchanged.
+  defp refresh_agent_info(state, agent_id) do
+    name = Egghead.Agent.agent_name(agent_id)
+
+    case GenServer.whereis(name) do
+      nil ->
+        state
+
+      pid ->
+        case safe_agent_info(pid) do
+          nil ->
+            state
+
+          info ->
+            agents = Map.put(state.agents, agent_id, info)
+            corpus = Egghead.Chat.Relevance.build_corpus(agents)
+            %{state | agents: agents, corpus: corpus}
+        end
+    end
+  end
+
+  defp do_terminate(agent_id, reason, state) do
+    display = display_name(state, agent_id)
+
+    text =
+      case reason do
+        :normal -> "#{display} left"
+        :shutdown -> "#{display} left"
+        {:shutdown, _} -> "#{display} left"
+        other -> "#{display} crashed: #{format_reason(other)}"
+      end
+
+    announce_to_rooms(state, text)
+    unregister_agent(self(), agent_id)
+    {:noreply, state}
+  end
+
+  defp announce_to_rooms(state, text) do
+    rooms = MapSet.to_list(state.rooms)
+
+    Logger.info(
+      "Coordinator: announcing #{inspect(text)} to #{length(rooms)} room(s): #{inspect(rooms)}"
+    )
+
+    for room_id <- rooms, do: broadcast_system_notice(room_id, text)
+    :ok
+  end
+
+  defp broadcast_roster_changed(state) do
+    for room_id <- state.rooms do
+      Phoenix.PubSub.broadcast(@pubsub, Room.topic(room_id), {:agent_roster_changed})
+    end
+
+    :ok
+  end
+
+  # Diff between the prior AgentInfo (captured at hint time) and the
+  # current state.agents entry (already refreshed from the new process
+  # in handle_lifecycle(:started, ...)). Empty diff → no parenthetical.
+  # Uses agent id, not display name — see handle_record_change.
+  defp reload_text(nil, agent_id, _state), do: "#{agent_id} reloaded"
+
+  defp reload_text(%AgentInfo{} = prev, agent_id, state) do
+    new_info = Map.get(state.agents, agent_id)
+    parts = diff_parts_with_title(prev, new_info)
+
+    case parts do
+      [] -> "#{agent_id} reloaded"
+      _ -> "#{agent_id} reloaded (#{Enum.join(parts, "; ")})"
+    end
+  end
+
+  defp rename_text(prev_id, _prev_info, new_id, _state) do
+    "#{prev_id} became #{new_id}"
+  end
+
+  # Like diff_parts/2 but also surfaces a title (display-name) change,
+  # since the rest of the notice now identifies the agent by id.
+  defp diff_parts_with_title(%AgentInfo{} = prev, %AgentInfo{} = new) do
+    diff_parts(prev, new) |> maybe_add_diff("title", prev.name, new.name)
+  end
+
+  defp diff_parts_with_title(prev, _), do: diff_parts(prev, nil)
+
+  defp diff_parts(_prev, nil), do: []
+
+  defp diff_parts(%AgentInfo{} = prev, %AgentInfo{} = new) do
+    []
+    |> maybe_add_diff("model", prev.model, new.model)
+    |> maybe_add_caps_diff(prev.capabilities, new.capabilities)
+  end
+
+  defp maybe_add_diff(parts, _label, same, same), do: parts
+
+  defp maybe_add_diff(parts, label, prev, new),
+    do: parts ++ ["#{label}: #{prev || "?"} → #{new || "?"}"]
+
+  defp maybe_add_caps_diff(parts, prev_caps, new_caps) do
+    prev_keys = caps_keys(prev_caps)
+    new_keys = caps_keys(new_caps)
+    added = MapSet.difference(new_keys, prev_keys) |> Enum.sort()
+    removed = MapSet.difference(prev_keys, new_keys) |> Enum.sort()
+
+    case {added, removed} do
+      {[], []} ->
+        parts
+
+      _ ->
+        bits =
+          Enum.map(added, &"+#{&1}") ++ Enum.map(removed, &"−#{&1}")
+
+        parts ++ ["capabilities: #{Enum.join(bits, ", ")}"]
+    end
+  end
+
+  defp caps_keys(nil), do: MapSet.new()
+
+  defp caps_keys(caps) when is_list(caps) do
+    caps
+    |> Enum.map(fn
+      %Egghead.Capability.Grant{resource: r, verb: v} -> "#{r}.#{v}"
+      other -> to_string(other)
+    end)
+    |> MapSet.new()
+  end
+
+  defp caps_keys(_), do: MapSet.new()
 
   # --- Tier 1: Structural filter (zero tokens) ---
 
@@ -910,10 +1258,11 @@ defmodule Egghead.Chat.Coordinator do
   defp safe_agent_info(pid) do
     try do
       case :sys.get_state(pid, 100) do
-        %{id: id, name: name, capabilities: caps, tags: tags, disposition: disp} ->
+        %{id: id, name: name, capabilities: caps, tags: tags, disposition: disp} = s ->
           %AgentInfo{
             id: id,
             name: name,
+            model: Map.get(s, :model),
             capabilities: caps,
             tags: tags,
             disposition: disp

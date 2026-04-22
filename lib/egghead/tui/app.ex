@@ -60,11 +60,26 @@ defmodule Egghead.TUI.App do
   def view(%__MODULE__{screen: :chat, chat: m}), do: Chat.view(m)
 
   @impl true
-  def subscriptions(%__MODULE__{screen: :records, records: m}),
-    do: Records.subscriptions(m)
+  # The active screen's subs always apply. When a chat model exists,
+  # its non-input subs are merged in too — so the chat-room PubSub
+  # subscription survives a trip through records mode and the chat
+  # screen accumulates events (agent reload narration, streamed
+  # messages from other clients) in the background.
+  def subscriptions(%__MODULE__{screen: :records, records: rm, chat: nil}),
+    do: Records.subscriptions(rm)
 
-  def subscriptions(%__MODULE__{screen: :chat, chat: m}),
+  def subscriptions(%__MODULE__{screen: :records, records: rm, chat: cm}) do
+    chat_extras = Chat.subscriptions(cm) |> Enum.reject(&(&1 == :keys))
+    Records.subscriptions(rm) ++ chat_extras
+  end
+
+  def subscriptions(%__MODULE__{screen: :chat, chat: m, records: nil}),
     do: Chat.subscriptions(m)
+
+  def subscriptions(%__MODULE__{screen: :chat, chat: cm, records: rm}) do
+    records_extras = Records.subscriptions(rm) |> Enum.reject(&(&1 == :keys))
+    Chat.subscriptions(cm) ++ records_extras
+  end
 
   @impl true
   # F1 → Records, F2 → Chat (only if providers are configured).
@@ -82,6 +97,22 @@ defmodule Egghead.TUI.App do
   end
 
   def update({:key, :f2}, %__MODULE__{} = state), do: {state, :none}
+
+  # PubSub messages for the inactive screen are routed silently to
+  # that screen's model. Lets the chat transcript/sidebar accumulate
+  # agent reload narration while the user is in records mode (and
+  # vice versa: records-list refreshes while in chat).
+  def update({:room_event, _} = msg, %__MODULE__{screen: :records, chat: cm} = state)
+      when not is_nil(cm) do
+    {new_cm, cmd} = Chat.update(msg, cm)
+    handle_cmd(cmd, %{state | chat: new_cm})
+  end
+
+  def update({:record_event, _} = msg, %__MODULE__{screen: :chat, records: rm} = state)
+      when not is_nil(rm) do
+    {new_rm, cmd} = Records.update(msg, rm)
+    handle_cmd(cmd, %{state | records: new_rm})
+  end
 
   def update(msg, %__MODULE__{screen: :records, records: rm} = state) do
     # Resize messages must reach every screen the model owns so

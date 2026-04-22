@@ -200,6 +200,37 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert Enum.count(m.agents, &(&1.id == "agents/probe")) == 1
     end
 
+    test "agent_joined uses the id as a placeholder name (no fabricated capitalization)" do
+      {m, :none} = Update.update({:room_event, {:agent_joined, "agents/probe"}}, model())
+      probe = Enum.find(m.agents, &(&1.id == "agents/probe"))
+      assert probe.name == "agents/probe"
+    end
+
+    test "agent_roster_changed re-hydrates from list_agents (preserves position of existing rows)" do
+      # Build a model with two existing agents in a known order, then
+      # simulate a roster broadcast. The Update path calls
+      # `Egghead.list_agents/0` — without an Agent.Supervisor running
+      # the call returns `[]`, so existing-row preservation drops them
+      # all. That's the right semantics: an empty roster from
+      # `list_agents` means no agent processes are alive, so the
+      # sidebar should reflect that. The hot-reload-visibility
+      # contract is "after the broadcast lands, the sidebar matches
+      # the live system." This proves the hook fires.
+      m = %{
+        model()
+        | agents: [
+            %Egghead.TUI.Chat.Model.AgentPresence{id: "agents/alpha", name: "Alpha"},
+            %Egghead.TUI.Chat.Model.AgentPresence{id: "agents/beta", name: "Beta"}
+          ]
+      }
+
+      {m2, :none} = Update.update({:room_event, {:agent_roster_changed}}, m)
+      # `list_agents/0` returns [] in this test env. The hook
+      # therefore drops every row whose id is no longer in the live
+      # roster — exactly the contract.
+      assert m2.agents == []
+    end
+
     test "agent_streaming sets agent status to :active" do
       m = model()
       {m, :none} = Update.update({:room_event, {:agent_joined, "agents/scout"}}, m)

@@ -108,11 +108,14 @@ defmodule Egghead.OpenTUI.Runtime do
         inbox: [],
         halt?: false,
         last_dimensions: nil,
-        # Currently-active PubSub subscription, if any. We track
-        # exactly one topic per runtime — multi-topic can grow
-        # later if a screen ever needs it. The wrap fn turns the
-        # raw broadcast message into a screen-domain message.
-        pubsub: nil,
+        # Active PubSub subscriptions, keyed by topic. Each value is a
+        # helper pid that subscribes to its topic, applies the screen's
+        # `wrap` fn to each broadcast, and forwards the result to the
+        # runtime as `{:pubsub_msg, msg}`. Per-topic helpers let screens
+        # declare multiple subscriptions in `subscriptions/1`, including
+        # subscriptions that the screen wants to keep alive even when it
+        # isn't the active screen.
+        pubsub_workers: %{},
         # The Phoenix.PubSub server name. Required for screens
         # that declare {:pubsub, topic, wrap} subscriptions.
         # Passed in via opts so the runtime has no compile-time
@@ -252,18 +255,15 @@ defmodule Egghead.OpenTUI.Runtime do
   # for an input event, or `nil` if the mailbox is empty.
   defp drain_mailbox(state) do
     receive do
-      raw ->
-        case state.pubsub do
-          {_topic, wrap} when is_function(wrap, 1) ->
-            {wrap.(raw), state}
+      {:pubsub_msg, msg} ->
+        {msg, state}
 
-          _ ->
-            # Unexpected mail with no active wrapper. Surface as
-            # an opaque tuple rather than crash; the screen can
-            # ignore it via the catch-all clause it already
-            # needs for unknown messages.
-            {{:unknown_msg, raw}, state}
-        end
+      raw ->
+        # Unexpected mail with no helper-applied wrap. Surface as
+        # an opaque tuple rather than crash; the screen can ignore
+        # it via the catch-all clause it already needs for unknown
+        # messages.
+        {{:unknown_msg, raw}, state}
     after
       0 -> nil
     end
@@ -292,45 +292,77 @@ defmodule Egghead.OpenTUI.Runtime do
 
   # ---- pubsub subscription management ------------------------------------
 
-  # Reconcile the screen's declared subscriptions with the
-  # runtime's currently-active PubSub subscription. We track
-  # exactly one topic; if the screen swaps to a different one,
-  # the old topic is unsubscribed first.
+  # Reconcile the screen's declared subscriptions with the runtime's
+  # currently-active PubSub helpers. Diffs by topic: spawns helpers for
+  # newly-declared topics, kills helpers for topics no longer declared,
+  # leaves matching topics alone. The wrap closure is applied inside
+  # the helper so the runtime mailbox sees pre-tagged messages.
   defp sync_pubsub(behaviour, state) do
-    subs = behaviour.subscriptions(state.model)
-
     desired =
-      Enum.find_value(subs, fn
-        {:pubsub, topic, wrap} when is_function(wrap, 1) -> {topic, wrap}
-        _ -> nil
+      behaviour.subscriptions(state.model)
+      |> Enum.flat_map(fn
+        {:pubsub, topic, wrap} when is_function(wrap, 1) -> [{topic, wrap}]
+        _ -> []
+      end)
+      |> Map.new()
+
+    current_topics = Map.keys(state.pubsub_workers)
+    desired_topics = Map.keys(desired)
+
+    # Stop helpers for topics no longer wanted.
+    stale = current_topics -- desired_topics
+
+    workers =
+      Enum.reduce(stale, state.pubsub_workers, fn topic, acc ->
+        case Map.get(acc, topic) do
+          pid when is_pid(pid) ->
+            Process.exit(pid, :shutdown)
+            Map.delete(acc, topic)
+
+          _ ->
+            Map.delete(acc, topic)
+        end
       end)
 
-    case {state.pubsub, desired} do
-      {nil, nil} ->
-        state
+    # Spawn helpers for newly-declared topics.
+    new_topics = desired_topics -- current_topics
+    runtime_pid = self()
 
-      {{_topic, _}, nil} ->
-        unsubscribe_pubsub(state)
-        %{state | pubsub: nil}
+    workers =
+      Enum.reduce(new_topics, workers, fn topic, acc ->
+        wrap = Map.fetch!(desired, topic)
+        pid = spawn_pubsub_helper(state.pubsub_server, topic, wrap, runtime_pid)
+        Map.put(acc, topic, pid)
+      end)
 
-      {nil, {topic, _wrap} = sub} ->
-        :ok = Phoenix.PubSub.subscribe(state.pubsub_server, topic)
-        %{state | pubsub: sub}
-
-      {{topic, _}, {topic, _wrap} = sub} ->
-        # Same topic, possibly a refreshed wrapper closure.
-        %{state | pubsub: sub}
-
-      {_old, {topic, _wrap} = sub} ->
-        unsubscribe_pubsub(state)
-        :ok = Phoenix.PubSub.subscribe(state.pubsub_server, topic)
-        %{state | pubsub: sub}
-    end
+    %{state | pubsub_workers: workers}
   end
 
-  defp unsubscribe_pubsub(%{pubsub: {topic, _wrap}, pubsub_server: server}) do
-    _ = Phoenix.PubSub.unsubscribe(server, topic)
-    :ok
+  defp spawn_pubsub_helper(server, topic, wrap, runtime_pid) do
+    spawn(fn ->
+      ref = Process.monitor(runtime_pid)
+      :ok = Phoenix.PubSub.subscribe(server, topic)
+      pubsub_helper_loop(server, topic, wrap, runtime_pid, ref)
+    end)
+  end
+
+  defp pubsub_helper_loop(server, topic, wrap, runtime_pid, ref) do
+    receive do
+      # Runtime died — clean up our subscription and exit.
+      {:DOWN, ^ref, :process, ^runtime_pid, _} ->
+        _ = Phoenix.PubSub.unsubscribe(server, topic)
+        :ok
+
+      raw ->
+        try do
+          msg = wrap.(raw)
+          send(runtime_pid, {:pubsub_msg, msg})
+        rescue
+          _ -> :ok
+        end
+
+        pubsub_helper_loop(server, topic, wrap, runtime_pid, ref)
+    end
   end
 
   # Suspend the BEAM to the background, the way Ctrl+Z does for

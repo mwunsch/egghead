@@ -15,15 +15,26 @@ defmodule Egghead.Agent.Wizard do
         capabilities: ["records.read", "records.create"],
         instructions: "You are Scout..."
       })
+
+  Or with the `access:` shortcut for the common records-capability
+  bundles:
+
+      Egghead.Agent.Wizard.create(%{
+        name: "scribe",
+        model: "anthropic/claude-haiku-4-5",
+        access: "rw",
+        instructions: "You are Scribe..."
+      })
   """
 
   alias Egghead.Capability.Catalog
 
   @type params :: %{
+          optional(:capabilities) => [String.t()],
+          optional(:access) => String.t(),
           name: String.t(),
           model: String.t(),
           tags: [String.t()],
-          capabilities: [String.t()],
           instructions: String.t()
         }
 
@@ -50,21 +61,30 @@ defmodule Egghead.Agent.Wizard do
     params = Map.put(params, :name, slug)
 
     with :ok <- validate(params) do
+      meta =
+        %{"model" => params.model}
+        |> maybe_put("capabilities", params[:capabilities])
+        |> maybe_put("access", params[:access])
+
       attrs = %{
         id: "agents/#{slug}",
         title: title_case(original_name),
         class: :agent,
         tags: Enum.uniq(["agent" | params[:tags] || []]),
         body: params.instructions || template(slug),
-        meta: %{
-          "model" => params.model,
-          "capabilities" => params[:capabilities] || []
-        }
+        meta: meta
       }
 
       Egghead.create_record(attrs)
     end
   end
+
+  # Omit the meta key entirely when the caller didn't provide a value.
+  # This lets `Record.Agent.parse_capabilities/1` apply its load-time
+  # default (`records.read`) instead of being forced to an explicit
+  # empty list.
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @doc """
   Normalizes a user-entered name into an id-safe slug:
@@ -138,6 +158,7 @@ defmodule Egghead.Agent.Wizard do
       |> validate_name(params[:name])
       |> validate_model(params[:model])
       |> validate_capabilities(params[:capabilities])
+      |> validate_access(params[:access])
       |> validate_instructions(params[:instructions])
 
     if errors == %{}, do: :ok, else: {:error, errors}
@@ -173,6 +194,16 @@ defmodule Egghead.Agent.Wizard do
       {:error, issues} ->
         messages = Enum.map(issues, &format_issue/1)
         Map.put(errors, :capabilities, messages)
+    end
+  end
+
+  defp validate_access(errors, nil), do: errors
+
+  defp validate_access(errors, value) do
+    if Egghead.Record.Agent.valid_access?(value) do
+      errors
+    else
+      Map.put(errors, :access, ["must be \"r\", \"w\", or \"rw\" — got #{inspect(value)}"])
     end
   end
 

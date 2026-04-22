@@ -3,6 +3,62 @@ defmodule Egghead.Agent.WizardTest do
 
   alias Egghead.Agent.Wizard
 
+  describe "validate (access:)" do
+    # No record store runs in this async test module, so we force
+    # validation to fail on a different field (missing :model) in order
+    # to inspect the error map without triggering the create_record path.
+
+    test "accepts valid access modes — :access absent from errors" do
+      for mode <- ["r", "w", "rw", "RW", " rw "] do
+        {:error, errors} =
+          Wizard.create(%{
+            name: "scribe",
+            # model omitted on purpose to short-circuit before create
+            access: mode,
+            instructions: "You are Scribe..."
+          })
+
+        refute Map.has_key?(errors, :access),
+               "expected access=#{inspect(mode)} to validate, got errors #{inspect(errors)}"
+      end
+    end
+
+    test "rejects invalid access value with a clear error" do
+      assert {:error, errors} =
+               Wizard.create(%{
+                 name: "scribe",
+                 access: "xyz",
+                 instructions: "You are Scribe..."
+               })
+
+      assert Map.has_key?(errors, :access)
+      [msg] = errors.access
+      assert msg =~ "must be"
+      assert msg =~ "xyz"
+    end
+
+    test "rejects non-string access" do
+      assert {:error, errors} =
+               Wizard.create(%{
+                 name: "scribe",
+                 access: 42,
+                 instructions: "You are Scribe..."
+               })
+
+      assert Map.has_key?(errors, :access)
+    end
+
+    test "access is optional — omitting it leaves :access out of errors" do
+      {:error, errors} =
+        Wizard.create(%{
+          name: "scribe",
+          instructions: "You are Scribe..."
+        })
+
+      refute Map.has_key?(errors, :access)
+    end
+  end
+
   describe "slugify/1" do
     test "lowercases and hyphen-joins words" do
       assert Wizard.slugify("Capability Test") == "capability-test"

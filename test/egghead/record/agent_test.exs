@@ -116,4 +116,119 @@ defmodule Egghead.Record.AgentTest do
       assert config.context_window == nil
     end
   end
+
+  describe "access: shortcut" do
+    alias Egghead.Capability.Grant
+
+    test "access: r expands to records.read" do
+      config = Projection.from(record(meta: %{"access" => "r"}))
+      assert [%Grant{resource: :records, verb: :read}] = config.capabilities
+    end
+
+    test "access: w expands to records.create + records.update (write-blind)" do
+      config = Projection.from(record(meta: %{"access" => "w"}))
+
+      verbs =
+        config.capabilities
+        |> Enum.map(&{&1.resource, &1.verb})
+        |> Enum.sort()
+
+      assert verbs == [{:records, :create}, {:records, :update}]
+    end
+
+    test "access: rw expands to read + create + update (no delete)" do
+      config = Projection.from(record(meta: %{"access" => "rw"}))
+
+      verbs =
+        config.capabilities
+        |> Enum.map(&{&1.resource, &1.verb})
+        |> Enum.sort()
+
+      assert verbs == [{:records, :create}, {:records, :read}, {:records, :update}]
+      refute Enum.any?(config.capabilities, &(&1.verb == :delete))
+    end
+
+    test "access unions with explicit capabilities, no duplicates" do
+      config =
+        Projection.from(
+          record(
+            meta: %{
+              "access" => "r",
+              "capabilities" => ["records.read", "net.get"]
+            }
+          )
+        )
+
+      verbs =
+        config.capabilities
+        |> Enum.map(&{&1.resource, &1.verb})
+        |> Enum.sort()
+
+      assert verbs == [{:net, :get}, {:records, :read}]
+    end
+
+    test "access normalizes whitespace and case" do
+      config = Projection.from(record(meta: %{"access" => " RW "}))
+
+      verbs =
+        config.capabilities
+        |> Enum.map(&{&1.resource, &1.verb})
+        |> Enum.sort()
+
+      assert verbs == [{:records, :create}, {:records, :read}, {:records, :update}]
+    end
+
+    test "invalid access value drops the shortcut; explicit caps still apply" do
+      # Invalid access + explicit capabilities → explicit capabilities
+      # survive (access is lenient at load-time, strict at authoring time).
+      config =
+        Projection.from(
+          record(
+            meta: %{
+              "access" => "xyz",
+              "capabilities" => ["net.get"]
+            }
+          )
+        )
+
+      assert [%Grant{resource: :net, verb: :get}] = config.capabilities
+    end
+
+    test "invalid access alone falls back to empty grants (no default injection)" do
+      # The presence of the access key — even if invalid — opts the agent
+      # out of the default records.read. This mirrors how an explicit
+      # `capabilities: []` also opts out. The user is declaring intent.
+      config = Projection.from(record(meta: %{"access" => "xyz"}))
+      assert config.capabilities == []
+    end
+
+    test "default records.read still applies when neither key is present" do
+      config = Projection.from(record(meta: %{"model" => "anthropic/claude-haiku-4-5"}))
+      assert [%Grant{resource: :records, verb: :read}] = config.capabilities
+    end
+
+    test "explicit empty capabilities yields no grants (no default)" do
+      config = Projection.from(record(meta: %{"capabilities" => []}))
+      assert config.capabilities == []
+    end
+  end
+
+  describe "valid_access?/1" do
+    test "accepts r, w, rw (with casing and whitespace)" do
+      assert Projection.valid_access?("r")
+      assert Projection.valid_access?("w")
+      assert Projection.valid_access?("rw")
+      assert Projection.valid_access?("RW")
+      assert Projection.valid_access?(" rw ")
+    end
+
+    test "rejects anything else" do
+      refute Projection.valid_access?("")
+      refute Projection.valid_access?("rwx")
+      refute Projection.valid_access?("read")
+      refute Projection.valid_access?(nil)
+      refute Projection.valid_access?(42)
+      refute Projection.valid_access?(["r"])
+    end
+  end
 end

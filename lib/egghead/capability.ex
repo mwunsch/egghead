@@ -373,6 +373,21 @@ defmodule Egghead.Capability do
   defp format_scope_value(v) when is_list(v), do: "[" <> Enum.join(v, ",") <> "]"
   defp format_scope_value(v), do: to_string(v)
 
+  @doc """
+  Formats a `%Grant{}` back to its yaml-frontmatter form: a bare string
+  for unscoped grants, a single-key map (string-keyed) for scoped. Round-
+  trips with `parse/1` at the entry level — the output is safe to concat
+  into a `capabilities:` list and write to a record.
+  """
+  @spec grant_to_yaml(Grant.t()) :: String.t() | map()
+  def grant_to_yaml(%Grant{resource: r, verb: v, scope: scope}) when scope == %{} do
+    "#{r}.#{v}"
+  end
+
+  def grant_to_yaml(%Grant{resource: r, verb: v, scope: scope}) do
+    %{"#{r}.#{v}" => Map.new(scope, fn {k, val} -> {to_string(k), val} end)}
+  end
+
   @doc "Suggests a YAML snippet the human could add to widen a grant for this request."
   @spec suggest_grant(Request.t()) :: String.t()
   def suggest_grant(%Request{resource: :net, verb: v, scope: %{host: host}}) do

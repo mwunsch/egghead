@@ -485,19 +485,19 @@ defmodule Egghead.Agent.Tools do
       class == "agent" ->
         base = %Request{resource: :agent, verb: :create, scope: %{id: input["id"]}}
 
-        if Map.has_key?(input, "capabilities") do
-          case Capability.Validate.validate(input["capabilities"]) do
-            :ok ->
+        if authority_input?(input) do
+          case compute_agent_authority(input) do
+            {:ok, %{grants: grants}} ->
               grant_req = %Request{
                 resource: :agent,
                 verb: :grant,
-                scope: %{id: input["id"], granted: Capability.parse(input["capabilities"])}
+                scope: %{id: input["id"], granted: grants}
               }
 
               {:ok, [base, grant_req]}
 
-            {:error, issues} ->
-              {:error, Capability.Validate.format_errors(issues)}
+            {:error, msg} ->
+              {:error, msg}
           end
         else
           {:ok, [base]}
@@ -513,16 +513,17 @@ defmodule Egghead.Agent.Tools do
     target_class = lookup_class(id)
 
     cond do
-      target_class == "agent" and Map.has_key?(input, "capabilities") ->
-        case Capability.Validate.validate(input["capabilities"]) do
-          :ok ->
-            other_fields? = input |> Map.drop(["id", "capabilities"]) |> map_size() > 0
+      target_class == "agent" and authority_input?(input) ->
+        case compute_agent_authority(input) do
+          {:ok, %{grants: grants}} ->
+            other_fields? =
+              input |> Map.drop(["id", "capabilities", "access"]) |> map_size() > 0
 
             requests = [
               %Request{
                 resource: :agent,
                 verb: :grant,
-                scope: %{id: id, granted: Capability.parse(input["capabilities"])}
+                scope: %{id: id, granted: grants}
               }
             ]
 
@@ -535,8 +536,8 @@ defmodule Egghead.Agent.Tools do
 
             {:ok, requests}
 
-          {:error, issues} ->
-            {:error, Capability.Validate.format_errors(issues)}
+          {:error, msg} ->
+            {:error, msg}
         end
 
       target_class == "agent" ->
@@ -555,6 +556,78 @@ defmodule Egghead.Agent.Tools do
   end
 
   defp req_update_record(_), do: {:error, "update_record requires an id"}
+
+  # True if the input carries authority-altering frontmatter for an
+  # agent record — either an explicit `capabilities:` list or the
+  # `access:` shortcut. Triggers the `agent.grant` attenuation path
+  # and dissolves any existing `access:` on write.
+  defp authority_input?(input) do
+    Map.has_key?(input, "capabilities") or Map.has_key?(input, "access")
+  end
+
+  # Expand input's `access:` + `capabilities:` into both grant form (for
+  # the `agent.grant` attenuation check) and yaml form (for the record
+  # write). Strict validation on both inputs — malformed values
+  # short-circuit before any capability check.
+  defp compute_agent_authority(input) do
+    access_value = input["access"]
+    caps_value = input["capabilities"]
+
+    with :ok <- validate_access_input(access_value),
+         :ok <- Capability.Validate.validate(caps_value) do
+      access_entries = Egghead.Record.Agent.expand_access(access_value)
+      explicit = List.wrap(caps_value || [])
+      grants = Capability.parse(access_entries ++ explicit)
+      yaml_list = Enum.map(grants, &Capability.grant_to_yaml/1)
+      {:ok, %{grants: grants, yaml_list: yaml_list}}
+    else
+      {:error, issues} when is_list(issues) ->
+        {:error, Capability.Validate.format_errors(issues)}
+
+      {:error, msg} when is_binary(msg) ->
+        {:error, msg}
+    end
+  end
+
+  defp validate_access_input(nil), do: :ok
+
+  defp validate_access_input(value) do
+    if Egghead.Record.Agent.valid_access?(value) do
+      :ok
+    else
+      {:error, "access: must be \"r\", \"w\", or \"rw\" — got #{inspect(value)}"}
+    end
+  end
+
+  # Rewrite attrs before a record write so agent `capabilities:` is
+  # always expressed explicitly on disk, with any `access:` shortcut
+  # dissolved. This matches what the attenuation check authorized —
+  # the post-write on-disk state is exactly the granted set.
+  #
+  # `mode` is `:create` (delete the key before render_markdown sees it)
+  # or `:update` (use the `:remove` sentinel so merge_record_attrs
+  # deletes the key from the existing record's meta).
+  defp dissolve_agent_access_attrs(attrs, target_class, mode) do
+    if target_class == "agent" and authority_input?(attrs) do
+      case compute_agent_authority(attrs) do
+        {:ok, %{yaml_list: yaml_list}} ->
+          attrs = Map.put(attrs, "capabilities", yaml_list)
+
+          case mode do
+            :create -> Map.delete(attrs, "access")
+            :update -> Map.put(attrs, "access", :remove)
+          end
+
+        {:error, _} ->
+          # Resolve-time validation should have caught this. Pass attrs
+          # through unchanged; the underlying store will surface any
+          # residual issue.
+          attrs
+      end
+    else
+      attrs
+    end
+  end
 
   defp req_delete_record(%{"id" => id}) do
     case lookup_class(id) do
@@ -653,6 +726,7 @@ defmodule Egghead.Agent.Tools do
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
       |> Map.put_new("author", ctx[:agent_id])
+      |> dissolve_agent_access_attrs(input["class"], :create)
 
     case Egghead.create_record(attrs) do
       {:ok, record} -> {:ok, "Created record: #{record.id}"}
@@ -688,6 +762,7 @@ defmodule Egghead.Agent.Tools do
       |> Map.delete("id")
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
+      |> dissolve_agent_access_attrs(lookup_class(id), :update)
 
     # If a browser has this doc open and we're changing the body,
     # stream the edit through the CRDT so the user sees live typing.

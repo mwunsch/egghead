@@ -259,12 +259,13 @@ defmodule Egghead.CLI.AgentCmd do
             end
 
             new_cap = hd(grants)
-            existing = record.meta["capabilities"] || []
+            {existing, dissolve_attrs} = dissolve_access(record)
 
             if opts[:yes] || confirm_grant(agent_id, new_cap) do
               merged = existing ++ [parsed]
+              attrs = Map.merge(%{"capabilities" => merged}, dissolve_attrs)
 
-              case Egghead.update_record(agent_id, %{"capabilities" => merged}) do
+              case Egghead.update_record(agent_id, attrs) do
                 {:ok, _} ->
                   Widgets.success(
                     "Granted #{Egghead.Capability.grant_to_spec(new_cap)} to #{agent_id}"
@@ -440,7 +441,7 @@ defmodule Egghead.CLI.AgentCmd do
 
         case Egghead.get_record(agent_id) do
           {:ok, record} ->
-            existing = record.meta["capabilities"] || []
+            {existing, dissolve_attrs} = dissolve_access(record)
             filtered = Enum.reject(existing, &same_grant?(&1, target))
 
             cond do
@@ -448,7 +449,9 @@ defmodule Egghead.CLI.AgentCmd do
                 IO.puts("No change — #{agent_id} doesn't hold #{cap_spec}.")
 
               true ->
-                case Egghead.update_record(agent_id, %{"capabilities" => filtered}) do
+                attrs = Map.merge(%{"capabilities" => filtered}, dissolve_attrs)
+
+                case Egghead.update_record(agent_id, attrs) do
                   {:ok, _} ->
                     Widgets.success(
                       "Revoked #{Egghead.Capability.grant_to_spec(target)} from #{agent_id}"
@@ -475,11 +478,14 @@ defmodule Egghead.CLI.AgentCmd do
     Egghead.CLI.prepare_runtime()
 
     # Try the record store first, fall back to the running agent's state
-    # (handles built-in agents like "index" that have no file on disk)
+    # (handles built-in agents like "index" that have no file on disk).
+    # Route through the projection so `access:` expansion and the
+    # default `records.read` both apply — mirrors what the live agent
+    # GenServer holds.
     grants =
       case Egghead.get_record(agent_id) do
         {:ok, record} when record.class == :agent ->
-          Egghead.Capability.parse(record.meta["capabilities"] || [])
+          Egghead.Record.Agent.parse_capabilities(record)
 
         _ ->
           case Enum.find(Egghead.list_agents(), &(&1.id == agent_id)) do
@@ -529,6 +535,30 @@ defmodule Egghead.CLI.AgentCmd do
     case Egghead.Capability.parse([existing]) do
       [%Egghead.Capability.Grant{resource: ^r, verb: ^v}] -> true
       _ -> false
+    end
+  end
+
+  # Fold `access:` expansion into a unified yaml-form capability list.
+  #
+  # Returns `{unified_caps, attrs_override}`. When the record has an
+  # `access:` key, `attrs_override` contains `"access" => :remove` so
+  # the caller can include it in the `update_record/2` attrs to delete
+  # the shortcut in the same write that modifies `capabilities:`. When
+  # `access:` is absent, the returned caps are the existing list as-is
+  # and `attrs_override` is empty.
+  defp dissolve_access(record) do
+    access_entries = Egghead.Record.Agent.expand_access(record.meta["access"])
+    explicit = List.wrap(record.meta["capabilities"] || [])
+
+    if Map.has_key?(record.meta, "access") do
+      unified =
+        (access_entries ++ explicit)
+        |> Egghead.Capability.parse()
+        |> Enum.map(&Egghead.Capability.grant_to_yaml/1)
+
+      {unified, %{"access" => :remove}}
+    else
+      {explicit, %{}}
     end
   end
 

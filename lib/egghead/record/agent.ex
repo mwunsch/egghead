@@ -6,13 +6,19 @@ defmodule Egghead.Record.Agent do
   Records are free-form: any meta key is permitted and most are
   optional. `from/1` always succeeds and fills defaults — the system
   never refuses to load an agent record just because a field is
-  missing. A record with no `capabilities:` is still a valid agent;
-  it just can't do much.
+  missing. An agent record with no `capabilities:` and no `access:`
+  key defaults to `records.read` so it can at least inspect the
+  graph; a more restricted agent requires explicit (empty) frontmatter.
+
+  The `access:` frontmatter key is a chmod-flavored shortcut for
+  common records-capability bundles. See `expand_access/1`.
 
   Mirrors `Egghead.Skill`'s role for `:skill`-class records: a single
   place that knows which meta keys a class cares about, how to read
   them, and what to do when they're absent.
   """
+
+  require Logger
 
   alias Egghead.Capability
   alias Egghead.LLM.Registry
@@ -74,14 +80,92 @@ defmodule Egghead.Record.Agent do
     }
   end
 
-  @doc "Parse the `capabilities` meta key into a capability list."
+  @doc """
+  Parse the `capabilities` and `access` meta keys into a merged
+  capability list.
+
+  Rules:
+
+  - If **neither** key is present, default to `records.read` (useful
+    by default — the human-edits-frontmatter-to-restrict principle).
+  - If **either** is present, expand `access:` and union with the
+    explicit `capabilities:` list. No default is applied — if you
+    wrote `capabilities: []` you get zero grants.
+  - Duplicates are merged by `Capability.parse/1`.
+  """
   @spec parse_capabilities(Record.t()) :: [Capability.t()]
   def parse_capabilities(%Record{meta: meta}) do
-    case meta["capabilities"] do
-      nil -> Capability.parse(["records.read"])
-      value -> Capability.parse(value)
+    has_access? = Map.has_key?(meta, "access")
+    has_caps? = Map.has_key?(meta, "capabilities")
+
+    if not has_access? and not has_caps? do
+      Capability.parse(["records.read"])
+    else
+      Capability.parse(expand_access(meta["access"]) ++ normalize_caps(meta["capabilities"]))
     end
   end
+
+  @doc """
+  Expand the `access:` shortcut into capability strings.
+
+  - `"r"` → `["records.read"]`
+  - `"w"` → `["records.create", "records.update"]`
+  - `"rw"` → `["records.read", "records.create", "records.update"]`
+
+  `nil` returns `[]`. Any other value logs a warning and returns `[]`
+  (consistent with `Capability.parse/1`'s lenient unknown-entry
+  handling). Strict validation for user input lives in
+  `Egghead.Agent.Wizard` and `Egghead.Agent.Tools`.
+
+  Note: `records.delete` is deliberately excluded from the shortcut.
+  High-risk verbs require an explicit `capabilities:` entry.
+  """
+  @spec expand_access(term()) :: [String.t()]
+  def expand_access(nil), do: []
+
+  def expand_access(value) when is_binary(value) do
+    case String.downcase(String.trim(value)) do
+      "r" ->
+        ["records.read"]
+
+      "w" ->
+        ["records.create", "records.update"]
+
+      "rw" ->
+        ["records.read", "records.create", "records.update"]
+
+      "" ->
+        []
+
+      other ->
+        Logger.warning(
+          "Record.Agent: unknown access mode #{inspect(other)} — expected 'r', 'w', or 'rw'"
+        )
+
+        []
+    end
+  end
+
+  def expand_access(other) do
+    Logger.warning("Record.Agent: access must be a string — got #{inspect(other)}")
+    []
+  end
+
+  @doc """
+  True if `value` is a valid `access:` mode (`"r"`, `"w"`, `"rw"`).
+  Used by the wizard and tool layers for strict validation.
+  """
+  @spec valid_access?(term()) :: boolean()
+  def valid_access?(value) when is_binary(value) do
+    String.downcase(String.trim(value)) in ~w(r w rw)
+  end
+
+  def valid_access?(_), do: false
+
+  defp normalize_caps(nil), do: []
+  defp normalize_caps(list) when is_list(list), do: list
+  defp normalize_caps(str) when is_binary(str), do: String.split(str, ~r/[,\s]+/, trim: true)
+  defp normalize_caps(_), do: []
 
   # --- Helpers ---
 

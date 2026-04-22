@@ -1067,6 +1067,67 @@ defmodule EggheadTest do
       assert raw =~ ~r/^temperature:\s*0\.7/m
     end
 
+    test "update :remove sentinel deletes a meta key from the written record", context do
+      dir = tmp_dir(context)
+
+      write_file(dir, "rec_access_agent.md", """
+      ---
+      id: rec_access_agent
+      class: agent
+      model: anthropic/claude-haiku-4-5
+      access: rw
+      temperature: 0.7
+      ---
+
+      Be helpful.
+      """)
+
+      {_pid, name} = start_store(dir)
+
+      # Write explicit capabilities + dissolve access in one update.
+      assert {:ok, _record} =
+               RecordStore.update_record(name, "rec_access_agent", %{
+                 "capabilities" => ["records.read", "records.create", "records.update"],
+                 "access" => :remove
+               })
+
+      raw = File.read!(Path.join(dir, "rec_access_agent.md"))
+
+      # access: key is gone from disk.
+      refute raw =~ ~r/^access:/m
+      # Explicit capabilities were written.
+      assert raw =~ ~r/capabilities:/
+      assert raw =~ "records.read"
+      # Untouched meta still preserved.
+      assert raw =~ ~r/^temperature:\s*0\.7/m
+    end
+
+    test "update :remove on a non-existent key is a safe no-op", context do
+      dir = tmp_dir(context)
+
+      write_file(dir, "rec_no_access.md", """
+      ---
+      id: rec_no_access
+      class: agent
+      model: anthropic/claude-haiku-4-5
+      ---
+
+      Be helpful.
+      """)
+
+      {_pid, name} = start_store(dir)
+
+      assert {:ok, _record} =
+               RecordStore.update_record(name, "rec_no_access", %{
+                 "capabilities" => ["records.read"],
+                 "access" => :remove
+               })
+
+      raw = File.read!(Path.join(dir, "rec_no_access.md"))
+      refute raw =~ ~r/^access:/m
+      assert raw =~ ~r/capabilities:/
+    end
+
     test "search_by_tag returns matching records", context do
       dir = tmp_dir(context)
       write_file(dir, "rec_001.md", @markdown_record)

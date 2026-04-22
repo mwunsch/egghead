@@ -857,6 +857,11 @@ defmodule Egghead.RecordStore do
   # for any field the caller didn't provide. `created`/`updated` are not
   # here intentionally — `updated` is filesystem-owned and never serialized,
   # and authored `created` (if present) flows through via `existing.meta`.
+  #
+  # Nil values in `new_attrs` are ignored (preserves the existing value).
+  # The sentinel `:remove` deletes that key from the merged map — the
+  # only way to unset a meta field via `update_record/2` in a single
+  # write. Used by the `access:`-on-mutate dissolution path.
   defp merge_record_attrs(existing, new_attrs) do
     known_fields = %{
       "id" => existing.id,
@@ -874,10 +879,13 @@ defmodule Egghead.RecordStore do
     # Add existing arbitrary meta fields
     base = Map.merge(base, existing.meta || %{})
 
-    # Overlay with non-nil values from caller
+    # Overlay caller values; nil is a no-op, :remove deletes the key.
     new_attrs
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-    |> Enum.into(base)
+    |> Enum.reduce(base, fn
+      {k, :remove}, acc -> Map.delete(acc, k)
+      {k, v}, acc -> Map.put(acc, k, v)
+    end)
   end
 
   # True when the only meaningful key in the attrs is "body" (plus "id"

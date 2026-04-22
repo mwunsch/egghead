@@ -433,6 +433,20 @@ defmodule Egghead.Agent.Tools do
         }
       },
       %{
+        name: "delete_record",
+        offers_on: [{:records, :delete}, {:agent, :delete}],
+        resolve: &req_delete_record/1,
+        description:
+          "Move a record to the trash. Reversible — trashed records live in .trash/ under the records directory and can be restored by moving the file back. For agent records this is the 'fire' operation: the agent's process stops when its record disappears from the index. Requires `records.delete` for content records or `agent.delete` for agent records.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            id: %{type: "string", description: "Record id to trash"}
+          },
+          required: ["id"]
+        }
+      },
+      %{
         name: "update_record",
         offers_on: [{:records, :update}, {:agent, :update}, {:agent, :grant}],
         resolve: &req_update_record/1,
@@ -541,6 +555,18 @@ defmodule Egghead.Agent.Tools do
   end
 
   defp req_update_record(_), do: {:error, "update_record requires an id"}
+
+  defp req_delete_record(%{"id" => id}) do
+    case lookup_class(id) do
+      "agent" ->
+        {:ok, [%Request{resource: :agent, verb: :delete, scope: %{id: id}}]}
+
+      class ->
+        {:ok, [%Request{resource: :records, verb: :delete, scope: %{class: class, id: id}}]}
+    end
+  end
+
+  defp req_delete_record(_), do: {:error, "delete_record requires an id"}
 
   defp lookup_class(nil), do: nil
 
@@ -676,6 +702,14 @@ defmodule Egghead.Agent.Tools do
         {:error, :not_found} -> {:error, "Record not found: #{id}"}
         {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
       end
+    end
+  end
+
+  defp do_execute("delete_record", %{"id" => id}, _ctx) do
+    case Egghead.trash_record(id) do
+      {:ok, trash_path} -> {:ok, "Moved #{id} to trash: #{trash_path}"}
+      {:error, :not_found} -> {:error, "Record not found: #{id}"}
+      {:error, reason} -> {:error, "Failed to trash record: #{inspect(reason)}"}
     end
   end
 

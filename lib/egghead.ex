@@ -39,6 +39,13 @@ defmodule Egghead do
   defdelegate get_record(id), to: RecordStore
 
   @doc """
+  Moves a record to the trash (`.trash/` inside the records directory).
+  Reversible by moving the file back into place.
+  """
+  @spec trash_record(String.t()) :: {:ok, String.t()} | {:error, term()}
+  defdelegate trash_record(id), to: RecordStore
+
+  @doc """
   Lists all records (lightweight, no body/ast).
   """
   @spec list_records() :: [Record.t()]

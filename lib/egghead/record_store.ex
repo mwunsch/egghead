@@ -97,6 +97,24 @@ defmodule Egghead.RecordStore do
   end
 
   @doc """
+  Moves a record to the trash (`.trash/` inside the records directory).
+
+  The file is relocated preserving its relative path under `.trash/`, with
+  a `deleted_at:` ISO 8601 timestamp injected into its frontmatter. The
+  `.trash/` directory is skipped by the file-watcher and by index rebuild,
+  so trashed records disappear from search and listings but remain on disk.
+
+  Reversible — move the file back into place (or `mv` it out of `.trash/`)
+  and the watcher re-indexes it.
+
+  Returns `{:ok, trash_path}` (relative to records_dir) or `{:error, reason}`.
+  """
+  @spec trash_record(GenServer.server(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def trash_record(server \\ __MODULE__, id) do
+    Egghead.Node.call(server, {:trash_record, id})
+  end
+
+  @doc """
   Lists all records in the store (lightweight, no body/ast).
   """
   @spec list_records(GenServer.server()) :: [Record.t()]
@@ -288,6 +306,41 @@ defmodule Egghead.RecordStore do
     end
   end
 
+  def handle_call({:trash_record, id}, _from, state) do
+    case Index.get_record_meta(state.index, id) do
+      {:ok, meta} ->
+        src_path = meta.source_path
+        rel = Path.relative_to(src_path, state.records_dir)
+        trash_path = Path.join([state.records_dir, ".trash", rel])
+        final_path = resolve_trash_collision(trash_path)
+
+        case File.read(src_path) do
+          {:ok, content} ->
+            try do
+              File.mkdir_p!(Path.dirname(final_path))
+              File.write!(final_path, inject_deleted_at(content))
+              File.rm!(src_path)
+              hydrate_cache_evict(src_path)
+              Index.delete_by_path(state.index, src_path)
+              broadcast_record_change(id)
+
+              # Cleanup now-empty intermediate dirs left behind by the move.
+              prune_empty_dirs(Path.dirname(src_path), state.records_dir)
+
+              {:reply, {:ok, Path.relative_to(final_path, state.records_dir)}, state}
+            rescue
+              e -> {:reply, {:error, Exception.message(e)}, state}
+            end
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, :not_found} ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
   def handle_call({:get_record, id}, _from, state) do
     case Index.get_record_meta(state.index, id) do
       {:ok, meta} ->
@@ -349,7 +402,7 @@ defmodule Egghead.RecordStore do
       in_dir?(path, state.skills_dir) and skill_manifest?(path) ->
         handle_skill_change(state, path)
 
-      in_dir?(path, state.records_dir) and record_file?(path) ->
+      in_dir?(path, state.records_dir) and record_file?(path, state.records_dir) ->
         handle_file_change(state, path)
 
       true ->
@@ -504,9 +557,69 @@ defmodule Egghead.RecordStore do
   # reference material, not skill definitions.
   defp skill_manifest?(path), do: Path.basename(path) == "SKILL.md"
 
-  defp record_file?(path) do
+  defp record_file?(path, records_dir) do
     ext = Path.extname(path)
-    ext == ".md" or ext == ".org"
+    (ext == ".md" or ext == ".org") and not in_hidden_subdir?(path, records_dir)
+  end
+
+  # Skip paths whose relative-to-records_dir segments include any hidden
+  # dir (starts with `.`). Mirrors the rebuild-scan filter in
+  # `Index.walk_directory/2` so trashed files (`.trash/…`) and internal
+  # state (`.egghead/…`) don't reindex via the live watcher.
+  defp in_hidden_subdir?(path, records_dir) do
+    path
+    |> Path.relative_to(records_dir)
+    |> Path.split()
+    |> Enum.any?(&String.starts_with?(&1, "."))
+  end
+
+  # Append a basic ISO 8601 timestamp to the filename base when the
+  # target already exists — keeps history when a record was trashed,
+  # restored, and trashed again. e.g. `.trash/inbox/foo.20260421T221530.md`.
+  defp resolve_trash_collision(path) do
+    if File.exists?(path) do
+      ext = Path.extname(path)
+      base = Path.rootname(path)
+      stamp = DateTime.utc_now() |> DateTime.to_iso8601(:basic)
+      "#{base}.#{stamp}#{ext}"
+    else
+      path
+    end
+  end
+
+  # Inject `deleted_at:` into the frontmatter. Preserves whatever was
+  # there; adds a frontmatter block if the file didn't have one.
+  defp inject_deleted_at(content) do
+    stamp = DateTime.utc_now() |> DateTime.to_iso8601()
+    line = "deleted_at: #{stamp}\n"
+
+    case String.split(content, "---\n", parts: 3) do
+      ["", frontmatter, body] -> "---\n" <> frontmatter <> line <> "---\n" <> body
+      _ -> "---\n" <> line <> "---\n\n" <> content
+    end
+  end
+
+  # After moving a file out of a subdirectory, prune empty parent
+  # directories up to (but not including) the records_dir root.
+  # Stops at the first non-empty dir.
+  defp prune_empty_dirs(dir, records_dir) do
+    cond do
+      Path.expand(dir) == Path.expand(records_dir) ->
+        :ok
+
+      not String.starts_with?(Path.expand(dir), Path.expand(records_dir)) ->
+        :ok
+
+      true ->
+        case File.ls(dir) do
+          {:ok, []} ->
+            _ = File.rmdir(dir)
+            prune_empty_dirs(Path.dirname(dir), records_dir)
+
+          _ ->
+            :ok
+        end
+    end
   end
 
   defp hydrate(nil, _records_dir), do: {:error, :not_found}

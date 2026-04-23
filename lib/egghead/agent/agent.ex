@@ -255,7 +255,13 @@ defmodule Egghead.Agent do
     # agent author declared their model's ceiling explicitly.
     if is_nil(state.context_window), do: send(self(), :fetch_model_info)
 
-    broadcast_lifecycle(:started, state.id)
+    # Push our identity card with the lifecycle broadcast — the
+    # Coordinator reads it directly into its agent registry instead
+    # of round-tripping back to us with `:sys.get_state`. The pull
+    # path raced when the agent was busy in a follow-up handler
+    # (e.g. :fetch_model_info) and the 100ms timeout silently
+    # dropped the registration.
+    broadcast_lifecycle(:started, state.id, nil, info_payload(state))
 
     {:ok, state}
   end
@@ -267,22 +273,37 @@ defmodule Egghead.Agent do
     # one). Doesn't fire on raw `:kill`, but neither do supervised
     # restarts use that. `trap_exit` (set in init) ensures we get
     # called on shutdown signals from the supervisor.
-    broadcast_lifecycle(:terminated, state.id, reason)
+    broadcast_lifecycle(:terminated, state.id, reason, nil)
     :ok
   end
 
-  defp broadcast_lifecycle(event, agent_id, reason \\ nil) do
+  defp broadcast_lifecycle(event, agent_id, reason, info) do
     Phoenix.PubSub.broadcast(
       Egghead.PubSub,
       @lifecycle_topic,
-      {:agent_lifecycle, event, agent_id, reason}
+      {:agent_lifecycle, event, agent_id, reason, info}
     )
+  end
+
+  # Snapshot the fields the Coordinator caches in its AgentInfo
+  # registry. Built from the live %State{} so a hot-reload always
+  # broadcasts the post-edit values.
+  defp info_payload(%State{} = state) do
+    %{
+      name: state.name,
+      model: state.model,
+      capabilities: state.capabilities,
+      tags: state.tags,
+      disposition: state.disposition
+    }
   end
 
   @doc """
   PubSub topic for agent lifecycle events. Subscribe to receive
-  `{:agent_lifecycle, event, agent_id, reason}` messages where event
-  is `:started` or `:terminated`.
+  `{:agent_lifecycle, event, agent_id, reason, info}` messages where
+  event is `:started` or `:terminated`. `info` is a metadata payload
+  on `:started` (used by the Coordinator to populate its registry
+  without an extra round-trip), `nil` on `:terminated`.
   """
   def lifecycle_topic, do: @lifecycle_topic
 

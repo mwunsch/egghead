@@ -75,8 +75,8 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
 
       _ = :sys.get_state(coord)
 
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown})
-      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown, nil})
+      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil, nil})
 
       assert_receive {:system_notice,
                       "agents/alpha reloaded (model: anthropic/claude-haiku-4-5 → anthropic/claude-sonnet-4-6)"},
@@ -98,8 +98,8 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       Coordinator.register_agent(coord, "agents/alpha", %{name: "Renamed", model: "m"})
       _ = :sys.get_state(coord)
 
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown})
-      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown, nil})
+      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil, nil})
 
       assert_receive {:system_notice, "agents/alpha reloaded (title: Alpha → Renamed)"}, 500
     end
@@ -113,8 +113,8 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       send(pid, {:agent_record_changed, {:reloaded, record("agents/alpha")}})
       assert_receive {:system_notice, "agents/alpha reloading…"}
 
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown})
-      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown, nil})
+      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil, nil})
       assert_receive {:system_notice, "agents/alpha reloaded"}, 500
     end
   end
@@ -130,8 +130,8 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       Coordinator.register_agent(coord, "agents/beta", %{name: "Beta"})
       _ = :sys.get_state(coord)
 
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown})
-      send(pid, {:agent_lifecycle, :started, "agents/beta", nil})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown, nil})
+      send(pid, {:agent_lifecycle, :started, "agents/beta", nil, nil})
 
       assert_receive {:system_notice, "agents/alpha became agents/beta"}, 500
       refute_received {:system_notice, "Alpha left"}
@@ -146,7 +146,7 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       seed_agent(pid, room, "agents/alpha", %{name: "Alpha"})
 
       send(pid, {:agent_record_changed, {:demoted, "agents/alpha"}})
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown, nil})
 
       assert_receive {:system_notice, "agents/alpha is no longer an agent"}, 500
     end
@@ -159,7 +159,7 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       seed_agent(pid, room, "agents/alpha", %{name: "Alpha"})
 
       send(pid, {:agent_record_changed, {:removed, "agents/alpha"}})
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :shutdown, nil})
 
       assert_receive {:system_notice, "agents/alpha's record was removed"}, 500
     end
@@ -178,9 +178,45 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       Coordinator.register_agent(coord, "agents/beta", %{name: "Beta"})
       _ = :sys.get_state(coord)
 
-      send(pid, {:agent_lifecycle, :started, "agents/beta", nil})
+      send(pid, {:agent_lifecycle, :started, "agents/beta", nil, nil})
       # Record-driven join — identify by id, not display name.
       assert_receive {:system_notice, "agents/beta joined"}, 500
+    end
+
+    # Regression: a freshly-promoted agent must populate state.agents
+    # from the inline payload alone — no register_agent cast, no live
+    # process to interrogate. The pre-fix code path round-tripped via
+    # :sys.get_state with a 100ms timeout, which silently dropped the
+    # registration when the agent was busy in :fetch_model_info. Then
+    # @-mention activation found nothing in state.agents and the
+    # Coordinator logged "no agents registered, nobody to activate".
+    test ":started payload populates state.agents without any register_agent cast" do
+      {_coord, pid} = start_coord()
+      room = watch_topic()
+
+      :sys.replace_state(pid, fn s ->
+        %{s | rooms: MapSet.put(s.rooms, room)}
+      end)
+
+      send(pid, {:agent_record_changed, {:promoted, record("agents/cassowary")}})
+
+      info = %{
+        name: "Cassowary",
+        model: "anthropic/claude-opus-4-7",
+        capabilities: [:read],
+        tags: ["bird", "research"],
+        disposition: "You are Cassowary."
+      }
+
+      send(pid, {:agent_lifecycle, :started, "agents/cassowary", nil, info})
+      assert_receive {:system_notice, "agents/cassowary joined"}, 500
+
+      state = :sys.get_state(pid)
+      assert %AgentInfo{} = card = Map.get(state.agents, "agents/cassowary")
+      assert card.name == "Cassowary"
+      assert card.model == "anthropic/claude-opus-4-7"
+      assert card.tags == ["bird", "research"]
+      assert card.disposition == "You are Cassowary."
     end
   end
 
@@ -196,7 +232,7 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       Coordinator.register_agent(coord, "agents/alpha", %{name: "Alpha"})
       _ = :sys.get_state(coord)
 
-      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil})
+      send(pid, {:agent_lifecycle, :started, "agents/alpha", nil, nil})
       assert_receive {:system_notice, "Alpha joined"}
     end
 
@@ -205,7 +241,7 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       room = watch_topic()
       seed_agent(pid, room, "agents/alpha", %{name: "Alpha"})
 
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :normal})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :normal, nil})
       assert_receive {:system_notice, "Alpha left"}
 
       _ = :sys.get_state(pid)
@@ -218,7 +254,7 @@ defmodule Egghead.Chat.CoordinatorHotReloadTest do
       room = watch_topic()
       seed_agent(pid, room, "agents/alpha", %{name: "Alpha"})
 
-      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :badmatch})
+      send(pid, {:agent_lifecycle, :terminated, "agents/alpha", :badmatch, nil})
       assert_receive {:system_notice, "Alpha crashed: :badmatch"}
 
       state = :sys.get_state(pid)

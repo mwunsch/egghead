@@ -236,14 +236,16 @@ defmodule Egghead do
 
         Enum.each(joinable, fn agent ->
           Egghead.Chat.Room.join(id, agent.id)
-
-          Egghead.Chat.Coordinator.register_agent(agent.id, %{
-            name: agent.name,
-            capabilities: agent.capabilities,
-            tags: agent[:tags] || [],
-            disposition: agent[:disposition] || ""
-          })
         end)
+
+        # No register_agent loop here on purpose. Each agent broadcasts
+        # its full identity payload with its `:started` lifecycle event
+        # (Egghead.Agent.init/1), and the Coordinator subscribes to the
+        # lifecycle topic at boot. By the time a room is created, the
+        # already-running agents are already in Coordinator state. A
+        # redundant register_agent here would overwrite the live
+        # AgentInfo with a partial card (it didn't pass `:model`,
+        # which surfaced as `model: ?` in reload diffs).
 
         Egghead.Chat.Coordinator.watch_room(id)
 

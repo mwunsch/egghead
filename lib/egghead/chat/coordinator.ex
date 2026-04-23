@@ -279,8 +279,8 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_tool_output, _, _, _, _, _}, state), do: {:noreply, state}
   def handle_info({:system_notice, _text}, state), do: {:noreply, state}
 
-  def handle_info({:agent_lifecycle, event, agent_id, reason}, state) do
-    handle_lifecycle(event, agent_id, reason, state)
+  def handle_info({:agent_lifecycle, event, agent_id, reason, info}, state) do
+    handle_lifecycle(event, agent_id, reason, info, state)
   end
 
   # Pre-empt the lifecycle handler with a "reloading…" hint when the
@@ -414,18 +414,22 @@ defmodule Egghead.Chat.Coordinator do
 
   # Translate global agent lifecycle events into per-room system
   # notices, coalescing with any record-change hint stashed by
-  # handle_record_change. Always refreshes AgentInfo from the live
-  # process so renames and metadata edits propagate to the sidebar
-  # / pickers via the followup roster broadcast. On truly-terminal
-  # terminations, frees the AgentInfo so it can't leak.
-  defp handle_lifecycle(:started, agent_id, _reason, state) do
+  # handle_record_change. The :started broadcast carries the
+  # agent's identity payload inline — populating AgentInfo from
+  # the message itself, with no round-trip back to a possibly-busy
+  # agent process. The pull path (refresh_agent_info) survives as
+  # a fallback for messages without payload (legacy senders) and
+  # for crash-restart resync (rebuild_from_running_agents).
+  defp handle_lifecycle(:started, agent_id, _reason, info, state) do
     {pending, remaining} = Map.pop(state.pending_transitions, agent_id)
     state = %{state | pending_transitions: remaining}
 
-    # Pull fresh AgentInfo from the new process. The agent layer
-    # never calls register_agent itself; the Coordinator drives the
-    # refresh so the agent module stays unaware of the chat layer.
-    state = refresh_agent_info(state, agent_id)
+    state =
+      case info do
+        %{} = payload -> apply_agent_info(state, agent_id, payload)
+        _ -> refresh_agent_info(state, agent_id)
+      end
+
     broadcast_roster_changed(state)
 
     case pending do
@@ -448,7 +452,7 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
-  defp handle_lifecycle(:terminated, agent_id, reason, state) do
+  defp handle_lifecycle(:terminated, agent_id, reason, _info, state) do
     # Rename markers are keyed by the NEW id (the side that fires
     # :started), so a rename-source :terminated has no direct match.
     # Detect that case by walking pending_transitions for a :rename
@@ -544,8 +548,29 @@ defmodule Egghead.Chat.Coordinator do
     end
   end
 
+  # Build an AgentInfo from the payload the agent broadcast inline
+  # with its `:started` lifecycle event. Race-free — no round-trip
+  # to a possibly-busy agent process.
+  defp apply_agent_info(state, agent_id, payload) when is_map(payload) do
+    info = %AgentInfo{
+      id: agent_id,
+      name: Map.get(payload, :name) || agent_id,
+      model: Map.get(payload, :model),
+      capabilities: Map.get(payload, :capabilities) || [],
+      tags: Map.get(payload, :tags) || [],
+      disposition: Map.get(payload, :disposition) || ""
+    }
+
+    agents = Map.put(state.agents, agent_id, info)
+    corpus = Egghead.Chat.Relevance.build_corpus(agents)
+    %{state | agents: agents, corpus: corpus}
+  end
+
   # Read AgentInfo from the live process by registered name. If the
   # process is gone or the read fails, leave state.agents unchanged.
+  # Used as a fallback when no inline payload is available — e.g.
+  # crash-restart resync via rebuild_from_running_agents, or test
+  # senders that fire bare lifecycle messages.
   defp refresh_agent_info(state, agent_id) do
     name = Egghead.Agent.agent_name(agent_id)
 

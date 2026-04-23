@@ -121,12 +121,7 @@ defmodule Egghead.CLI.AgentCmd do
 
     Egghead.CLI.prepare_runtime()
 
-    model =
-      opts[:model] ||
-        Widgets.spinner("Discovering models...", fn ->
-          Egghead.LLM.Registry.await_discovery()
-          pick_model()
-        end)
+    model = opts[:model] || discover_then_pick_model()
 
     tags_input = Widgets.input("Tags (comma-separated)", default: "")
 
@@ -183,6 +178,18 @@ defmodule Egghead.CLI.AgentCmd do
     end
   end
 
+  # Spinner must wrap ONLY the discovery — `pick_model` is interactive
+  # (arrow keys, type-to-filter, redraws) and a still-running spinner
+  # would race the picker's ANSI output, looping the model list and
+  # leaving its label glued to the screen.
+  defp discover_then_pick_model do
+    Widgets.spinner("Discovering models...", fn ->
+      Egghead.LLM.Registry.await_discovery()
+    end)
+
+    pick_model()
+  end
+
   defp pick_model do
     models = Egghead.LLM.Registry.list_models()
 
@@ -208,7 +215,7 @@ defmodule Egghead.CLI.AgentCmd do
   end
 
   defp edit_instructions(name) do
-    editor = System.get_env("EDITOR") || "vi"
+    editor = System.get_env("EDITOR") || System.get_env("VISUAL") || "vi"
     template = Wizard.template(name)
 
     tmp_path =
@@ -224,7 +231,7 @@ defmodule Egghead.CLI.AgentCmd do
     IO.puts("Save and close to continue.")
     IO.puts("")
 
-    {_, exit_code} = System.cmd(editor, [tmp_path], into: IO.stream(:stdio, :line))
+    exit_code = spawn_editor(editor, tmp_path)
 
     if exit_code == 0 do
       content = File.read!(tmp_path)
@@ -235,6 +242,48 @@ defmodule Egghead.CLI.AgentCmd do
       IO.puts("Editor exited with code #{exit_code}, using template.")
       template
     end
+  end
+
+  # Hand `$EDITOR` the BEAM's controlling tty directly via a shell
+  # port with `:nouse_stdio`. The previous `System.cmd(..., into:
+  # IO.stream(...))` piped the editor's I/O through the BEAM, which
+  # left vim without a real tty — buffered bytes from earlier raw-mode
+  # widgets (terminal device-status replies, residual keystrokes) then
+  # leaked in as keystrokes, dropping the user into insert mode with
+  # garbage prepended and an unresponsive Esc. Mirrors
+  # `Egghead.TUI.Records.Update.spawn_editor/1`.
+  defp spawn_editor(editor, path) do
+    sh = System.find_executable("sh") || "/bin/sh"
+
+    # Drain any pending bytes (terminal responses to the picker's
+    # ANSI queries, stray keystrokes) before handing the tty over.
+    safe_drain_input()
+
+    escaped = String.replace(path, "'", "'\\''")
+
+    port =
+      Port.open({:spawn_executable, sh}, [
+        :nouse_stdio,
+        :exit_status,
+        args: ["-c", "#{editor} '#{escaped}'"]
+      ])
+
+    receive do
+      {^port, {:exit_status, status}} -> status
+    end
+  end
+
+  defp safe_drain_input do
+    if Code.ensure_loaded?(Egghead.OpenTUI.Bridge) and
+         function_exported?(Egghead.OpenTUI.Bridge, :drain_input, 1) do
+      try do
+        Egghead.OpenTUI.Bridge.drain_input(50)
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    :ok
   end
 
   # --- Capability management ---

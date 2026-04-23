@@ -470,30 +470,77 @@ defmodule Egghead.CLI.Widgets do
   defp do_select_grouped(rows, selectable_indices, label, render_as) do
     with_raw_mode(fn ->
       if label, do: raw_puts(label)
-      select_grouped_loop(rows, selectable_indices, render_as, 0, label != nil)
+      window_size = grouped_window_size(label != nil)
+      select_grouped_loop(rows, selectable_indices, render_as, 0, 0, window_size, label != nil)
     end)
   end
 
-  defp select_grouped_loop(rows, selectable_indices, render_as, cursor_pos, has_label) do
+  defp select_grouped_loop(
+         rows,
+         selectable_indices,
+         render_as,
+         cursor_pos,
+         window_top,
+         window_size,
+         has_label
+       ) do
     current_idx = Enum.at(selectable_indices, cursor_pos)
-    lines = render_grouped(rows, current_idx, render_as)
-    grouped_input(rows, selectable_indices, render_as, cursor_pos, has_label, lines)
+    window_top = clamp_window_top(window_top, current_idx, window_size, length(rows))
+    lines = render_grouped(rows, current_idx, render_as, window_top, window_size)
+
+    grouped_input(
+      rows,
+      selectable_indices,
+      render_as,
+      cursor_pos,
+      window_top,
+      window_size,
+      has_label,
+      lines
+    )
   end
 
   # Key dispatcher: separate from the render loop so unknown keys
   # don't trigger a re-render (which would stack menu copies on
   # the screen). Unknown keys just re-read without redrawing.
-  defp grouped_input(rows, selectable_indices, render_as, cursor_pos, has_label, lines) do
+  defp grouped_input(
+         rows,
+         selectable_indices,
+         render_as,
+         cursor_pos,
+         window_top,
+         window_size,
+         has_label,
+         lines
+       ) do
     case read_key() do
       {:key, :up} ->
         new_pos = max(0, cursor_pos - 1)
         clear_lines(lines)
-        select_grouped_loop(rows, selectable_indices, render_as, new_pos, has_label)
+
+        select_grouped_loop(
+          rows,
+          selectable_indices,
+          render_as,
+          new_pos,
+          window_top,
+          window_size,
+          has_label
+        )
 
       {:key, :down} ->
         new_pos = min(length(selectable_indices) - 1, cursor_pos + 1)
         clear_lines(lines)
-        select_grouped_loop(rows, selectable_indices, render_as, new_pos, has_label)
+
+        select_grouped_loop(
+          rows,
+          selectable_indices,
+          render_as,
+          new_pos,
+          window_top,
+          window_size,
+          has_label
+        )
 
       {:key, :enter} ->
         clear_lines(lines)
@@ -514,13 +561,33 @@ defmodule Egghead.CLI.Widgets do
         nil
 
       _ ->
-        grouped_input(rows, selectable_indices, render_as, cursor_pos, has_label, lines)
+        grouped_input(
+          rows,
+          selectable_indices,
+          render_as,
+          cursor_pos,
+          window_top,
+          window_size,
+          has_label,
+          lines
+        )
     end
   end
 
-  defp render_grouped(rows, current_idx, render_as) do
-    rows
-    |> Enum.with_index()
+  # Render only the visible window of rows. Lists longer than the
+  # terminal scroll the top off-screen on render, then clear_lines
+  # can only walk back as far as the visible top — leaving stale
+  # copies in the scrollback that re-render appends below.
+  defp render_grouped(rows, current_idx, render_as, window_top, window_size) do
+    total = length(rows)
+    visible = Enum.slice(rows, window_top, window_size)
+    above? = window_top > 0
+    below? = window_top + window_size < total
+
+    if above?, do: raw_puts("  " <> dim("▲ #{window_top} more above"))
+
+    visible
+    |> Enum.with_index(window_top)
     |> Enum.each(fn
       {{:group, group_label}, _idx} ->
         raw_puts("  \e[1m#{group_label}\e[0m")
@@ -531,8 +598,51 @@ defmodule Egghead.CLI.Widgets do
         raw_puts("    #{indicator} #{highlight}#{render_as.(item)}\e[0m")
     end)
 
+    if below?,
+      do: raw_puts("  " <> dim("▼ #{total - window_top - window_size} more below"))
+
     raw_puts("  " <> dim("↑/↓ navigate  enter select  esc cancel"))
-    length(rows) + 1
+
+    length(visible) + 1 + bool_to_int(above?) + bool_to_int(below?)
+  end
+
+  defp bool_to_int(true), do: 1
+  defp bool_to_int(false), do: 0
+
+  # Slide the window so the cursor row is always inside it. Done
+  # before render so the window_top passed in is just a hint from
+  # the previous iteration.
+  defp clamp_window_top(window_top, current_idx, window_size, total) do
+    cond do
+      current_idx < window_top -> current_idx
+      current_idx >= window_top + window_size -> current_idx - window_size + 1
+      true -> window_top
+    end
+    |> max(0)
+    |> min(max(total - window_size, 0))
+  end
+
+  # Reserve rows for: the optional label, ▲/▼ markers, the hint,
+  # and a couple of breathing-room lines for the shell prompt that
+  # appears above. Floor at 6 so very short terminals still work.
+  defp grouped_window_size(has_label) do
+    case bridge_tty_rows() do
+      {:ok, rows} ->
+        reserved = if has_label, do: 6, else: 5
+        max(rows - reserved, 6)
+
+      :error ->
+        20
+    end
+  end
+
+  defp bridge_tty_rows do
+    case Egghead.OpenTUI.Bridge.tty_size() do
+      {:ok, {_cols, rows}} -> {:ok, rows}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
   end
 
   # ── Multiselect implementation ─────────────────────────────

@@ -365,23 +365,64 @@ defmodule Egghead.CLI.Widgets do
   defp do_select(items, label, render_as) do
     with_raw_mode(fn ->
       if label, do: raw_puts(label)
-      select_loop(items, items, render_as, 0, "", label != nil)
+      window_size = viewport_window_size(label != nil)
+      select_loop(items, items, render_as, 0, "", 0, window_size, label != nil)
     end)
   end
 
-  defp select_loop(all_items, visible, render_as, cursor, filter, has_label) do
-    lines = render_select(visible, render_as, cursor, filter, length(all_items))
+  defp select_loop(
+         all_items,
+         visible,
+         render_as,
+         cursor,
+         filter,
+         window_top,
+         window_size,
+         has_label
+       ) do
+    window_top = clamp_window_top(window_top, cursor, window_size, length(visible))
+
+    lines =
+      render_select(
+        visible,
+        render_as,
+        cursor,
+        filter,
+        length(all_items),
+        window_top,
+        window_size
+      )
 
     case read_key() do
       {:key, :up} ->
         new_cursor = max(0, cursor - 1)
         clear_lines(lines)
-        select_loop(all_items, visible, render_as, new_cursor, filter, has_label)
+
+        select_loop(
+          all_items,
+          visible,
+          render_as,
+          new_cursor,
+          filter,
+          window_top,
+          window_size,
+          has_label
+        )
 
       {:key, :down} ->
         new_cursor = min(length(visible) - 1, cursor + 1)
         clear_lines(lines)
-        select_loop(all_items, visible, render_as, new_cursor, filter, has_label)
+
+        select_loop(
+          all_items,
+          visible,
+          render_as,
+          new_cursor,
+          filter,
+          window_top,
+          window_size,
+          has_label
+        )
 
       {:key, :enter} ->
         clear_lines(lines)
@@ -404,20 +445,32 @@ defmodule Egghead.CLI.Widgets do
         new_filter = String.slice(filter, 0..-2//1)
         new_visible = filter_items(all_items, render_as, new_filter)
         clear_lines(lines)
-        select_loop(all_items, new_visible, render_as, 0, new_filter, has_label)
+        # Filter changed → reset cursor AND window. The cursor jumps
+        # back to row 0 of a freshly-narrowed list; the window must
+        # follow or the slice math goes negative.
+        select_loop(all_items, new_visible, render_as, 0, new_filter, 0, window_size, has_label)
 
       {:char, c} ->
         new_filter = filter <> c
         new_visible = filter_items(all_items, render_as, new_filter)
         clear_lines(lines)
-        select_loop(all_items, new_visible, render_as, 0, new_filter, has_label)
+        select_loop(all_items, new_visible, render_as, 0, new_filter, 0, window_size, has_label)
 
       _ ->
-        select_loop(all_items, visible, render_as, cursor, filter, has_label)
+        select_loop(
+          all_items,
+          visible,
+          render_as,
+          cursor,
+          filter,
+          window_top,
+          window_size,
+          has_label
+        )
     end
   end
 
-  defp render_select(visible, render_as, cursor, filter, total) do
+  defp render_select(visible, render_as, cursor, filter, total, window_top, window_size) do
     filter_line =
       if filter != "" do
         raw_puts("  " <> dim("filter:") <> " #{filter}")
@@ -426,13 +479,21 @@ defmodule Egghead.CLI.Widgets do
         0
       end
 
+    total_visible = length(visible)
+    above? = window_top > 0
+    below? = window_top + window_size < total_visible
+
+    if above?, do: raw_puts("  " <> dim("▲ #{window_top} more above"))
+
     item_lines =
       if visible == [] do
         raw_puts("  " <> dim("(no matches)"))
         1
       else
-        visible
-        |> Enum.with_index()
+        slice = Enum.slice(visible, window_top, window_size)
+
+        slice
+        |> Enum.with_index(window_top)
         |> Enum.each(fn {item, idx} ->
           indicator = if idx == cursor, do: "\e[36m▸\e[0m", else: " "
           text = render_as.(item)
@@ -440,8 +501,11 @@ defmodule Egghead.CLI.Widgets do
           raw_puts("  #{indicator} #{highlight}#{text}\e[0m")
         end)
 
-        length(visible)
+        length(slice)
       end
+
+    if below?,
+      do: raw_puts("  " <> dim("▼ #{total_visible - window_top - window_size} more below"))
 
     match_info =
       if filter != "" do
@@ -452,7 +516,7 @@ defmodule Egghead.CLI.Widgets do
 
     raw_puts("  " <> dim("#{match_info}↑/↓ navigate  enter select  esc cancel"))
 
-    filter_line + item_lines + 1
+    filter_line + item_lines + 1 + bool_to_int(above?) + bool_to_int(below?)
   end
 
   defp filter_items(all, _render_as, ""), do: all
@@ -470,7 +534,7 @@ defmodule Egghead.CLI.Widgets do
   defp do_select_grouped(rows, selectable_indices, label, render_as) do
     with_raw_mode(fn ->
       if label, do: raw_puts(label)
-      window_size = grouped_window_size(label != nil)
+      window_size = viewport_window_size(label != nil)
       select_grouped_loop(rows, selectable_indices, render_as, 0, 0, window_size, label != nil)
     end)
   end
@@ -625,7 +689,10 @@ defmodule Egghead.CLI.Widgets do
   # Reserve rows for: the optional label, ▲/▼ markers, the hint,
   # and a couple of breathing-room lines for the shell prompt that
   # appears above. Floor at 6 so very short terminals still work.
-  defp grouped_window_size(has_label) do
+  # Shared by select / select_grouped / multiselect — they all use
+  # the same render-then-clear pattern and break the same way when
+  # the rendered total exceeds the viewport.
+  defp viewport_window_size(has_label) do
     case bridge_tty_rows() do
       {:ok, rows} ->
         reserved = if has_label, do: 6, else: 5
@@ -650,27 +717,45 @@ defmodule Egghead.CLI.Widgets do
   defp do_multiselect(items, label, selected) do
     with_raw_mode(fn ->
       if label, do: raw_puts(label)
-      multiselect_loop(items, 0, selected, label != nil)
+      window_size = viewport_window_size(label != nil)
+      multiselect_loop(items, 0, selected, 0, window_size, label != nil)
     end)
   end
 
-  defp multiselect_loop(items, cursor, selected, has_label) do
-    lines = render_multiselect(items, cursor, selected)
-    multiselect_input(items, cursor, selected, has_label, lines)
+  defp multiselect_loop(items, cursor, selected, window_top, window_size, has_label) do
+    window_top = clamp_window_top(window_top, cursor, window_size, length(items))
+    lines = render_multiselect(items, cursor, selected, window_top, window_size)
+    multiselect_input(items, cursor, selected, window_top, window_size, has_label, lines)
   end
 
   # Key dispatcher: separate from the render loop so unknown keys
   # don't trigger a re-render (which would stack menu copies on
-  # the screen). Mirrors grouped_input/6.
-  defp multiselect_input(items, cursor, selected, has_label, lines) do
+  # the screen). Mirrors grouped_input/8.
+  defp multiselect_input(items, cursor, selected, window_top, window_size, has_label, lines) do
     case read_key() do
       {:key, :up} ->
         clear_lines(lines)
-        multiselect_loop(items, max(0, cursor - 1), selected, has_label)
+
+        multiselect_loop(
+          items,
+          max(0, cursor - 1),
+          selected,
+          window_top,
+          window_size,
+          has_label
+        )
 
       {:key, :down} ->
         clear_lines(lines)
-        multiselect_loop(items, min(length(items) - 1, cursor + 1), selected, has_label)
+
+        multiselect_loop(
+          items,
+          min(length(items) - 1, cursor + 1),
+          selected,
+          window_top,
+          window_size,
+          has_label
+        )
 
       {:char, " "} ->
         {_label, value} = Enum.at(items, cursor)
@@ -681,7 +766,7 @@ defmodule Egghead.CLI.Widgets do
             else: MapSet.put(selected, value)
 
         clear_lines(lines)
-        multiselect_loop(items, cursor, new_selected, has_label)
+        multiselect_loop(items, cursor, new_selected, window_top, window_size, has_label)
 
       {:key, :enter} ->
         clear_lines(lines)
@@ -706,13 +791,21 @@ defmodule Egghead.CLI.Widgets do
         []
 
       _ ->
-        multiselect_input(items, cursor, selected, has_label, lines)
+        multiselect_input(items, cursor, selected, window_top, window_size, has_label, lines)
     end
   end
 
-  defp render_multiselect(items, cursor, selected) do
-    items
-    |> Enum.with_index()
+  defp render_multiselect(items, cursor, selected, window_top, window_size) do
+    total = length(items)
+    above? = window_top > 0
+    below? = window_top + window_size < total
+
+    if above?, do: raw_puts("  " <> dim("▲ #{window_top} more above"))
+
+    slice = Enum.slice(items, window_top, window_size)
+
+    slice
+    |> Enum.with_index(window_top)
     |> Enum.each(fn {{label, value}, idx} ->
       indicator = if idx == cursor, do: "\e[36m▸\e[0m", else: " "
       check = if MapSet.member?(selected, value), do: "\e[32m✓\e[0m", else: " "
@@ -720,8 +813,11 @@ defmodule Egghead.CLI.Widgets do
       raw_puts("  #{indicator} [#{check}] #{highlight}#{label}\e[0m")
     end)
 
+    if below?, do: raw_puts("  " <> dim("▼ #{total - window_top - window_size} more below"))
+
     raw_puts("  " <> dim("↑/↓ navigate  space toggle  enter confirm"))
-    length(items) + 1
+
+    length(slice) + 1 + bool_to_int(above?) + bool_to_int(below?)
   end
 
   # ── Input implementation ───────────────────────────────────

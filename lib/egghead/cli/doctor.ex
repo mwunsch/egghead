@@ -1,7 +1,6 @@
 defmodule Egghead.CLI.Doctor do
   @moduledoc false
 
-  alias Egghead.Capability
   alias Egghead.Capability.Catalog
   alias Egghead.Capability.Validate
   alias Egghead.CLI.Widgets
@@ -376,14 +375,19 @@ defmodule Egghead.CLI.Doctor do
       {:warn, _} -> Widgets.warn("  #{record.id}")
     end
 
-    render_capability_list(raw)
+    render_capability_list(record)
     Enum.each(warnings, fn w -> IO.puts("      \e[33m⚠\e[0m #{w}") end)
 
     result
   end
 
-  defp render_capability_list(raw) do
-    grants = parse_safely(raw)
+  # Display the agent's *effective* capabilities — the same list the live
+  # agent GenServer holds. Routes through `Record.Agent.parse_capabilities/1`
+  # so `access:` expansion, `sandbox:` expansion, and the no-keys default
+  # (`records.read`) all apply. Reading `meta["capabilities"]` directly
+  # would silently under-report any agent that relied on those shortcuts.
+  defp render_capability_list(record) do
+    grants = parse_agent_safely(record)
 
     cond do
       grants == [] ->
@@ -399,11 +403,12 @@ defmodule Egghead.CLI.Doctor do
     end
   end
 
-  # Capability.parse/1 logs warnings for malformed entries. For the
-  # doctor display we want to tolerate bad input silently and
-  # continue — the validation pass above already surfaced the issues.
-  defp parse_safely(raw) do
-    Capability.parse(raw || [])
+  # `Record.Agent.parse_capabilities/1` logs warnings for malformed
+  # entries. For the doctor display we tolerate bad input silently
+  # and continue — the validation pass above already surfaced the
+  # issues as warning lines.
+  defp parse_agent_safely(record) do
+    Egghead.Record.Agent.parse_capabilities(record)
   rescue
     _ -> []
   catch

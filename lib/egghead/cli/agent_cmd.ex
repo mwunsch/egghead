@@ -647,27 +647,44 @@ defmodule Egghead.CLI.AgentCmd do
   defp dissolve_access(record) do
     has_access? = Map.has_key?(record.meta, "access")
     has_sandbox? = Map.has_key?(record.meta, "sandbox")
+    has_caps? = Map.has_key?(record.meta, "capabilities")
 
-    if has_access? or has_sandbox? do
-      expanded =
-        Egghead.Record.Agent.expand_access(record.meta["access"]) ++
-          Egghead.Record.Agent.expand_sandbox(record.meta["sandbox"]) ++
-          List.wrap(record.meta["capabilities"] || [])
+    cond do
+      # Any shortcut present — dissolve to explicit capabilities. Route
+      # through Record.Agent.parse_capabilities/1 so the projection
+      # matches the live agent (access + sandbox + capabilities + default
+      # all combine the same way in one place). Mark the shortcuts for
+      # removal in the same write.
+      has_access? or has_sandbox? ->
+        unified = effective_caps_as_yaml(record)
 
-      unified =
-        expanded
-        |> Egghead.Capability.parse()
-        |> Enum.map(&Egghead.Capability.grant_to_yaml/1)
+        removes =
+          %{}
+          |> maybe_mark_removed(has_access?, "access")
+          |> maybe_mark_removed(has_sandbox?, "sandbox")
 
-      removes =
-        %{}
-        |> maybe_mark_removed(has_access?, "access")
-        |> maybe_mark_removed(has_sandbox?, "sandbox")
+        {unified, removes}
 
-      {unified, removes}
-    else
-      {List.wrap(record.meta["capabilities"] || []), %{}}
+      # No shortcut but also no explicit capabilities — the agent relies
+      # on the no-keys default (`records.read`). A grant here would
+      # silently drop that default; materialize it before adding the new
+      # grant so the agent's authority doesn't regress.
+      not has_caps? ->
+        {effective_caps_as_yaml(record), %{}}
+
+      # Explicit capabilities key present — pass through as-is. The
+      # existing list is the source of truth; we don't expand, we don't
+      # inject defaults. Includes the explicit-opt-out case
+      # (`capabilities: []`), which must be preserved.
+      true ->
+        {List.wrap(record.meta["capabilities"] || []), %{}}
     end
+  end
+
+  defp effective_caps_as_yaml(record) do
+    record
+    |> Egghead.Record.Agent.parse_capabilities()
+    |> Enum.map(&Egghead.Capability.grant_to_yaml/1)
   end
 
   defp maybe_mark_removed(map, false, _key), do: map

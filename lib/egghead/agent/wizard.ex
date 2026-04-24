@@ -62,20 +62,25 @@ defmodule Egghead.Agent.Wizard do
     params = Map.put(params, :name, slug)
 
     with :ok <- validate(params) do
-      meta =
-        %{"model" => params.model}
+      # The record store's `render_markdown/1` emits each top-level attr
+      # as its own frontmatter line. Model / capabilities / access /
+      # sandbox all need to be first-class keys; nesting them under a
+      # `meta:` map would make `render_markdown` serialize the whole
+      # thing as a single JSON blob (`meta: {"model": ..., ...}`),
+      # which is valid YAML but hides the fields from `Record.Agent`
+      # projection and from a human reading the file.
+      attrs =
+        %{
+          "id" => "agents/#{slug}",
+          "title" => title_case(original_name),
+          "class" => :agent,
+          "tags" => Enum.uniq(["agent" | params[:tags] || []]),
+          "body" => params.instructions || template(slug),
+          "model" => params.model
+        }
         |> maybe_put("capabilities", params[:capabilities])
         |> maybe_put("access", params[:access])
         |> maybe_put("sandbox", params[:sandbox])
-
-      attrs = %{
-        id: "agents/#{slug}",
-        title: title_case(original_name),
-        class: :agent,
-        tags: Enum.uniq(["agent" | params[:tags] || []]),
-        body: params.instructions || template(slug),
-        meta: meta
-      }
 
       Egghead.create_record(attrs)
     end

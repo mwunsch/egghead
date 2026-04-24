@@ -47,7 +47,6 @@ defmodule Egghead.Eval.Runner do
 
     * `:roster` — `:user` (default) or `:task`
     * `:timeout` — ms, default 300_000
-    * `:round_budget` — default 10
     * `:judge_model` — override model for Judge (e.g. `"anthropic/claude-sonnet-4-6"`)
     * `:on_event` — a zero/one-arg callback invoked with `{:phase, ...}`
       tuples as the run progresses. Used by the CLI for live output.
@@ -177,13 +176,11 @@ defmodule Egghead.Eval.Runner do
     run_id = Keyword.fetch!(opts, :run_id)
 
     room_id = "eval-#{run_id}"
-    round_budget = Keyword.get(opts, :round_budget, 10)
     timeout = Keyword.get(opts, :timeout, 300_000)
     mode = task.dialogue_mode || :serial
 
     room_opts = [
       id: room_id,
-      round_budget: round_budget,
       idle_timeout: true,
       mode: mode,
       agents: agent_ids

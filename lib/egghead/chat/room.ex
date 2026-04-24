@@ -15,12 +15,16 @@ defmodule Egghead.Chat.Room do
 
   require Logger
 
-  # How many agent messages can land before we ask the human to
-  # /continue. One tick per agent response (not per round or per
-  # mention); passes don't count. Raised from 5 when the tick
-  # semantics shifted to per-message — 5 was effectively nothing
-  # once open-activation rounds (3-4 specialists) counted honestly.
-  @default_round_budget 15
+  # Per-user-message activation budget. Each agent activation (direct,
+  # @-mention, cascade hop) consumes one slot. Resets on the next user
+  # message and on /continue. Computed from the room's roster size:
+  # `clamp(2 * agent_count, floor, ceiling)`. Two-per-agent gives every
+  # agent room to respond plus one cascade hop; the floor keeps tiny
+  # rooms loose; the ceiling caps blast radius in big rooms.
+  @activation_budget_per_agent 2
+  @activation_budget_floor 6
+  @activation_budget_ceiling 21
+
   @idle_timeout :timer.minutes(5)
   @pubsub Egghead.PubSub
 
@@ -59,21 +63,28 @@ defmodule Egghead.Chat.Room do
       :id,
       transcript: [],
       agents: MapSet.new(),
-      round_budget: 15,
-      rounds_remaining: 0,
+      # Activation budget: cap is a function of roster size,
+      # consumed per agent activation (Coordinator gates).
+      activation_budget: 0,
+      activations_remaining: 0,
+      pending_activations: [],
+      # Test escape hatch: when set at start_link via the :activation_budget
+      # opt, this pins the cap so it survives roster changes and
+      # send_message recomputes. Production callers leave it nil.
+      pinned_activation_budget: nil,
+      # Latched once per turn so we don't spam :budget_exhausted on
+      # every queued activation; reset on send_message and continue.
+      budget_broadcast?: false,
       current_round_responded: MapSet.new(),
-      pending_mentions: [],
       # %{agent_id => %Message{}} — provisional streaming messages
       in_progress: %{},
       muted: MapSet.new(),
       idle_timeout: nil,
       mode: :serial,
       status: :waiting,
-      # When true, agent_respond / agent_pass / agent_mentions are
-      # all swallowed: in-flight tasks finishing late don't get
-      # appended or fanned out, and Coordinator stops spawning new
-      # cascades. Cleared on send_message (next user turn) or
-      # continue (explicit resume).
+      # When true, agent_respond / agent_pass are swallowed: in-flight
+      # tasks finishing late don't get appended or fanned out.
+      # Cleared on send_message (next user turn) or continue.
       halted: false
     ]
   end
@@ -92,13 +103,35 @@ defmodule Egghead.Chat.Room do
   end
 
   @doc """
-  User sends a message to the room. Resets the round budget.
+  User sends a message to the room. Resets the activation budget.
   """
   @spec send_message(String.t(), String.t()) :: :ok
   def send_message(room_id, content) do
     user = Egghead.User.current()
     sender = %Sender{type: :user, id: user.id, name: user.name}
     Egghead.Node.call(room_name(room_id), {:send_message, sender, content})
+  end
+
+  @doc """
+  Atomically check the activation budget and consume one slot.
+
+  Returns `:ok` if a slot was reserved (caller proceeds with the
+  agent's turn), or `:exhausted` if the budget is dry. The Coordinator
+  calls this immediately before spawning each agent activation; on
+  `:exhausted` the caller should `queue_activation/3` instead.
+  """
+  @spec try_activate(String.t(), String.t()) :: :ok | :exhausted
+  def try_activate(room_id, agent_id) do
+    Egghead.Node.call(room_name(room_id), {:try_activate, agent_id})
+  end
+
+  @doc """
+  Push an agent activation onto the pending queue, to be replayed on
+  the next `/continue`. Latches `:budget_exhausted` once per turn.
+  """
+  @spec queue_activation(String.t(), String.t(), keyword()) :: :ok
+  def queue_activation(room_id, agent_id, opts \\ []) do
+    Egghead.Node.call(room_name(room_id), {:queue_activation, agent_id, opts})
   end
 
   @doc """
@@ -364,22 +397,44 @@ defmodule Egghead.Chat.Room do
   @impl true
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
-    round_budget = Keyword.get(opts, :round_budget, @default_round_budget)
     idle_timeout = if Keyword.get(opts, :idle_timeout), do: @idle_timeout
 
     Logger.info("Chat room started: #{id}")
 
     mode = Keyword.get(opts, :mode, :serial)
 
+    # Test escape hatch: pin the budget so it survives roster changes
+    # and send_message recomputes. Production callers leave this unset
+    # and the budget tracks the roster.
+    pinned = Keyword.get(opts, :activation_budget)
+    initial_budget = pinned || compute_activation_budget(MapSet.new())
+
     state = %State{
       id: id,
-      round_budget: round_budget,
-      rounds_remaining: round_budget,
+      activation_budget: initial_budget,
+      activations_remaining: initial_budget,
+      pinned_activation_budget: pinned,
       idle_timeout: idle_timeout,
       mode: mode
     }
 
     if idle_timeout, do: {:ok, state, idle_timeout}, else: {:ok, state}
+  end
+
+  # `clamp(2 * roster_size, 6, 21)`. Floor keeps tiny rooms loose,
+  # ceiling caps big-room blast radius. Recomputed on roster change
+  # and on every send_message — unless `pinned_activation_budget` is
+  # set (test escape hatch), in which case that wins.
+  defp budget_for(state) do
+    case state.pinned_activation_budget do
+      nil -> compute_activation_budget(state.agents)
+      pinned -> pinned
+    end
+  end
+
+  defp compute_activation_budget(agents) do
+    raw = @activation_budget_per_agent * MapSet.size(agents)
+    raw |> max(@activation_budget_floor) |> min(@activation_budget_ceiling)
   end
 
   @impl true
@@ -395,17 +450,47 @@ defmodule Egghead.Chat.Room do
       mentions: mentions
     }
 
+    new_budget = budget_for(state)
+
     state = %{
       state
       | transcript: state.transcript ++ [msg],
-        rounds_remaining: state.round_budget,
+        activation_budget: new_budget,
+        activations_remaining: new_budget,
+        pending_activations: [],
+        budget_broadcast?: false,
         current_round_responded: MapSet.new(),
-        pending_mentions: [],
         status: :active,
         halted: false
     }
 
     broadcast(state.id, {:user_message, msg})
+
+    reply_with_timeout(:ok, state)
+  end
+
+  def handle_call({:try_activate, _agent_id}, _from, state) do
+    if state.activations_remaining > 0 do
+      state = %{state | activations_remaining: state.activations_remaining - 1}
+      reply_with_timeout(:ok, state)
+    else
+      reply_with_timeout(:exhausted, state)
+    end
+  end
+
+  def handle_call({:queue_activation, agent_id, opts}, _from, state) do
+    state = %{
+      state
+      | pending_activations: state.pending_activations ++ [{agent_id, opts}]
+    }
+
+    state =
+      if state.budget_broadcast? do
+        state
+      else
+        broadcast(state.id, :budget_exhausted)
+        %{state | budget_broadcast?: true, status: :waiting}
+      end
 
     reply_with_timeout(:ok, state)
   end
@@ -479,60 +564,26 @@ defmodule Egghead.Chat.Room do
       usage: usage
     }
 
-    # Every agent response ticks the turn budget once. Passes don't
-    # count (handled in agent_pass). This makes open-activation rounds
-    # pay honestly (4 specialists responding → 4 ticks), same as a
-    # chained @-mention cascade (1 tick per hop). Previously the
-    # budget only fired on @-mention cascades, which produced weird
-    # asymmetry between activation modes.
-    new_remaining = state.rounds_remaining - 1
-    exhausted_now? = state.rounds_remaining > 0 and new_remaining <= 0
-
     state = %{
       state
       | transcript: state.transcript ++ [msg],
         current_round_responded: MapSet.put(state.current_round_responded, sender.id),
-        in_progress: Map.delete(state.in_progress, sender.id),
-        rounds_remaining: max(new_remaining, 0)
+        in_progress: Map.delete(state.in_progress, sender.id)
     }
 
     broadcast(state.id, {:agent_message, msg})
 
-    # @-mentions of specific agents trigger cascading activation.
-    # @everyone / @channel are broadcast mentions handled elsewhere.
+    # @-mentions of specific agents are broadcast unconditionally; the
+    # Coordinator gates each one through `try_activate/2` and queues
+    # any that exceed the budget. The Room used to do the gating here,
+    # but that left parallel-mention fan-out unbounded — a single
+    # response @-mentioning five agents would spawn five Tasks before
+    # the budget could see any of them.
     agent_mentions = Enum.filter(mentions, &(&1 != "everyone" and &1 != "channel"))
 
-    state =
-      cond do
-        # Budget has room and there are mentions: activate them.
-        agent_mentions != [] and state.rounds_remaining > 0 ->
-          broadcast(state.id, {:agent_mentions, state.id, sender.id, agent_mentions, content})
-          state
-
-        # Budget exhausted with mentions: queue for replay on /continue.
-        agent_mentions != [] ->
-          %{
-            state
-            | status: :waiting,
-              pending_mentions: state.pending_mentions ++ [{sender.id, agent_mentions, content}]
-          }
-
-        # No mentions; the round finishes naturally.
-        true ->
-          state
-      end
-
-    # Announce budget exhaustion to UI clients the first time we hit
-    # zero, so the "do you have anything to add?" nudge can render.
-    # Fires regardless of whether mentions were queued: the human may
-    # want to chime in even if the conversation would otherwise pause.
-    state =
-      if exhausted_now? do
-        broadcast(state.id, :budget_exhausted)
-        %{state | status: :waiting}
-      else
-        state
-      end
+    if agent_mentions != [] do
+      broadcast(state.id, {:agent_mentions, state.id, sender.id, agent_mentions, content})
+    end
 
     reply_with_timeout(:ok, state)
   end
@@ -546,7 +597,7 @@ defmodule Egghead.Chat.Room do
     state = %{
       state
       | status: :waiting,
-        pending_mentions: [],
+        pending_activations: [],
         in_progress: %{},
         halted: true
     }
@@ -556,38 +607,44 @@ defmodule Egghead.Chat.Room do
   end
 
   def handle_call(:continue, _from, state) do
-    pending = state.pending_mentions
+    pending = state.pending_activations
 
     state = %{
       state
-      | rounds_remaining: state.round_budget,
+      | activations_remaining: state.activation_budget,
         current_round_responded: MapSet.new(),
         status: :active,
-        pending_mentions: [],
+        pending_activations: [],
+        budget_broadcast?: false,
         halted: false
     }
 
     broadcast(state.id, :continued)
 
-    # Replay pending @-mentions that were queued when budget ran out
-    Enum.each(pending, fn {from_agent, mentioned, mention_content} ->
-      broadcast(
-        state.id,
-        {:agent_mentions, state.id, from_agent, mentioned, mention_content}
-      )
+    # Replay queued activations that were deferred when budget exhausted.
+    # Each fires as :reactivate — the Coordinator handler treats it as
+    # a fresh activation and re-checks try_activate against the
+    # newly-reset budget.
+    Enum.each(pending, fn {agent_id, opts} ->
+      broadcast(state.id, {:reactivate, state.id, agent_id, opts})
     end)
 
     reply_with_timeout(:ok, state)
   end
 
   def handle_call({:join, agent_id}, _from, state) do
-    state = %{state | agents: MapSet.put(state.agents, agent_id)}
+    agents = MapSet.put(state.agents, agent_id)
+    # Recompute the cap so a new agent can participate in this turn,
+    # but leave activations_remaining alone — slots already spent
+    # stay spent.
+    state = %{state | agents: agents, activation_budget: budget_for(%{state | agents: agents})}
     broadcast(state.id, {:agent_joined, agent_id})
     {:reply, :ok, state}
   end
 
   def handle_call({:leave, agent_id}, _from, state) do
-    state = %{state | agents: MapSet.delete(state.agents, agent_id)}
+    agents = MapSet.delete(state.agents, agent_id)
+    state = %{state | agents: agents, activation_budget: budget_for(%{state | agents: agents})}
     broadcast(state.id, {:agent_left, agent_id})
     {:reply, :ok, state}
   end
@@ -621,9 +678,9 @@ defmodule Egghead.Chat.Room do
       agents: MapSet.to_list(state.agents),
       muted: MapSet.to_list(state.muted),
       status: state.status,
-      rounds_remaining: state.rounds_remaining,
-      round_budget: state.round_budget,
-      pending_mentions: length(state.pending_mentions),
+      activations_remaining: state.activations_remaining,
+      activation_budget: state.activation_budget,
+      pending_activations: length(state.pending_activations),
       message_count: length(state.transcript),
       mode: state.mode,
       halted: state.halted

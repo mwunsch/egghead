@@ -17,8 +17,7 @@ defmodule Egghead.CLI.EvalCmd do
           help: :boolean,
           roster: :string,
           judge: :string,
-          timeout: :integer,
-          round_budget: :integer
+          timeout: :integer
         ],
         aliases: [h: :help]
       )
@@ -120,7 +119,6 @@ defmodule Egghead.CLI.EvalCmd do
       |> put_if(opts[:roster], :roster, parse_roster_mode(opts[:roster]))
       |> put_if(opts[:judge], :judge_model, opts[:judge])
       |> put_if(opts[:timeout], :timeout, opts[:timeout])
-      |> put_if(opts[:round_budget], :round_budget, opts[:round_budget])
       |> Keyword.put(:on_event, &live_event/1)
 
     IO.puts("")
@@ -510,7 +508,6 @@ defmodule Egghead.CLI.EvalCmd do
                              bundled personas (default: user)
       --judge PROVIDER/MODEL Override Judge's model for this call
       --timeout MS           Max wait for agent convergence (default: 300000)
-      --round-budget N       Max agent turn-rounds (default: 10)
 
     EXAMPLES
       $ egghead eval list

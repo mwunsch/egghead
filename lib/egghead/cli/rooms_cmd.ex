@@ -113,7 +113,7 @@ defmodule Egghead.CLI.RoomsCmd do
     IO.puts("  mode:     #{state.mode || :serial}")
     IO.puts("  status:   #{state.status || :waiting}")
     IO.puts("  messages: #{state.message_count || 0}")
-    IO.puts("  budget:   #{state.rounds_remaining || 0}/#{state.round_budget || 0}")
+    IO.puts("  budget:   #{state.activations_remaining || 0}/#{state.activation_budget || 0}")
 
     agents = state.agents || []
     IO.puts("  agents:   #{length(agents)}")

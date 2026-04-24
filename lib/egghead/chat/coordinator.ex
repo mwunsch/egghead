@@ -250,7 +250,7 @@ defmodule Egghead.Chat.Coordinator do
       # tells do_prompt not to append another user turn.
       Enum.each(agents, fn agent_info ->
         Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
-          prompt_agent_in_room(agent_info.id, room_id, "")
+          gated_prompt(agent_info.id, room_id, [])
         end)
       end)
     end
@@ -276,6 +276,19 @@ defmodule Egghead.Chat.Coordinator do
 
   def handle_info(:continued, state) do
     Logger.debug("Coordinator: human granted more turns")
+    {:noreply, state}
+  end
+
+  # Replay event from Room.continue: a previously-queued activation
+  # gets a second chance now that the budget has reset. Routes through
+  # `gated_prompt` so it re-checks `try_activate` against the fresh
+  # budget — if /continue has already drained it (lots of pending),
+  # we just queue again until the next /continue.
+  def handle_info({:reactivate, room_id, agent_id, opts}, state) do
+    Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+      gated_prompt(agent_id, room_id, opts)
+    end)
+
     {:noreply, state}
   end
 
@@ -912,7 +925,7 @@ defmodule Egghead.Chat.Coordinator do
 
         Enum.each(agents_to_prompt, fn agent_info ->
           Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
-            prompt_agent_in_room(agent_info.id, room_id, "", activation: :jam)
+            gated_prompt(agent_info.id, room_id, activation: :jam)
           end)
         end)
 
@@ -922,7 +935,7 @@ defmodule Egghead.Chat.Coordinator do
         Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
           Enum.each(agents_to_prompt, fn agent_info ->
             broadcast_activation(room_id, 1)
-            prompt_agent_in_room(agent_info.id, room_id, "", activation: :huddle)
+            gated_prompt(agent_info.id, room_id, activation: :huddle)
           end)
         end)
 
@@ -951,7 +964,7 @@ defmodule Egghead.Chat.Coordinator do
             # Each agent runs in its own Task so this process stays free
             # to receive PubSub events for stagger timing
             Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
-              prompt_agent_in_room(agent_info.id, room_id, "", activation: :normal)
+              gated_prompt(agent_info.id, room_id, activation: :normal)
             end)
           end)
         end)
@@ -961,15 +974,35 @@ defmodule Egghead.Chat.Coordinator do
         Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
           Enum.each(agents_to_prompt, fn agent_info ->
             broadcast_activation(room_id, 1)
-            prompt_agent_in_room(agent_info.id, room_id, "", activation: :normal)
+            gated_prompt(agent_info.id, room_id, activation: :normal)
           end)
         end)
     end
   end
 
+  # Activation-budget gate. Each spawn site goes through this so the
+  # Room's per-message budget is enforced uniformly: if `try_activate`
+  # comes back `:exhausted`, the agent is queued for `/continue` replay
+  # instead of consuming a slot. Returns `:ok` on activation, `:queued`
+  # on exhaustion. Halt is treated like exhaustion for queuing purposes
+  # — but `Room.queue_activation` is itself swallowed by the Room when
+  # halted, so the queue stays empty. The Coordinator just needs to not
+  # call the LLM.
+  defp gated_prompt(agent_id, room_id, opts) do
+    case Room.try_activate(room_id, agent_id) do
+      :ok ->
+        prompt_agent_in_room(agent_id, room_id, "", opts)
+        :ok
+
+      :exhausted ->
+        Room.queue_activation(room_id, agent_id, opts)
+        :queued
+    end
+  end
+
   # The Coordinator's only job: pass the message and room context to the agent.
   # The agent handles its own context building, usage tracking, and handoff.
-  defp prompt_agent_in_room(agent_id, room_id, message, opts \\ []) do
+  defp prompt_agent_in_room(agent_id, room_id, message, opts) do
     activation = Keyword.get(opts, :activation, :normal)
 
     case run_agent_attempt(agent_id, room_id, message, activation) do

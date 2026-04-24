@@ -78,54 +78,55 @@ defmodule Egghead.ChatTest do
       assert "everyone" in hd(transcript).mentions
     end
 
-    test "round budget counts @-mention chains as rounds" do
-      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", round_budget: 2)
-
+    test "try_activate decrements the budget; :exhausted when dry" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 2)
       Room.send_message(room, "Go")
 
-      # First agent responds with @-mention (starts round 2)
-      Room.agent_respond(room, "agent-a", "Let me ask @agent-b")
+      assert :ok = Room.try_activate(room, "agents/a")
+      assert :ok = Room.try_activate(room, "agents/b")
+      assert :exhausted = Room.try_activate(room, "agents/c")
 
       state = Room.get_state(room)
-      # Round decremented because agent-a @-mentioned agent-b
-      assert state.rounds_remaining < 2
+      assert state.activations_remaining == 0
     end
 
-    test "continue resets round budget" do
-      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", round_budget: 1)
-
-      Room.send_message(room, "Go")
-      Room.agent_respond(room, "agent-a", "response @agent-b")
-
-      state = Room.get_state(room)
-      assert state.status == :waiting
-
-      Room.continue(room)
-
-      state = Room.get_state(room)
-      assert state.rounds_remaining == 1
-      assert state.status == :active
-    end
-
-    test "pending mentions are replayed on continue" do
-      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", round_budget: 1)
-
-      Room.send_message(room, "Go")
-      Room.agent_respond(room, "agents/alpha", "ask @agents/beta about it")
-
-      # Budget exhausted, mention queued
-      state = Room.get_state(room)
-      assert state.pending_mentions > 0
-
-      # Subscribe AFTER the initial messages so we only see the replay
+    test "queue_activation broadcasts :budget_exhausted once per turn" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
       Room.subscribe(room)
-      Process.sleep(50)
+      Room.send_message(room, "Go")
 
+      assert_receive {:user_message, _}, 1000
+
+      Room.try_activate(room, "agents/a")
+      :exhausted = Room.try_activate(room, "agents/b")
+      Room.queue_activation(room, "agents/b", activation: :normal)
+
+      assert_receive :budget_exhausted, 1000
+
+      # Second queue does NOT re-broadcast.
+      Room.queue_activation(room, "agents/c", activation: :normal)
+      refute_receive :budget_exhausted, 100
+    end
+
+    test "continue resets the budget and replays queued activations as :reactivate" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
+      Room.send_message(room, "Go")
+
+      Room.try_activate(room, "agents/a")
+      :exhausted = Room.try_activate(room, "agents/b")
+      Room.queue_activation(room, "agents/b", activation: :normal)
+
+      Room.subscribe(room)
       Room.continue(room)
 
-      # Should receive the continued event and the replayed mention
       assert_receive :continued, 1000
-      assert_receive {:agent_mentions, _, "agents/alpha", ["agents/beta"], _content}, 1000
+      assert_receive {:reactivate, ^room, "agents/b", activation: :normal}, 1000
+
+      state = Room.get_state(room)
+      assert state.activations_remaining == 1
+      assert state.activation_budget == 1
+      assert state.status == :active
+      assert state.pending_activations == 0
     end
 
     test "agent_respond carries usage info" do
@@ -148,18 +149,50 @@ defmodule Egghead.ChatTest do
       state = Room.get_state(room)
       assert state.id == room
       assert "agents/scout" in state.agents
-      assert state.round_budget == 15
+      # Floor of 6, regardless of single-agent count.
+      assert state.activation_budget == 6
     end
 
-    test "halt clears pending mentions, sets :waiting, and broadcasts {:halted, room_id}" do
-      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", round_budget: 1)
+    test "activation budget scales with roster size, clamped to [6, 21]" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+
+      # Empty room → floor.
+      assert Room.get_state(room).activation_budget == 6
+
+      # 5 agents → 2 * 5 = 10.
+      Enum.each(1..5, fn i -> Room.join(room, "agents/a#{i}") end)
+      assert Room.get_state(room).activation_budget == 10
+
+      # 12 agents → would be 24, clamped to 21.
+      Enum.each(6..12, fn i -> Room.join(room, "agents/a#{i}") end)
+      assert Room.get_state(room).activation_budget == 21
+
+      # Leave one — drops to 22, still clamped at 21.
+      Room.leave(room, "agents/a12")
+      assert Room.get_state(room).activation_budget == 21
+    end
+
+    test "send_message recomputes budget from current roster" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+      Enum.each(1..4, fn i -> Room.join(room, "agents/a#{i}") end)
+
+      Room.send_message(room, "hi")
+
+      state = Room.get_state(room)
+      # 4 agents → max(6, 8) = 8
+      assert state.activation_budget == 8
+      assert state.activations_remaining == 8
+    end
+
+    test "halt clears pending activations, sets :waiting, and broadcasts {:halted, room_id}" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
 
       Room.send_message(room, "Go")
-      Room.agent_respond(room, "agents/alpha", "ask @agents/beta about it")
+      Room.try_activate(room, "agents/alpha")
+      :exhausted = Room.try_activate(room, "agents/beta")
+      Room.queue_activation(room, "agents/beta", activation: :normal)
 
-      # Confirm a mention was queued (budget = 1, response with @-mention exhausts it).
-      state = Room.get_state(room)
-      assert state.pending_mentions > 0
+      assert Room.get_state(room).pending_activations > 0
 
       Room.subscribe(room)
       Room.halt(room)
@@ -168,7 +201,7 @@ defmodule Egghead.ChatTest do
 
       state = Room.get_state(room)
       assert state.status == :waiting
-      assert state.pending_mentions == 0
+      assert state.pending_activations == 0
     end
 
     test "halted room swallows agent_respond — no transcript, no broadcast" do
@@ -239,22 +272,38 @@ defmodule Egghead.ChatTest do
 
       state = Room.get_state(room)
       assert state.status == :waiting
-      assert state.pending_mentions == 0
+      assert state.pending_activations == 0
     end
 
-    test "budget ticks on every agent response (not just @-mention cascades)" do
-      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
-
-      # Seed a user message to reset budget to full.
+    test "agent_respond no longer ticks the budget (Coordinator is the gate)" do
+      # Budget ticks on activation now, not on response. agent_respond
+      # is just a commit; it doesn't touch the activation budget.
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 6)
       Room.send_message(room, "hi")
-      assert Room.get_state(room).rounds_remaining == 15
+      assert Room.get_state(room).activations_remaining == 6
 
-      # Four plain responses (no @-mentions) should tick budget by 4.
+      # Plain responses don't decrement.
       for i <- 1..4 do
         Room.agent_respond(room, "agents/test-#{i}", "response #{i}")
       end
 
-      assert Room.get_state(room).rounds_remaining == 11
+      assert Room.get_state(room).activations_remaining == 6
+    end
+
+    test "agent_respond broadcasts :agent_mentions unconditionally (Coordinator filters)" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
+      Room.subscribe(room)
+      Room.send_message(room, "Go")
+      assert_receive {:user_message, _}, 1000
+
+      # Even after consuming the only slot, agent_respond still
+      # broadcasts the mention — the Coordinator is the one that
+      # decides whether to spawn or queue.
+      Room.try_activate(room, "agents/alpha")
+      Room.agent_respond(room, "agents/alpha", "ask @agents/beta")
+
+      assert_receive {:agent_message, _}, 1000
+      assert_receive {:agent_mentions, _, "agents/alpha", ["agents/beta"], _}, 1000
     end
   end
 
@@ -540,24 +589,31 @@ defmodule Egghead.ChatTest do
       assert msg.sender.type == :agent
     end
 
-    test "budget_exhausted is broadcast" do
-      room = start_room("pubsub-test-#{:erlang.unique_integer([:positive])}", round_budget: 1)
+    test "budget_exhausted is broadcast on first queued activation" do
+      room =
+        start_room("pubsub-test-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
+
       Room.subscribe(room)
 
       Room.send_message(room, "Go")
-      Room.agent_respond(room, "agent-a", "done @agent-b")
-
       assert_receive {:user_message, _}, 1000
-      assert_receive {:agent_message, _}, 1000
+
+      Room.try_activate(room, "agents/a")
+      :exhausted = Room.try_activate(room, "agents/b")
+      Room.queue_activation(room, "agents/b", activation: :normal)
+
       assert_receive :budget_exhausted, 1000
     end
 
     test "continued is broadcast" do
-      room = start_room("pubsub-test-#{:erlang.unique_integer([:positive])}", round_budget: 1)
+      room =
+        start_room("pubsub-test-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
+
       Room.subscribe(room)
 
       Room.send_message(room, "Go")
-      Room.agent_respond(room, "agent-a", "done @agent-b")
+      Room.try_activate(room, "agents/a")
+      Room.queue_activation(room, "agents/b", activation: :normal)
       Room.continue(room)
 
       assert_receive :continued, 1000

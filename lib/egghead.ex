@@ -188,12 +188,11 @@ defmodule Egghead do
         "chat-#{Date.to_iso8601(Date.utc_today())}-#{:erlang.unique_integer([:positive])}"
       )
 
-    round_budget = Keyword.get(opts, :round_budget, 5)
     idle_timeout = Keyword.get(opts, :idle_timeout, false)
     mode = Keyword.get(opts, :mode, :serial)
     is_default = Keyword.get(opts, :default, false)
 
-    room_opts = [id: id, round_budget: round_budget, idle_timeout: idle_timeout, mode: mode]
+    room_opts = [id: id, idle_timeout: idle_timeout, mode: mode]
 
     case Egghead.Chat.Room.start_link(room_opts) do
       {:ok, _pid} ->
@@ -366,16 +365,17 @@ defmodule Egghead do
   ## Options
 
     * `:timeout` — max wait in ms (default: 120_000)
-    * `:round_budget` — max agent-to-agent rounds (default: 10)
+
+  The activation budget is derived from the room's roster size; callers
+  no longer pass an explicit budget.
   """
   @spec consult(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def consult(question, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 120_000)
-    round_budget = Keyword.get(opts, :round_budget, 10)
 
     room_id = "consult-#{:erlang.unique_integer([:positive])}"
 
-    case create_room(id: room_id, round_budget: round_budget, idle_timeout: true) do
+    case create_room(id: room_id, idle_timeout: true) do
       {:ok, ^room_id} ->
         # Subscribe before sending so we don't miss events
         Egghead.Chat.Room.subscribe(room_id)

@@ -31,6 +31,54 @@ defmodule Egghead.SandboxTest do
     end
   end
 
+  describe "clamp_agent_sandbox/3 — widening rule" do
+    import ExUnit.CaptureLog
+
+    alias Egghead.Agent.Session
+
+    test "passes through a narrower agent sandbox (subpath of config)" do
+      assert Session.clamp_agent_sandbox("/tmp/ws/lib", "/tmp/ws", "agents/test") ==
+               "/tmp/ws/lib"
+    end
+
+    test "passes through when agent sandbox equals config sandbox" do
+      assert Session.clamp_agent_sandbox("/tmp/ws", "/tmp/ws", "agents/test") == "/tmp/ws"
+    end
+
+    test "clamps + warns when agent sandbox is outside config" do
+      log =
+        capture_log(fn ->
+          assert Session.clamp_agent_sandbox("/etc", "/tmp/ws", "agents/escaper") ==
+                   "/tmp/ws"
+        end)
+
+      assert log =~ "agents/escaper"
+      assert log =~ "/etc"
+      assert log =~ "/tmp/ws"
+      assert log =~ "can only narrow"
+    end
+
+    test "clamps + warns on sibling escapes" do
+      # /tmp/other is not a subpath of /tmp/ws even though they share /tmp
+      log =
+        capture_log(fn ->
+          assert Session.clamp_agent_sandbox("/tmp/other", "/tmp/ws", "agents/x") ==
+                   "/tmp/ws"
+        end)
+
+      assert log =~ "can only narrow"
+    end
+
+    test "nil agent sandbox stays nil regardless of config" do
+      assert Session.clamp_agent_sandbox(nil, "/tmp/ws", "x") == nil
+      assert Session.clamp_agent_sandbox(nil, nil, "x") == nil
+    end
+
+    test "agent sandbox passes through when no config ceiling" do
+      assert Session.clamp_agent_sandbox("/anywhere", nil, "x") == "/anywhere"
+    end
+  end
+
   describe "Profile.validate/1" do
     test "rejects empty roots" do
       assert {:error, _} = Profile.validate(%Profile{})

@@ -1274,13 +1274,17 @@ defmodule Egghead.Agent.Session do
 
     # Hoisting chain: agent-level sandbox takes precedence over
     # config-level; grant-level `in:` beats both (handled in matcher).
-    agent_sandbox = state.identity[:sandbox]
+    # The chain only narrows — if an agent declares a sandbox outside
+    # the config ceiling, we clamp to config and log loudly.
+    raw_agent_sandbox = state.identity[:sandbox]
 
     config_sandbox =
       case Egghead.Config.load() do
         {:ok, cfg} -> Egghead.Config.sandbox(cfg)
         _ -> nil
       end
+
+    agent_sandbox = clamp_agent_sandbox(raw_agent_sandbox, config_sandbox, state.agent_id)
 
     ctx = %{
       agent_id: state.agent_id,
@@ -1422,5 +1426,32 @@ defmodule Egghead.Agent.Session do
       |> Path.expand()
 
     Egghead.Sandbox.Profile.from_root(root, net: false)
+  end
+
+  @doc false
+  # Enforces the "sandboxes only narrow" rule: an agent sandbox must be
+  # a subpath of the config sandbox. Widening attempts get clamped to
+  # the config ceiling with a loud warning — the agent keeps running but
+  # can't slip its fence. Agents with no sandbox or no config sandbox
+  # pass through unchanged (hoisting handles those cases elsewhere).
+  def clamp_agent_sandbox(nil, _config, _agent_id), do: nil
+  def clamp_agent_sandbox(agent, nil, _agent_id), do: agent
+
+  def clamp_agent_sandbox(agent, config, agent_id) do
+    agent_abs = Path.expand(agent)
+    config_abs = Path.expand(config)
+
+    if agent_abs == config_abs or String.starts_with?(agent_abs, config_abs <> "/") do
+      agent
+    else
+      Logger.warning(
+        "Agent #{agent_id}: declared `sandbox: #{agent}` is outside the config sandbox " <>
+          "`#{config}`. Clamping to config ceiling — agent sandboxes can only narrow, never " <>
+          "widen. Fix: change the agent record to declare a path inside #{config}, or remove " <>
+          "the agent-level `sandbox:` key to inherit the config root."
+      )
+
+      config
+    end
   end
 end

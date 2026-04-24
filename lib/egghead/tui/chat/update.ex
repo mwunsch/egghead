@@ -455,11 +455,29 @@ defmodule Egghead.TUI.Chat.Update do
     %{
       model
       | status_message: "Paused for you. /continue to resume, or send a message.",
-        status_dismissable: false
+        status_dismissable: false,
+        status_kind: :info
     }
   end
 
-  defp handle_room_event(:continued, model), do: clear_status(model)
+  # /continue handshake. The Room replies with how many queued
+  # activations actually replayed. If anything fired, the bar vanishes
+  # — the agents resuming is the feedback. If nothing fired, the bar
+  # tells the user that and stays dismissable so Esc clears it.
+  defp handle_room_event({:continued, opts}, model) do
+    case Keyword.get(opts, :replayed, 0) do
+      0 ->
+        %{
+          model
+          | status_message: "The room is quiet.",
+            status_dismissable: true,
+            status_kind: :info
+        }
+
+      _ ->
+        clear_status(model)
+    end
+  end
 
   defp handle_room_event({:halted, _room_id}, model) do
     model

@@ -274,7 +274,7 @@ defmodule Egghead.Chat.Coordinator do
     {:noreply, state}
   end
 
-  def handle_info(:continued, state) do
+  def handle_info({:continued, _opts}, state) do
     Logger.debug("Coordinator: human granted more turns")
     {:noreply, state}
   end

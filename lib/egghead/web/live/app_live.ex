@@ -377,12 +377,15 @@ defmodule Egghead.Web.AppLive do
   def handle_info(:budget_exhausted, socket) do
     {:noreply,
      assign(socket,
-       chat_status: "We've been chatting for a bit. Anything to add? If not, type /continue."
+       chat_status: "Paused for you. /continue to resume, or send a message."
      )}
   end
 
-  def handle_info(:continued, socket) do
-    {:noreply, assign(socket, chat_status: nil)}
+  def handle_info({:continued, opts}, socket) do
+    case Keyword.get(opts, :replayed, 0) do
+      0 -> {:noreply, assign(socket, chat_status: "The room is quiet.")}
+      _ -> {:noreply, assign(socket, chat_status: nil)}
+    end
   end
 
   def handle_info({:agent_joined, agent_id}, socket) do

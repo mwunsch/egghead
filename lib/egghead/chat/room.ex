@@ -471,7 +471,22 @@ defmodule Egghead.Chat.Room do
 
   def handle_call({:try_activate, _agent_id}, _from, state) do
     if state.activations_remaining > 0 do
-      state = %{state | activations_remaining: state.activations_remaining - 1}
+      new_remaining = state.activations_remaining - 1
+      state = %{state | activations_remaining: new_remaining}
+
+      # Crossing to zero is the moment the user wants to know "we've
+      # hit capacity." Without this, exactly-fits-the-budget cascades
+      # consume every slot but never pop the bar — the bar only fires
+      # on overflow into the queue. Latched so we don't re-broadcast
+      # on every queue beyond zero.
+      state =
+        if new_remaining == 0 and not state.budget_broadcast? do
+          broadcast(state.id, :budget_exhausted)
+          %{state | budget_broadcast?: true, status: :waiting}
+        else
+          state
+        end
+
       reply_with_timeout(:ok, state)
     else
       reply_with_timeout(:exhausted, state)
@@ -619,7 +634,7 @@ defmodule Egghead.Chat.Room do
         halted: false
     }
 
-    broadcast(state.id, :continued)
+    broadcast(state.id, {:continued, replayed: length(pending)})
 
     # Replay queued activations that were deferred when budget exhausted.
     # Each fires as :reactivate — the Coordinator handler treats it as

@@ -90,8 +90,9 @@ defmodule Egghead.Chat.RoomLogger do
         Logger.info("Turn budget exhausted (use Egghead.chat_continue/1)")
         loop(room_id, buffers)
 
-      :continued ->
-        Logger.debug("Continued")
+      {:continued, opts} ->
+        replayed = Keyword.get(opts, :replayed, 0)
+        Logger.debug("Continued (replayed #{replayed} queued activations)")
         loop(room_id, buffers)
 
       {:agent_mentions, _room_id, from, mentioned, _content} ->

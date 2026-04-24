@@ -177,15 +177,33 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert flavor in Egghead.Chat.PassActions.all()
     end
 
-    test "budget_exhausted sets a status flash; continued clears it" do
+    test "budget_exhausted shows the paused-for-you bar (info, not dismissable)" do
       {m, :none} = Update.update({:room_event, :budget_exhausted}, model())
-      assert m.status_message =~ "continue"
-      # Budget bar is informational and persistent — Esc must not dismiss it.
+      assert m.status_message == "Paused for you. /continue to resume, or send a message."
       refute m.status_dismissable
+      assert m.status_kind == :info
+    end
 
-      {m, :none} = Update.update({:room_event, :continued}, m)
+    test "{:continued, replayed: N>0} clears the bar (the agents speaking is the feedback)" do
+      {m, :none} = Update.update({:room_event, :budget_exhausted}, model())
+      assert m.status_message =~ "Paused"
+
+      {m, :none} = Update.update({:room_event, {:continued, replayed: 2}}, m)
       assert m.status_message == nil
       refute m.status_dismissable
+    end
+
+    test "{:continued, replayed: 0} shows 'The room is quiet.' (dismissable)" do
+      {m, :none} = Update.update({:room_event, :budget_exhausted}, model())
+
+      {m, :none} = Update.update({:room_event, {:continued, replayed: 0}}, m)
+      assert m.status_message == "The room is quiet."
+      assert m.status_dismissable
+      assert m.status_kind == :info
+
+      # And Esc clears it.
+      {m, :none} = Update.update({:key, :escape}, m)
+      assert m.status_message == nil
     end
 
     test "halted sets a dismissable status bar and quiesces presence" do

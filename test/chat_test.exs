@@ -90,6 +90,27 @@ defmodule Egghead.ChatTest do
       assert state.activations_remaining == 0
     end
 
+    test "try_activate broadcasts :budget_exhausted when remaining crosses to zero" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 2)
+      Room.subscribe(room)
+      Room.send_message(room, "Go")
+      assert_receive {:user_message, _}, 1000
+
+      # First slot consumed — still 1 left, no broadcast.
+      Room.try_activate(room, "agents/a")
+      refute_receive :budget_exhausted, 100
+
+      # Second slot crosses to zero → bar fires immediately, even
+      # though nothing has overflowed into the queue yet.
+      Room.try_activate(room, "agents/b")
+      assert_receive :budget_exhausted, 1000
+
+      # Third try (would overflow) does not re-broadcast.
+      :exhausted = Room.try_activate(room, "agents/c")
+      Room.queue_activation(room, "agents/c", activation: :normal)
+      refute_receive :budget_exhausted, 100
+    end
+
     test "queue_activation broadcasts :budget_exhausted once per turn" do
       room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
       Room.subscribe(room)
@@ -119,7 +140,7 @@ defmodule Egghead.ChatTest do
       Room.subscribe(room)
       Room.continue(room)
 
-      assert_receive :continued, 1000
+      assert_receive {:continued, [replayed: 1]}, 1000
       assert_receive {:reactivate, ^room, "agents/b", activation: :normal}, 1000
 
       state = Room.get_state(room)
@@ -616,7 +637,7 @@ defmodule Egghead.ChatTest do
       Room.queue_activation(room, "agents/b", activation: :normal)
       Room.continue(room)
 
-      assert_receive :continued, 1000
+      assert_receive {:continued, [replayed: 1]}, 1000
     end
   end
 

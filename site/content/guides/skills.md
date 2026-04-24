@@ -89,8 +89,8 @@ capability request:
 
 | Token                           | Capability request                                 |
 |---------------------------------|----------------------------------------------------|
-| `Bash(git:*)`                   | `shell.exec{patterns: ["git:*"]}`                  |
-| `Bash(rg)`                      | `shell.exec{cmds: ["rg"]}`                         |
+| `Bash(git:*)`                   | `proc.exec{patterns: ["git:*"]}`                   |
+| `Bash(rg)`                      | `proc.exec{cmds: ["rg"]}`                          |
 | `Read`                          | `fs.read`                                          |
 | `Grep`                          | `fs.read`                                          |
 | `WebFetch(domain:github.com)`   | `net.get{hosts: ["github.com"]}`                   |
@@ -117,7 +117,7 @@ The filter is silent — the skill just doesn't show up. No error,
 no prompt, no widening path.
 
 The practical effect: skills are safe to share. A skill that needs
-`shell.exec{cmds: [git]}` will only run for agents you've explicitly
+`proc.exec{cmds: [git]}` will only run for agents you've explicitly
 given that capability to. The author of the skill and the operator
 of the node maintain a clean division: the skill says what it needs,
 the operator decides who gets it.
@@ -206,9 +206,9 @@ are not:
 - **A plugin system.** Egghead doesn't load code from a skill.
   Skills are content; execution goes through the agent's held
   capabilities and Egghead's built-in or external MCP tools.
-- **A capability-escape hatch.** Adding `allowed-tools: Shell` to
-  a skill doesn't give an agent shell access. Capabilities are the
-  gate; the skill declares need, not authority.
+- **A capability-escape hatch.** Adding `allowed-tools: Bash` to
+  a skill doesn't give an agent subprocess access. Capabilities are
+  the gate; the skill declares need, not authority.
 - **Global.** A skill only runs for agents whose capabilities cover
   its `allowed-tools`. Curating who has what stays under your
   control — per agent, per node.

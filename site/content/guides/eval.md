@@ -276,7 +276,7 @@ they require environment sandboxes Egghead doesn't ship.
 
 MARBLE ships 100 coding tasks. They're not in Egghead's bundle, and
 that's deliberate. We built the port — workspace scaffolding,
-capability-scoped `fs.write`/`shell.exec` grants, three specialised
+capability-scoped `fs.write`/`proc.exec` grants, three specialised
 personas — and ran it. It didn't work, for a reason that's worth
 naming rather than papering over.
 

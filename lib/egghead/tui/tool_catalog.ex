@@ -96,7 +96,7 @@ defmodule Egghead.TUI.ToolCatalog do
       %Egghead.Capability.Grant{resource: :net, verb: :post, scope: %{hosts: ["*"]}},
       %Egghead.Capability.Grant{resource: :fs, verb: :read, scope: %{paths: ["*"]}},
       %Egghead.Capability.Grant{resource: :fs, verb: :write, scope: %{paths: ["*"]}},
-      %Egghead.Capability.Grant{resource: :shell, verb: :exec, scope: %{cmds: ["*"]}}
+      %Egghead.Capability.Grant{resource: :proc, verb: :exec, scope: %{cmds: ["*"]}}
     ]
   end
 

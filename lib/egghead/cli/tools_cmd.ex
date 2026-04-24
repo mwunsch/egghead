@@ -552,7 +552,7 @@ defmodule Egghead.CLI.ToolsCmd do
       {"net.post", "Writes/posts to the web"},
       {"fs.read", "Reads local files"},
       {"fs.write", "Writes local files"},
-      {"shell.exec", "Runs shell commands"}
+      {"proc.exec", "Runs subprocesses (argv-style, no shell)"}
     ]
 
     items =
@@ -592,7 +592,7 @@ defmodule Egghead.CLI.ToolsCmd do
     %{paths: parse_list(paths)}
   end
 
-  defp prompt_scope("shell", cap_key) do
+  defp prompt_scope("proc", cap_key) do
     cmds = Widgets.input("  #{cap_key} commands (comma-separated)", default: "")
     %{cmds: parse_list(cmds)}
   end
@@ -684,7 +684,7 @@ defmodule Egghead.CLI.ToolsCmd do
       %Egghead.Capability.Grant{resource: :net, verb: :post, scope: %{hosts: ["*"]}},
       %Egghead.Capability.Grant{resource: :fs, verb: :read, scope: %{paths: ["*"]}},
       %Egghead.Capability.Grant{resource: :fs, verb: :write, scope: %{paths: ["*"]}},
-      %Egghead.Capability.Grant{resource: :shell, verb: :exec, scope: %{cmds: ["*"]}}
+      %Egghead.Capability.Grant{resource: :proc, verb: :exec, scope: %{cmds: ["*"]}}
     ]
   end
 

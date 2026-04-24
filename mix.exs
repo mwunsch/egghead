@@ -286,6 +286,7 @@ defmodule Egghead.MixProject do
       {:floki, "~> 0.36"},
       {:burrito, "~> 1.5"},
       {:y_ex, "~> 0.10"},
+      {:muontrap, "~> 1.6"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
   end

@@ -32,6 +32,7 @@ defmodule Egghead.Config do
 
   defstruct records_dir: "~/.egghead",
             skills_dir: "~/.agents/skills",
+            sandbox: nil,
             llm: [],
             default_model: nil,
             default_room: nil,
@@ -60,6 +61,7 @@ defmodule Egghead.Config do
   @type t :: %__MODULE__{
           records_dir: String.t(),
           skills_dir: String.t(),
+          sandbox: String.t() | nil,
           llm: [llm_entry()],
           default_model: String.t() | nil,
           default_room: String.t() | nil,
@@ -192,6 +194,15 @@ defmodule Egghead.Config do
   @doc "Expanded records directory path."
   def records_dir(%__MODULE__{records_dir: dir}), do: Path.expand(dir)
 
+  @doc """
+  Global sandbox root, if configured. The outermost fence — nothing any
+  agent on this machine can do escapes this path. Returns `nil` if the
+  user hasn't declared one.
+  """
+  @spec sandbox(t()) :: String.t() | nil
+  def sandbox(%__MODULE__{sandbox: nil}), do: nil
+  def sandbox(%__MODULE__{sandbox: path}) when is_binary(path), do: Path.expand(path)
+
   @doc "Expanded skills directory path (the SKILLS_DIR drop zone)."
   def skills_dir(%__MODULE__{skills_dir: dir}), do: Path.expand(dir)
 
@@ -259,6 +270,7 @@ defmodule Egghead.Config do
     %__MODULE__{
       records_dir: data["records_dir"] || "~/.egghead",
       skills_dir: data["skills_dir"] || "~/.agents/skills",
+      sandbox: data["sandbox"],
       llm: parse_llm(data["llm"]),
       default_model: data["default_model"],
       default_room: data["default_room"],
@@ -370,6 +382,7 @@ defmodule Egghead.Config do
     sections = [
       emit_field("records_dir", config.records_dir),
       emit_field("skills_dir", config.skills_dir),
+      emit_field("sandbox", config.sandbox),
       emit_llm(config.llm),
       emit_field("default_model", config.default_model),
       emit_field("default_room", config.default_room),

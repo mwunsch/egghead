@@ -7,7 +7,7 @@ defmodule Egghead.Capability.Grant do
   Parsed from frontmatter by `Egghead.Capability.parse/1`.
   """
 
-  @type resource :: :records | :fs | :net | :shell | :search
+  @type resource :: :records | :fs | :net | :proc | :search
   @type verb :: atom()
   @type scope :: map()
 

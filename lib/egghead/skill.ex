@@ -149,19 +149,19 @@ defmodule Egghead.Skill do
   defp token_to_requests("Bash(" <> rest) do
     case String.trim_trailing(rest, ")") do
       "*" ->
-        {:ok, [request(:shell, :exec, %{patterns: ["*"]})]}
+        {:ok, [request(:proc, :exec, %{patterns: ["*"]})]}
 
       pattern ->
         if String.contains?(pattern, ":") do
-          {:ok, [request(:shell, :exec, %{patterns: [pattern]})]}
+          {:ok, [request(:proc, :exec, %{patterns: [pattern]})]}
         else
-          {:ok, [request(:shell, :exec, %{patterns: [pattern]})]}
+          {:ok, [request(:proc, :exec, %{patterns: [pattern]})]}
         end
     end
   end
 
   defp token_to_requests("Bash"),
-    do: {:ok, [request(:shell, :exec, %{patterns: ["*"]})]}
+    do: {:ok, [request(:proc, :exec, %{patterns: ["*"]})]}
 
   defp token_to_requests("Read"),
     do: {:ok, [request(:fs, :read, %{})]}

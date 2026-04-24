@@ -427,7 +427,7 @@ defmodule Egghead.CLI.AgentCmd do
     end
   end
 
-  defp prompt_for_scope(:shell, :exec, _entry) do
+  defp prompt_for_scope(:proc, :exec, _entry) do
     cmds = Widgets.input("Commands (comma-separated argv[0])", default: "")
     patterns = Widgets.input("Patterns (e.g. `git:*`, `npm test`)", default: "")
 
@@ -453,7 +453,7 @@ defmodule Egghead.CLI.AgentCmd do
     if scope_parts == [] do
       nil
     else
-      "shell.exec{#{Enum.join(scope_parts, ",")}}"
+      "proc.exec{#{Enum.join(scope_parts, ",")}}"
     end
   end
 

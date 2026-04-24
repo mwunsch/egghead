@@ -17,14 +17,14 @@ defmodule Egghead.Capability.Matcher do
 
   - `net.*` — match `host` against `hosts` glob list
   - `fs.*` — match `path` against `paths` glob list
-  - `shell.exec` — match `cmd` against `cmds` exact list
+  - `proc.exec` — match `cmd` against `cmds` exact list
   - `records.create`/`update`/`delete` — match `class`/`id` against
     `classes`/`paths` allow-lists; empty scope = universe (internal resource)
   - `records.read` — always matches (read is broad)
   - `agent.*` — match `id` against `ids`/`paths` (if scope present); empty
     scope = any agent (internal resource)
 
-  External resources (`fs.*`, `net.*`, `shell.*`): empty grant scope means
+  External resources (`fs.*`, `net.*`, `proc.*`): empty grant scope means
   nothing matches (inert until scoped).
   Internal resources (`records.*`, `agent.*`): empty scope means universe.
   """
@@ -49,33 +49,65 @@ defmodule Egghead.Capability.Matcher do
   end
 
   # --- Filesystem ---
+  # The `in:` scope is the sandbox root (kernel-enforced on proc.*, advisory
+  # here for fs.*). If `paths:` is present, each entry is joined to `in:`
+  # and matched as a glob. If `paths:` is absent but `in:` is set, any
+  # path under `in:` is allowed. Bare grant (neither) is inert.
   def check(grant_scope, %{path: path}, :fs, _verb) do
+    in_root = Map.get(grant_scope, :in)
     paths = Map.get(grant_scope, :paths, [])
     expanded = expand_path(path)
 
     cond do
-      paths == [] ->
-        {:scope_violation, "path #{path} not allowed (no paths in grant)"}
+      in_root == nil and paths == [] ->
+        {:scope_violation,
+         "path #{path}: grant has no sandbox root — add `sandbox: <path>` to the agent record " <>
+           "or `sandbox: <path>` in ~/.config/egghead/config.yml"}
 
-      Enum.any?(paths, &path_matches?(expanded, expand_path(&1))) ->
+      # `paths:` allow-list — legacy shape; each entry is a glob.
+      paths != [] and Enum.any?(paths, &path_matches?(expanded, expand_path(&1))) ->
         :ok
 
-      true ->
+      # `in:` allow any path under the root. `paths:` (if set) narrows further.
+      in_root != nil and paths == [] and path_under_root?(expanded, expand_path(in_root)) ->
+        :ok
+
+      # `in:` + `paths:` — paths are relative to in, resolved and matched.
+      in_root != nil and paths != [] ->
+        root = expand_path(in_root)
+
+        if Enum.any?(paths, fn p ->
+             joined = join_relative_to_root(p, root) |> expand_path()
+             path_matches?(expanded, joined)
+           end) do
+          :ok
+        else
+          {:scope_violation, "path #{path} not in allow-list #{inspect(paths)} under #{in_root}"}
+        end
+
+      paths != [] ->
         {:scope_violation, "path #{path} not in allow-list #{inspect(paths)}"}
+
+      true ->
+        {:scope_violation,
+         "path #{path} not in grant scope (in=#{in_root}, paths=#{inspect(paths)})"}
     end
   end
 
-  # --- Shell ---
+  # --- Processes ---
   # Request scope is `%{cmd: argv[0], argv: [argv0, arg1, ...]}`.
   # Grant scope supports `cmds:` (argv[0] allowlist) and `patterns:`
-  # (full-invocation glob); delegates to Tool.Pattern.
-  def check(grant_scope, request_scope, :shell, :exec) do
+  # (full-invocation glob); delegates to Tool.Pattern. proc.eval takes
+  # only `in:` (no patterns — the sandbox is the fence).
+  def check(grant_scope, request_scope, :proc, :exec) do
     argv =
       Map.get(request_scope, :argv) ||
         [to_string(Map.get(request_scope, :cmd, ""))]
 
     Egghead.Tool.Pattern.check(argv, grant_scope)
   end
+
+  def check(_grant_scope, _request_scope, :proc, :eval), do: :ok
 
   # --- Records.update with optional class/path scoping ---
   def check(grant_scope, request_scope, :records, :update) do
@@ -204,4 +236,22 @@ defmodule Egghead.Capability.Matcher do
   end
 
   defp expand_path(path), do: path
+
+  # Is `path` at or under `root`? Prefix match on canonical segments.
+  defp path_under_root?(path, root) when is_binary(path) and is_binary(root) do
+    path == root or String.starts_with?(path, root <> "/")
+  end
+
+  defp path_under_root?(_, _), do: false
+
+  # Join a `paths:` entry to a sandbox `in:` root. Relative entries
+  # (bare or `./`-prefixed) go inside the root; absolute entries are
+  # only accepted if they're already inside the root.
+  defp join_relative_to_root(path, root) when is_binary(path) and is_binary(root) do
+    cond do
+      String.starts_with?(path, "/") -> path
+      String.starts_with?(path, "~") -> path
+      true -> Path.join(root, String.trim_leading(path, "./"))
+    end
+  end
 end

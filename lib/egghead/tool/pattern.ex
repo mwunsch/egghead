@@ -1,7 +1,7 @@
 defmodule Egghead.Tool.Pattern do
   @moduledoc """
-  Shell command pattern matching — the scope vocabulary for
-  `shell.exec` capabilities.
+  Subprocess argv pattern matching — the scope vocabulary for
+  `proc.exec` capabilities.
 
   Mirrors Claude Code / OpenCode conventions:
 
@@ -40,7 +40,7 @@ defmodule Egghead.Tool.Pattern do
 
     cond do
       cmds == [] and patterns == [] ->
-        {:scope_violation, "shell.exec with no cmds or patterns — nothing allowed"}
+        {:scope_violation, "proc.exec with no cmds or patterns — nothing allowed"}
 
       cmd in cmds ->
         :ok
@@ -49,7 +49,7 @@ defmodule Egghead.Tool.Pattern do
         :ok
 
       true ->
-        {:scope_violation, "#{format_argv(argv)} not permitted by shell.exec grant"}
+        {:scope_violation, "#{format_argv(argv)} not permitted by proc.exec grant"}
     end
   end
 

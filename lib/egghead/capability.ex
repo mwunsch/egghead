@@ -19,12 +19,16 @@ defmodule Egghead.Capability do
   alias Egghead.Capability.Matcher
   alias Egghead.Capability.Request
 
-  @resources ~w(records agent fs net shell)a
+  @resources ~w(records agent fs net proc)a
 
   # External resources touch the world outside Egghead — bare grants
   # (empty scope) are inert until explicitly scoped. Internal resources
   # (records, agent) default bare-to-universe.
-  @external_resources [:fs, :net, :shell]
+  @external_resources [:fs, :net, :proc]
+
+  # `shell.*` was renamed to `proc.*` — kept as a deprecated alias for one
+  # release so existing agent records continue to load with a warning.
+  @deprecated_aliases %{"shell" => "proc"}
 
   @doc "True if the resource touches outside-Egghead state."
   def external?(resource), do: resource in @external_resources
@@ -83,16 +87,31 @@ defmodule Egghead.Capability do
   defp split_resource_verb(str) do
     case String.split(str, ".", parts: 2) do
       [r, v] ->
+        {r, deprecated?} = canonical_resource(r)
         r_atom = safe_atom(r)
 
-        if r_atom in @resources do
-          {:ok, r_atom, safe_atom(v)}
-        else
-          :error
+        cond do
+          r_atom in @resources and deprecated? ->
+            Logger.warning("Capability: `#{str}` is a deprecated alias — use `#{r}.#{v}` instead")
+
+            {:ok, r_atom, safe_atom(v)}
+
+          r_atom in @resources ->
+            {:ok, r_atom, safe_atom(v)}
+
+          true ->
+            :error
         end
 
       _ ->
         :error
+    end
+  end
+
+  defp canonical_resource(raw) do
+    case Map.get(@deprecated_aliases, raw) do
+      nil -> {raw, false}
+      new -> {new, true}
     end
   end
 
@@ -236,7 +255,7 @@ defmodule Egghead.Capability do
          }}
 
       grants_for_verb ->
-        case any_scope_matches?(grants_for_verb, request) do
+        case any_scope_matches?(grants_for_verb, request, ctx) do
           :ok ->
             :ok
 
@@ -255,13 +274,32 @@ defmodule Egghead.Capability do
     end
   end
 
-  defp any_scope_matches?(grants, request) do
+  defp any_scope_matches?(grants, request, ctx) do
+    hoist = hoisted_sandbox(ctx)
+
     Enum.reduce_while(grants, {:scope_violation, "no matching scope"}, fn grant, _last ->
-      case Matcher.check(grant.scope, request.scope, request.resource, request.verb) do
+      effective_scope = apply_hoist(grant.scope, hoist)
+
+      case Matcher.check(effective_scope, request.scope, request.resource, request.verb) do
         :ok -> {:halt, :ok}
         {:scope_violation, _} = err -> {:cont, err}
       end
     end)
+  end
+
+  # Hoist chain: grant.scope[:in] (explicit) → agent sandbox → config sandbox.
+  # The deepest declared value wins; missing values inherit from the level
+  # above. Returns the effective sandbox path, or `nil` if no level set one.
+  defp hoisted_sandbox(ctx) do
+    Map.get(ctx, :agent_sandbox) || Map.get(ctx, :config_sandbox)
+  end
+
+  defp apply_hoist(scope, nil), do: scope
+
+  defp apply_hoist(scope, hoist) do
+    # An explicit `in:` on the grant takes precedence. Only fill in when
+    # missing — this is inheritance, never override.
+    Map.put_new(scope, :in, hoist)
   end
 
   @doc """
@@ -272,7 +310,7 @@ defmodule Egghead.Capability do
 
       records.read
       net.get{hosts=[*.github.com,api.anthropic.com]}
-      shell.exec{cmds=[rg,jq],patterns=[git:*]}
+      proc.exec{cmds=[rg,jq],patterns=[git:*]}
       fs.read{paths=[~/projects/**]}
 
   Returns `{:ok, value}` where `value` is a string (bare form) or a
@@ -398,8 +436,8 @@ defmodule Egghead.Capability do
     "fs.#{v}{paths=[#{path}]}"
   end
 
-  def suggest_grant(%Request{resource: :shell, verb: :exec, scope: %{cmd: cmd}}) do
-    "shell.exec{cmds=[#{cmd}]}"
+  def suggest_grant(%Request{resource: :proc, verb: :exec, scope: %{cmd: cmd}}) do
+    "proc.exec{cmds=[#{cmd}]}"
   end
 
   def suggest_grant(%Request{resource: r, verb: v}), do: "#{r}.#{v}"
@@ -423,7 +461,7 @@ defmodule Egghead.Capability do
 
   Semantics for scope coverage are resource-family-specific:
 
-  - External resources (`fs.*`, `net.*`, `shell.*`): parent `hosts`/`paths`/
+  - External resources (`fs.*`, `net.*`, `proc.*`): parent `hosts`/`paths`/
     `cmds` must contain all child entries (treating `*` globs on the parent
     side as covering matching child entries). An empty parent scope covers
     only an empty child scope — the "bare" grant is the empty set.
@@ -446,7 +484,7 @@ defmodule Egghead.Capability do
 
   # External resources: empty parent scope allows nothing. Child must be
   # covered entry-wise.
-  defp scope_covers?(parent_scope, child_scope, resource) when resource in [:fs, :net, :shell] do
+  defp scope_covers?(parent_scope, child_scope, resource) when resource in [:fs, :net, :proc] do
     key = scope_key_for(resource)
     parent_items = Map.get(parent_scope, key, [])
     child_items = Map.get(child_scope, key, [])
@@ -497,7 +535,7 @@ defmodule Egghead.Capability do
 
   defp scope_key_for(:fs), do: :paths
   defp scope_key_for(:net), do: :hosts
-  defp scope_key_for(:shell), do: :cmds
+  defp scope_key_for(:proc), do: :cmds
 
   # Child item covered by parent list — exact or glob match.
   defp covered_item?(child_item, parent_items, :net) do
@@ -508,7 +546,7 @@ defmodule Egghead.Capability do
     Enum.any?(parent_items, fn p -> Egghead.Capability.Matcher.path_matches?(child_item, p) end)
   end
 
-  defp covered_item?(child_item, parent_items, :shell) do
+  defp covered_item?(child_item, parent_items, :proc) do
     to_string(child_item) in Enum.map(parent_items, &to_string/1)
   end
 end

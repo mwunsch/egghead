@@ -26,24 +26,24 @@ defmodule Egghead.Eval.CapabilityCheckTest do
   end
 
   test "passes when union of roster covers required" do
-    t = task(["records.read", "fs.write", "shell.exec"])
+    t = task(["records.read", "fs.write", "proc.exec"])
 
     roster = [
       agent("a", ["records.read"]),
       agent("b", ["fs.write"]),
-      agent("c", ["shell.exec"])
+      agent("c", ["proc.exec"])
     ]
 
     assert :ok = CapabilityCheck.check(t, roster)
   end
 
   test "fails with named missing verbs" do
-    t = task(["records.read", "fs.write", "shell.exec"])
+    t = task(["records.read", "fs.write", "proc.exec"])
     roster = [agent("a", ["records.read"])]
 
     assert {:error, {:missing, missing}} = CapabilityCheck.check(t, roster)
     assert "fs.write" in missing
-    assert "shell.exec" in missing
+    assert "proc.exec" in missing
     refute "records.read" in missing
   end
 

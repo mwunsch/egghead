@@ -35,6 +35,7 @@ defmodule Egghead.Record.Agent do
           model: String.t(),
           provider: String.t() | nil,
           capabilities: [Capability.t()],
+          sandbox: String.t() | nil,
           tags: [String.t()],
           thinking: String.t() | nil,
           max_tokens: pos_integer(),
@@ -49,6 +50,7 @@ defmodule Egghead.Record.Agent do
     :disposition,
     :model,
     :provider,
+    :sandbox,
     :thinking,
     :temperature,
     :context_window,
@@ -71,6 +73,7 @@ defmodule Egghead.Record.Agent do
       model: resolve_model(record),
       provider: meta_string(record, "provider"),
       capabilities: parse_capabilities(record),
+      sandbox: sandbox(record),
       tags: Enum.reject(record.tags || [], &(&1 == "agent")),
       thinking: meta_string(record, "thinking"),
       max_tokens: meta_int(record, "max_tokens", @default_max_tokens),
@@ -81,27 +84,49 @@ defmodule Egghead.Record.Agent do
   end
 
   @doc """
-  Parse the `capabilities` and `access` meta keys into a merged
-  capability list.
+  Parse the `capabilities`, `access`, and `sandbox` meta keys into a
+  merged capability list.
 
   Rules:
 
-  - If **neither** key is present, default to `records.read` (useful
-    by default — the human-edits-frontmatter-to-restrict principle).
-  - If **either** is present, expand `access:` and union with the
-    explicit `capabilities:` list. No default is applied — if you
-    wrote `capabilities: []` you get zero grants.
+  - If **none** of these keys are present, default to `records.read`
+    (useful by default — the human-edits-frontmatter-to-restrict
+    principle).
+  - If **any** is present, expand `access:` and `sandbox:` into
+    capability entries, union with the explicit `capabilities:` list,
+    and parse. No `records.read` default is applied — if you wrote
+    `capabilities: []` you get zero grants (plus whatever sandbox
+    expansion contributes).
   - Duplicates are merged by `Capability.parse/1`.
   """
   @spec parse_capabilities(Record.t()) :: [Capability.t()]
   def parse_capabilities(%Record{meta: meta}) do
     has_access? = Map.has_key?(meta, "access")
     has_caps? = Map.has_key?(meta, "capabilities")
+    has_sandbox? = Map.has_key?(meta, "sandbox")
 
-    if not has_access? and not has_caps? do
+    if not has_access? and not has_caps? and not has_sandbox? do
       Capability.parse(["records.read"])
     else
-      Capability.parse(expand_access(meta["access"]) ++ normalize_caps(meta["capabilities"]))
+      Capability.parse(
+        expand_access(meta["access"]) ++
+          expand_sandbox(meta["sandbox"]) ++
+          normalize_caps(meta["capabilities"])
+      )
+    end
+  end
+
+  @doc """
+  Returns the agent-level sandbox root as a string, or `nil` if
+  unset. Used by the hoisting chain in `Egghead.Capability.Matcher`:
+  when an individual grant has no `in:` scope, it inherits this
+  value (which in turn inherits `Config.sandbox/1` if itself unset).
+  """
+  @spec sandbox(Record.t()) :: String.t() | nil
+  def sandbox(%Record{meta: meta}) do
+    case meta["sandbox"] do
+      path when is_binary(path) and path != "" -> path
+      _ -> nil
     end
   end
 
@@ -148,6 +173,44 @@ defmodule Egghead.Record.Agent do
 
   def expand_access(other) do
     Logger.warning("Record.Agent: access must be a string — got #{inspect(other)}")
+    []
+  end
+
+  @doc """
+  Expand the top-level `sandbox:` shortcut into capability entries.
+
+  `sandbox: ~/projects/foo` expands to three external grants, all
+  rooted at the given path:
+
+      fs.read:   { in: ~/projects/foo }
+      fs.write:  { in: ~/projects/foo }
+      proc.exec: { in: ~/projects/foo }
+
+  `proc.eval` is **not** included — its risk profile requires explicit
+  opt-in in `capabilities:`. `net.*` is likewise excluded — network is
+  an orthogonal axis the user declares separately.
+
+  Returns entries in the shape `Capability.parse/1` consumes (maps
+  with string keys and string-valued `in:`), unioned with any
+  explicit `capabilities:` and the expanded `access:` list.
+
+  `nil` and empty string return `[]`; other non-string values log a
+  warning and return `[]`.
+  """
+  @spec expand_sandbox(term()) :: [map()]
+  def expand_sandbox(nil), do: []
+  def expand_sandbox(""), do: []
+
+  def expand_sandbox(path) when is_binary(path) do
+    [
+      %{"fs.read" => %{"in" => path}},
+      %{"fs.write" => %{"in" => path}},
+      %{"proc.exec" => %{"in" => path}}
+    ]
+  end
+
+  def expand_sandbox(other) do
+    Logger.warning("Record.Agent: sandbox must be a string path — got #{inspect(other)}")
     []
   end
 

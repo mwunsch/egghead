@@ -363,11 +363,11 @@ defmodule Egghead.Agent.Tools do
         }
       },
       %{
-        name: "shell_exec",
-        offers_on: [{:shell, :exec}],
-        resolve: &Egghead.Tool.ShellExec.request_for/1,
+        name: "proc_exec",
+        offers_on: [{:proc, :exec}],
+        resolve: &Egghead.Tool.ProcExec.request_for/1,
         description:
-          "Run a shell command. The `cmd` and `args` are passed directly to spawn_executable — no shell interpretation, no injection surface. Gated by `shell.exec{cmds: [...], patterns: [...]}` capability. Command output is captured (stdout + stderr combined) and truncated at 30k tokens if oversized.",
+          "Run a subprocess. The `cmd` and `args` are passed directly to spawn_executable — no shell interpretation, no injection surface. Gated by `proc.exec{in: <path>, cmds: [...], patterns: [...]}` capability and kernel-fenced by the agent's sandbox. Command output is captured (stdout + stderr combined) and truncated at 30k tokens if oversized.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -739,9 +739,10 @@ defmodule Egghead.Agent.Tools do
     Egghead.Tool.WebFetch.run(input)
   end
 
-  defp do_execute("shell_exec", input, ctx) do
+  defp do_execute("proc_exec", input, ctx) do
     on_output = Map.get(ctx, :on_tool_output)
-    Egghead.Tool.ShellExec.run(input, on_output: on_output)
+    sandbox = Map.get(ctx, :sandbox)
+    Egghead.Tool.ProcExec.run(input, on_output: on_output, sandbox: sandbox)
   end
 
   defp do_execute("fs_read", input, _ctx) do

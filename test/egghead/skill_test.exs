@@ -99,10 +99,10 @@ defmodule Egghead.SkillTest do
       assert %{requests: [], unknown: [], warnings: []} = Skill.derive_requirements(r)
     end
 
-    test "Bash(git:*) → shell.exec{patterns: [git:*]}" do
+    test "Bash(git:*) → proc.exec{patterns: [git:*]}" do
       r = record(meta: %{"description" => "d", "allowed-tools" => "Bash(git:*)"})
       %{requests: [req], unknown: []} = Skill.derive_requirements(r)
-      assert req.resource == :shell
+      assert req.resource == :proc
       assert req.verb == :exec
       assert req.scope.patterns == ["git:*"]
     end
@@ -155,7 +155,7 @@ defmodule Egghead.SkillTest do
       %{requests: reqs, unknown: []} = Skill.derive_requirements(r)
       # Bash + Read + WebFetch(×2 methods) = 4 requests
       assert length(reqs) >= 3
-      assert Enum.any?(reqs, &(&1.resource == :shell))
+      assert Enum.any?(reqs, &(&1.resource == :proc))
       assert Enum.any?(reqs, &(&1.resource == :fs))
       assert Enum.any?(reqs, &(&1.resource == :net))
     end

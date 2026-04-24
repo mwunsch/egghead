@@ -1,31 +1,29 @@
-defmodule Egghead.Tool.ShellExec do
+defmodule Egghead.Tool.ProcExec do
   @moduledoc """
-  Shell command execution with argv[0] + pattern gating.
+  Subprocess execution, argv-style, kernel-fenced via `Egghead.Sandbox`.
 
-  Capability enforcement lives in `Egghead.Tool.Pattern` — the scope
-  check runs inside `request_for/1` and its result is compared by
-  `Capability.check/3` before this module's `run/3` is invoked.
+  The capability the agent holds is `proc.exec`, with `cmds:` / `patterns:`
+  for argv-level allow-listing (enforced by `Egghead.Tool.Pattern` before
+  spawn) and `in:` for the sandbox root (enforced by the kernel — sandbox-exec
+  on macOS, bwrap on Linux — via `Egghead.Sandbox.spawn/3`).
 
-  Execution uses `Port.open` with `:stderr_to_stdout` so we can
-  stream stdout chunks to the subscriber (TUI/web) as they arrive,
-  and buffer the full output (truncated via `Egghead.Tool.Output`)
-  for the tool_result sent back to the model.
-
-  Commands are spawned directly via the port — no `bash -c`, no
-  shell interpretation, no injection surface. Environment is
-  inherited minus a few noisy variables; cwd is the records_dir of
-  the running agent (configurable per-invocation).
+  Arguments are passed as an argv list to `spawn_executable`; there is no
+  `bash -c`, no shell interpretation, no injection surface. That is what
+  makes this `proc.exec` and not `proc.eval`. Output is streamed to the
+  subscriber per chunk and buffered for the tool_result.
   """
 
   alias Egghead.Capability.Request
+  alias Egghead.Sandbox
+  alias Egghead.Sandbox.Profile
   alias Egghead.Tool.Output
   alias Egghead.Tool.Pattern
 
   @default_timeout 30_000
 
   @doc """
-  Builds the capability request this call would make. The scope
-  includes the full argv so the matcher can apply cmds + patterns.
+  Builds the capability request this call would make. The scope includes
+  the full argv so the matcher can apply cmds + patterns.
   """
   @spec request_for(map()) :: {:ok, [Request.t()]} | {:error, term()}
   def request_for(%{"cmd" => cmd} = input) do
@@ -34,19 +32,21 @@ defmodule Egghead.Tool.ShellExec do
     {:ok,
      [
        %Request{
-         resource: :shell,
+         resource: :proc,
          verb: :exec,
          scope: %{cmd: hd(argv), argv: argv},
-         tool: "shell_exec"
+         tool: "proc_exec"
        }
      ]}
   end
 
-  def request_for(_), do: {:error, "shell_exec requires a cmd"}
+  def request_for(_), do: {:error, "proc_exec requires a cmd"}
 
   @doc """
-  Runs the command. `ctx` may include `:on_output` (a callback
-  invoked per-chunk for streaming) and `:cwd` (working directory).
+  Runs the command. `opts` may include `:on_output` (a callback invoked
+  per chunk for streaming), `:cwd` (working directory), and `:sandbox`
+  (`%Egghead.Sandbox.Profile{}`; when provided, the subprocess is
+  fenced in the kernel).
 
   Returns `{:ok, combined_output}` or `{:error, reason}`.
   """
@@ -59,17 +59,18 @@ defmodule Egghead.Tool.ShellExec do
     timeout = input["timeout"] || @default_timeout
     cwd = opts[:cwd] || input["cwd"] || File.cwd!()
     on_output = opts[:on_output]
+    profile = opts[:sandbox]
 
     case System.find_executable(hd(argv)) do
       nil ->
         {:error, "command not found: #{hd(argv)}"}
 
       executable ->
-        run_port(executable, tl(argv), cwd, timeout, on_output)
+        run_port(executable, tl(argv), cwd, timeout, on_output, profile)
     end
   end
 
-  def run(_, _opts), do: {:error, "shell_exec requires a cmd"}
+  def run(_, _opts), do: {:error, "proc_exec requires a cmd"}
 
   # --- impl ---
 
@@ -85,21 +86,30 @@ defmodule Egghead.Tool.ShellExec do
   defp normalize_args(args) when is_list(args), do: Enum.map(args, &to_string/1)
   defp normalize_args(_), do: []
 
-  defp run_port(executable, args, cwd, timeout, on_output) do
+  defp run_port(executable, args, cwd, timeout, on_output, profile) do
+    case spawn_port(executable, args, cwd, profile) do
+      {:ok, port} -> collect(port, "", on_output, deadline(timeout))
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # If a profile is present we route through Sandbox.spawn so the
+  # kernel-level fence is in force. Without a profile (an agent that
+  # holds no external caps, or one running on an unsupported platform)
+  # we fall back to an ordinary Port.open — same behavior as before
+  # the sandbox layer existed.
+  defp spawn_port(executable, args, cwd, %Profile{} = profile) do
+    Sandbox.spawn(executable, args, sandbox: profile, cwd: cwd)
+  end
+
+  defp spawn_port(executable, args, cwd, nil) do
     port =
       Port.open(
         {:spawn_executable, executable},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          :hide,
-          {:args, args},
-          {:cd, cwd}
-        ]
+        [:binary, :exit_status, :stderr_to_stdout, :hide, {:args, args}, {:cd, cwd}]
       )
 
-    collect(port, "", on_output, deadline(timeout))
+    {:ok, port}
   end
 
   defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
@@ -120,9 +130,11 @@ defmodule Egghead.Tool.ShellExec do
             collect(port, buffer, on_output, deadline)
 
           {^port, {:exit_status, 0}} ->
+            Sandbox.cleanup(port)
             finalize(buffer)
 
           {^port, {:exit_status, code}} ->
+            Sandbox.cleanup(port)
             {result, _status} = Output.append(buffer, "\n[exit #{code}]")
             finalize(result, exit: code)
         after
@@ -152,6 +164,8 @@ defmodule Egghead.Tool.ShellExec do
   end
 
   defp kill(port) do
+    Sandbox.cleanup(port)
+
     try do
       Port.close(port)
     catch
@@ -162,10 +176,10 @@ defmodule Egghead.Tool.ShellExec do
   # --- integration with Capability.Matcher for scope checking ---
 
   @doc """
-  Checks a pre-built capability scope against the scope of a grant
-  held by the agent. Called from the Matcher for the `shell.exec`
-  resource — we delegate to `Pattern.check/2` here so the grant's
-  `cmds:` and `patterns:` are consulted correctly.
+  Checks a pre-built capability scope against the scope of a grant held
+  by the agent. Called from the Matcher for the `proc.exec` resource —
+  delegates to `Pattern.check/2` so the grant's `cmds:` and `patterns:`
+  are consulted correctly.
 
   Returns `:ok` or `{:scope_violation, reason}`.
   """

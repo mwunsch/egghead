@@ -201,6 +201,90 @@ defmodule Egghead.Record.AgentTest do
       config = Projection.from(record(meta: %{"access" => "xyz"}))
       assert config.capabilities == []
     end
+  end
+
+  describe "sandbox: shortcut" do
+    alias Egghead.Capability.Grant
+
+    test "sandbox path expands to fs.read + fs.write + proc.exec with `in:` scope" do
+      config = Projection.from(record(meta: %{"sandbox" => "~/projects/foo"}))
+
+      grants = Enum.sort_by(config.capabilities, &{&1.resource, &1.verb})
+
+      assert [
+               %Grant{resource: :fs, verb: :read, scope: %{in: "~/projects/foo"}},
+               %Grant{resource: :fs, verb: :write, scope: %{in: "~/projects/foo"}},
+               %Grant{resource: :proc, verb: :exec, scope: %{in: "~/projects/foo"}}
+             ] = grants
+    end
+
+    test "sandbox does not include proc.eval or net.* (explicit opt-in required)" do
+      config = Projection.from(record(meta: %{"sandbox" => "~/work"}))
+
+      refute Enum.any?(config.capabilities, &(&1.resource == :proc and &1.verb == :eval))
+      refute Enum.any?(config.capabilities, &(&1.resource == :net))
+    end
+
+    test "sandbox unions with explicit capabilities" do
+      config =
+        Projection.from(
+          record(
+            meta: %{
+              "sandbox" => "~/work",
+              "capabilities" => ["records.read", "proc.eval"]
+            }
+          )
+        )
+
+      verbs = config.capabilities |> Enum.map(&{&1.resource, &1.verb}) |> Enum.sort()
+
+      assert verbs == [
+               {:fs, :read},
+               {:fs, :write},
+               {:proc, :eval},
+               {:proc, :exec},
+               {:records, :read}
+             ]
+    end
+
+    test "sandbox unions with access: (both shortcuts in one record)" do
+      config =
+        Projection.from(record(meta: %{"sandbox" => "~/work", "access" => "r"}))
+
+      verbs = config.capabilities |> Enum.map(&{&1.resource, &1.verb}) |> Enum.sort()
+
+      assert verbs == [
+               {:fs, :read},
+               {:fs, :write},
+               {:proc, :exec},
+               {:records, :read}
+             ]
+    end
+
+    test "empty/nil sandbox does nothing" do
+      assert Projection.from(record(meta: %{"sandbox" => ""})).capabilities == []
+      # nil is handled by parse_capabilities not seeing the key at all
+    end
+
+    test "non-string sandbox is logged and dropped" do
+      import ExUnit.CaptureLog
+
+      log =
+        capture_log(fn ->
+          config = Projection.from(record(meta: %{"sandbox" => 42}))
+          assert config.capabilities == []
+        end)
+
+      assert log =~ "sandbox must be a string"
+    end
+
+    test "Record.Agent.sandbox/1 returns the declared path" do
+      alias Egghead.Record.Agent
+
+      assert Agent.sandbox(record(meta: %{"sandbox" => "~/foo"})) == "~/foo"
+      assert Agent.sandbox(record(meta: %{})) == nil
+      assert Agent.sandbox(record(meta: %{"sandbox" => ""})) == nil
+    end
 
     test "default records.read still applies when neither key is present" do
       config = Projection.from(record(meta: %{"model" => "anthropic/claude-haiku-4-5"}))

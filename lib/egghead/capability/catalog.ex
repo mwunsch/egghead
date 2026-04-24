@@ -69,21 +69,22 @@ defmodule Egghead.Capability.Catalog do
       scope_keys: %{id: :string}
     },
 
-    # Filesystem outside the record store
+    # Filesystem outside the record store. `in:` declares the sandbox
+    # root; `paths:` is an optional list of refinements relative to `in:`.
     {:fs, :read} => %{
       short: "Read files outside the record store",
       risk: :medium,
-      scope_keys: %{paths: :string_list}
+      scope_keys: %{in: :string, paths: :string_list}
     },
     {:fs, :write} => %{
       short: "Write files outside the record store",
       risk: :high,
-      scope_keys: %{paths: :string_list}
+      scope_keys: %{in: :string, paths: :string_list}
     },
     {:fs, :delete} => %{
       short: "Delete files outside the record store",
       risk: :high,
-      scope_keys: %{paths: :string_list}
+      scope_keys: %{in: :string, paths: :string_list}
     },
 
     # Network — HTTP verbs
@@ -108,11 +109,19 @@ defmodule Egghead.Capability.Catalog do
       scope_keys: %{hosts: :string_list}
     },
 
-    # Shell
-    {:shell, :exec} => %{
-      short: "Run allow-listed shell commands",
+    # Processes — spawning OS subprocesses. The `in:` scope is the
+    # sandbox root the subprocess runs inside (kernel-enforced via
+    # Egghead.Sandbox); `cmds:` and `patterns:` are an Elixir-level
+    # argv allow-list refinement on top.
+    {:proc, :exec} => %{
+      short: "Run allow-listed subprocesses (argv-style, no shell)",
       risk: :high,
-      scope_keys: %{cmds: :string_list, patterns: :string_list}
+      scope_keys: %{in: :string, cmds: :string_list, patterns: :string_list}
+    },
+    {:proc, :eval} => %{
+      short: "Run shell pipelines (bash -c \"...\"); safe only inside a sandbox",
+      risk: :high,
+      scope_keys: %{in: :string}
     }
   }
 
@@ -195,8 +204,20 @@ defmodule Egghead.Capability.Catalog do
   defp render_scope(:fs, %{paths: paths}) when paths != [],
     do: "in #{Enum.join(paths, ", ")}"
 
-  defp render_scope(:shell, %{cmds: cmds}) when cmds != [],
-    do: "commands: #{Enum.join(cmds, ", ")}"
+  defp render_scope(:proc, scope) do
+    parts =
+      [
+        render_scope_key(scope, :in, fn v -> "in #{v}" end),
+        render_scope_key(scope, :cmds, fn vs -> "commands: #{Enum.join(vs, ", ")}" end),
+        render_scope_key(scope, :patterns, fn vs -> "patterns: #{Enum.join(vs, ", ")}" end)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case parts do
+      [] -> nil
+      xs -> Enum.join(xs, "; ")
+    end
+  end
 
   defp render_scope(:records, scope) when scope != %{} do
     [
@@ -216,4 +237,13 @@ defmodule Egghead.Capability.Catalog do
     do: "agents: #{Enum.join(ids, ", ")}"
 
   defp render_scope(_, _), do: nil
+
+  defp render_scope_key(scope, key, fmt) do
+    case Map.get(scope, key) do
+      nil -> nil
+      [] -> nil
+      "" -> nil
+      val -> fmt.(val)
+    end
+  end
 end

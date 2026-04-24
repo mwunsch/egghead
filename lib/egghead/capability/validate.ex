@@ -219,8 +219,9 @@ defmodule Egghead.Capability.Validate do
   - `fs.write` or `fs.delete` with scope `paths` covering the
     `records_dir` (either literally, prefix-matching, or unbounded
     globs like `"*"` or `"**"`).
-  - `shell.exec` with no `cmds` and no `patterns` (shell with no
-    restriction can edit any file).
+  - `proc.exec` / `proc.eval` with no `cmds` and no `patterns`
+    (unrestricted process spawn can edit any file the sandbox allows,
+    defeating argv-level auditing).
 
   Takes the raw yaml-parsed capability list and an absolute
   `records_dir` path. Returns a list of human-readable warning
@@ -243,15 +244,102 @@ defmodule Egghead.Capability.Validate do
     case {to_string(key), scope} do
       {"fs.write", %{} = s} -> fs_covers_records_dir?(s, records_dir, "fs.write")
       {"fs.delete", %{} = s} -> fs_covers_records_dir?(s, records_dir, "fs.delete")
-      {"shell.exec", %{} = s} -> shell_unrestricted?(s)
+      {"proc.exec", %{} = s} -> proc_unrestricted?(s, "proc.exec")
+      {"proc.eval", %{} = s} -> proc_unrestricted?(s, "proc.eval")
       _ -> []
     end
   end
 
-  defp escalation_for_entry("shell.exec", _records_dir),
-    do: ["shell.exec granted with no command or pattern restriction"]
+  defp escalation_for_entry("proc.exec", _records_dir),
+    do: ["proc.exec granted with no command or pattern restriction"]
+
+  defp escalation_for_entry("proc.eval", _records_dir),
+    do: ["proc.eval granted without a sandbox root — any command, anywhere"]
 
   defp escalation_for_entry(_, _), do: []
+
+  @doc """
+  Warnings for external grants (`fs.*`, `proc.*`, `net.*`) that have
+  no hoistable sandbox root — i.e. no explicit `in:` on the grant,
+  no agent-level `sandbox:`, and no config-level `sandbox:`.
+
+  Such grants appear to exist in the agent's capability list but are
+  **inert**: every tool call denies with a scope violation. A silent
+  footgun for users who write `capabilities: [fs.read]` expecting it
+  to Just Work — historically `paths:` was the scope key, but under
+  the sandbox model the expectation shifts. This check flags the
+  mismatch with the fix.
+
+  Returns a list of human-readable warning strings naming the
+  dangling grants and suggesting where to declare a sandbox.
+
+  `net.*` is **excluded** from this check — network grants use `hosts:`,
+  not `in:`, and are perfectly usable without a sandbox root.
+  """
+  @spec sandbox_warnings(term(), String.t() | nil, String.t() | nil) :: [String.t()]
+  def sandbox_warnings(raw, agent_sandbox, config_sandbox)
+
+  def sandbox_warnings(nil, _agent, _config), do: []
+
+  def sandbox_warnings(_raw, agent, config) when is_binary(agent) or is_binary(config),
+    do: []
+
+  def sandbox_warnings(raw, _agent, _config) when is_list(raw) do
+    dangling =
+      raw
+      |> Enum.flat_map(&dangling_external_grant/1)
+      |> Enum.uniq()
+
+    case dangling do
+      [] ->
+        []
+
+      names ->
+        [
+          "external grants have no hoistable `in:` scope: #{Enum.join(names, ", ")}. " <>
+            "These grants are inert — tool calls will be denied. Fix: add " <>
+            "`sandbox: <path>` to the agent record, or set `sandbox: <path>` in " <>
+            "~/.config/egghead/config.yml for a machine-wide root."
+        ]
+    end
+  end
+
+  def sandbox_warnings(_, _, _), do: []
+
+  # Returns ["fs.read"] if the entry is an external FS/proc grant lacking
+  # an explicit `in:`; [] otherwise. Net is excluded (it uses `hosts:`).
+  defp dangling_external_grant(str) when is_binary(str) do
+    case str do
+      "fs." <> _ -> [str]
+      "proc." <> _ -> [str]
+      _ -> []
+    end
+  end
+
+  defp dangling_external_grant(%{} = map) when map_size(map) == 1 do
+    [{key, scope}] = Map.to_list(map)
+    key_str = to_string(key)
+
+    cond do
+      not (String.starts_with?(key_str, "fs.") or String.starts_with?(key_str, "proc.")) ->
+        []
+
+      has_in_scope?(scope) ->
+        []
+
+      true ->
+        [key_str]
+    end
+  end
+
+  defp dangling_external_grant(_), do: []
+
+  defp has_in_scope?(%{} = scope) do
+    value = scope["in"] || scope[:in]
+    is_binary(value) and value != ""
+  end
+
+  defp has_in_scope?(_), do: false
 
   defp fs_covers_records_dir?(_scope, nil, _label), do: []
 
@@ -293,7 +381,7 @@ defmodule Egghead.Capability.Validate do
     |> String.replace_suffix("/", "")
   end
 
-  defp shell_unrestricted?(scope) do
+  defp proc_unrestricted?(scope, label) do
     cmds = scope["cmds"] || scope[:cmds] || []
     patterns = scope["patterns"] || scope[:patterns] || []
 
@@ -301,7 +389,7 @@ defmodule Egghead.Capability.Validate do
     empty_patterns = not is_list(patterns) or patterns == []
 
     if empty_cmds and empty_patterns do
-      ["shell.exec granted with no command or pattern restriction"]
+      ["#{label} granted with no command or pattern restriction"]
     else
       []
     end

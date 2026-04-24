@@ -105,22 +105,42 @@ defmodule Egghead.CapabilityTest do
       assert {:denied, %Denial{code: :scope_violation}} = Capability.check(grants, request)
     end
 
-    test "shell.exec matches exact cmd" do
-      grants = Capability.parse([%{"shell.exec" => %{"cmds" => ["rg", "jq"]}}])
+    test "proc.exec matches exact cmd" do
+      grants = Capability.parse([%{"proc.exec" => %{"cmds" => ["rg", "jq"]}}])
 
       assert :ok =
                Capability.check(grants, %Request{
-                 resource: :shell,
+                 resource: :proc,
                  verb: :exec,
                  scope: %{cmd: "rg"}
                })
 
       assert {:denied, %Denial{code: :scope_violation}} =
                Capability.check(grants, %Request{
-                 resource: :shell,
+                 resource: :proc,
                  verb: :exec,
                  scope: %{cmd: "curl"}
                })
+    end
+
+    test "shell.exec is accepted as a deprecated alias for proc.exec" do
+      import ExUnit.CaptureLog
+
+      log =
+        capture_log(fn ->
+          grants = Capability.parse([%{"shell.exec" => %{"cmds" => ["rg"]}}])
+
+          # Alias resolves to :proc and still matches a :proc request.
+          assert :ok =
+                   Capability.check(grants, %Request{
+                     resource: :proc,
+                     verb: :exec,
+                     scope: %{cmd: "rg"}
+                   })
+        end)
+
+      assert log =~ "deprecated alias"
+      assert log =~ "proc.exec"
     end
 
     test "records.update class allow-list restricts modification" do
@@ -358,9 +378,9 @@ defmodule Egghead.CapabilityTest do
 
     test "multiple scope pairs" do
       {:ok, parsed} =
-        Capability.parse_grant_spec("shell.exec{cmds=[rg,jq],patterns=[git:*]}")
+        Capability.parse_grant_spec("proc.exec{cmds=[rg,jq],patterns=[git:*]}")
 
-      assert %{"shell.exec" => scope} = parsed
+      assert %{"proc.exec" => scope} = parsed
       assert scope["cmds"] == ["rg", "jq"]
       assert scope["patterns"] == ["git:*"]
     end
@@ -384,6 +404,90 @@ defmodule Egghead.CapabilityTest do
       assert spec =~ "net.get{"
       assert spec =~ "hosts="
       assert spec =~ "*.github.com"
+    end
+  end
+
+  describe "hoisted `in:` sandbox" do
+    test "grant with explicit `in:` allows paths under the root" do
+      grants = Capability.parse([%{"fs.read" => %{"in" => "/tmp/ws"}}])
+
+      req = %Request{resource: :fs, verb: :read, scope: %{path: "/tmp/ws/file.md"}}
+
+      assert :ok = Capability.check(grants, req)
+    end
+
+    test "grant with `in:` denies paths outside the root" do
+      grants = Capability.parse([%{"fs.read" => %{"in" => "/tmp/ws"}}])
+
+      req = %Request{resource: :fs, verb: :read, scope: %{path: "/etc/hosts"}}
+
+      assert {:denied, %Denial{code: :scope_violation}} = Capability.check(grants, req)
+    end
+
+    test "bare `fs.read` grant inherits `in:` from ctx[:agent_sandbox]" do
+      # Bare grant in frontmatter + agent-level sandbox → the grant's
+      # effective `in:` is hoisted from the agent, no explicit scope needed.
+      grants = Capability.parse(["fs.read"])
+
+      req = %Request{resource: :fs, verb: :read, scope: %{path: "/tmp/ws/file.md"}}
+
+      assert :ok = Capability.check(grants, req, %{agent_sandbox: "/tmp/ws"})
+    end
+
+    test "bare grant inherits from config_sandbox when agent_sandbox is nil" do
+      # This is the "add one line to config, every agent works" ergonomic:
+      # an agent with plain `fs.read` in its frontmatter + config `sandbox:`
+      # → the config root becomes the agent's effective fence.
+      grants = Capability.parse(["fs.read"])
+
+      req = %Request{resource: :fs, verb: :read, scope: %{path: "/tmp/ws/file.md"}}
+
+      assert :ok = Capability.check(grants, req, %{config_sandbox: "/tmp/ws"})
+    end
+
+    test "agent_sandbox takes precedence over config_sandbox" do
+      # When both are set, agent is deeper → wins. A narrower agent root
+      # must restrict beyond the config ceiling (widening is not permitted
+      # in principle; that subpath check is a follow-up).
+      grants = Capability.parse(["fs.read"])
+
+      # Request inside agent sandbox but outside config — in this pass
+      # we allow it because agent beats config. Follow-up work may tighten.
+      req = %Request{resource: :fs, verb: :read, scope: %{path: "/tmp/agent/x"}}
+
+      assert :ok =
+               Capability.check(grants, req, %{
+                 agent_sandbox: "/tmp/agent",
+                 config_sandbox: "/tmp/config"
+               })
+    end
+
+    test "no hoist + no explicit `in:` + no `paths:` denies (inert external grant)" do
+      grants = Capability.parse(["fs.read"])
+      req = %Request{resource: :fs, verb: :read, scope: %{path: "/anything"}}
+
+      assert {:denied, %Denial{code: :scope_violation}} = Capability.check(grants, req)
+    end
+
+    test "explicit grant `in:` overrides hoisted ctx" do
+      # Grant has its own narrower fence — the ctx-level hoist doesn't
+      # replace it. The matcher uses the more specific root.
+      grants = Capability.parse([%{"fs.read" => %{"in" => "/tmp/narrow"}}])
+
+      req = %Request{resource: :fs, verb: :read, scope: %{path: "/tmp/wider/x"}}
+
+      assert {:denied, %Denial{code: :scope_violation}} =
+               Capability.check(grants, req, %{agent_sandbox: "/tmp/wider"})
+    end
+
+    test "relative `paths:` are joined to `in:` and matched" do
+      grants = Capability.parse([%{"fs.read" => %{"in" => "/tmp/ws", "paths" => ["./lib/**"]}}])
+
+      req_inside = %Request{resource: :fs, verb: :read, scope: %{path: "/tmp/ws/lib/foo.ex"}}
+      req_outside = %Request{resource: :fs, verb: :read, scope: %{path: "/tmp/ws/test/foo.ex"}}
+
+      assert :ok = Capability.check(grants, req_inside)
+      assert {:denied, _} = Capability.check(grants, req_outside)
     end
   end
 

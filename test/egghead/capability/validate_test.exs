@@ -168,32 +168,75 @@ defmodule Egghead.Capability.ValidateTest do
       assert Validate.escalation_warnings(raw, @records_dir) == []
     end
 
-    test "shell.exec with no restriction flags escalation" do
-      raw = [%{"shell.exec" => %{}}]
+    test "proc.exec with no restriction flags escalation" do
+      raw = [%{"proc.exec" => %{}}]
       assert [warning] = Validate.escalation_warnings(raw, @records_dir)
-      assert warning =~ "shell.exec"
+      assert warning =~ "proc.exec"
       assert warning =~ "no command or pattern"
     end
 
-    test "bare shell.exec string also flags escalation" do
-      raw = ["shell.exec"]
+    test "bare proc.exec string also flags escalation" do
+      raw = ["proc.exec"]
       assert [warning] = Validate.escalation_warnings(raw, @records_dir)
-      assert warning =~ "shell.exec"
+      assert warning =~ "proc.exec"
     end
 
-    test "shell.exec with cmds is bounded — no warning" do
-      raw = [%{"shell.exec" => %{"cmds" => ["git", "ls"]}}]
+    test "proc.exec with cmds is bounded — no warning" do
+      raw = [%{"proc.exec" => %{"cmds" => ["git", "ls"]}}]
       assert Validate.escalation_warnings(raw, @records_dir) == []
     end
 
     test "multiple escalations aggregate" do
       raw = [
         %{"fs.write" => %{"paths" => ["*"]}},
-        %{"shell.exec" => %{}}
+        %{"proc.exec" => %{}}
       ]
 
       warnings = Validate.escalation_warnings(raw, @records_dir)
       assert length(warnings) == 2
+    end
+
+    test "sandbox_warnings: flags external grants with no hoistable `in:`" do
+      raw = ["fs.read", "proc.exec"]
+
+      assert [warning] = Validate.sandbox_warnings(raw, nil, nil)
+      assert warning =~ "fs.read"
+      assert warning =~ "proc.exec"
+      assert warning =~ "inert"
+      assert warning =~ "sandbox:"
+    end
+
+    test "sandbox_warnings: a hoisted agent sandbox silences all" do
+      raw = ["fs.read", "proc.exec"]
+      assert Validate.sandbox_warnings(raw, "~/work", nil) == []
+    end
+
+    test "sandbox_warnings: a hoisted config sandbox silences all" do
+      raw = ["fs.read", "proc.exec"]
+      assert Validate.sandbox_warnings(raw, nil, "~/work") == []
+    end
+
+    test "sandbox_warnings: explicit `in:` on a grant is not dangling" do
+      raw = [%{"fs.read" => %{"in" => "~/narrow"}}]
+      assert Validate.sandbox_warnings(raw, nil, nil) == []
+    end
+
+    test "sandbox_warnings: mixed — only dangling ones flagged" do
+      raw = [
+        %{"fs.read" => %{"in" => "~/ok"}},
+        "fs.write",
+        "proc.exec"
+      ]
+
+      assert [warning] = Validate.sandbox_warnings(raw, nil, nil)
+      assert warning =~ "fs.write"
+      assert warning =~ "proc.exec"
+      refute warning =~ "fs.read"
+    end
+
+    test "sandbox_warnings: net.* is excluded (it uses hosts, not in)" do
+      raw = [%{"net.get" => %{"hosts" => ["*"]}}]
+      assert Validate.sandbox_warnings(raw, nil, nil) == []
     end
 
     test "safe capabilities produce no warnings" do

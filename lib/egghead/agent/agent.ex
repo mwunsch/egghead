@@ -43,6 +43,7 @@ defmodule Egghead.Agent do
       :disposition,
       :model,
       :capabilities,
+      :sandbox,
       :thinking,
       :max_tokens,
       :temperature,
@@ -237,6 +238,7 @@ defmodule Egghead.Agent do
       disposition: config.disposition,
       model: config.model,
       capabilities: config.capabilities,
+      sandbox: config.sandbox,
       tags: config.tags,
       thinking: config.thinking,
       max_tokens: config.max_tokens,
@@ -248,6 +250,8 @@ defmodule Egghead.Agent do
     Logger.info(
       "Agent started: #{state.name} (#{state.id}) model=#{state.model} capabilities=#{inspect(state.capabilities)}"
     )
+
+    warn_dangling_sandbox_grants(record, state)
 
     Process.flag(:trap_exit, true)
 
@@ -479,6 +483,21 @@ defmodule Egghead.Agent do
     end
   end
 
+  defp warn_dangling_sandbox_grants(record, state) do
+    raw = Map.get(record.meta || %{}, "capabilities")
+
+    config_sandbox =
+      case Egghead.Config.load() do
+        {:ok, config} -> Egghead.Config.sandbox(config)
+        _ -> nil
+      end
+
+    case Egghead.Capability.Validate.sandbox_warnings(raw, state.sandbox, config_sandbox) do
+      [] -> :ok
+      warnings -> Enum.each(warnings, fn w -> Logger.warning("Agent #{state.id}: #{w}") end)
+    end
+  end
+
   defp build_identity(state) do
     %{
       id: state.id,
@@ -486,6 +505,7 @@ defmodule Egghead.Agent do
       disposition: state.disposition,
       model: state.model,
       capabilities: state.capabilities,
+      sandbox: state.sandbox,
       thinking: state.thinking,
       max_tokens: state.max_tokens,
       temperature: state.temperature,

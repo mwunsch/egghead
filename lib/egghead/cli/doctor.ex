@@ -287,7 +287,7 @@ defmodule Egghead.CLI.Doctor do
 
   # Iterate every :agent record, validate its `capabilities:` yaml
   # against the Catalog schema, flag escalation-risk scopes
-  # (fs.write/fs.delete covering the records directory, shell.exec
+  # (fs.write/fs.delete covering the records directory, proc.exec
   # with no command/pattern restriction), and render the capability
   # list with the same risk-marker + short-label style as
   # `egghead agents capabilities`. Issues warn rather than fail —
@@ -310,7 +310,10 @@ defmodule Egghead.CLI.Doctor do
   end
 
   defp audit_and_print(record, records_dir) do
-    raw = Map.get(record.meta || %{}, "capabilities")
+    meta = record.meta || %{}
+    raw = Map.get(meta, "capabilities")
+    agent_sandbox = Map.get(meta, "sandbox")
+    config_sandbox = config_sandbox()
 
     issues =
       case Validate.validate(raw) do
@@ -319,7 +322,8 @@ defmodule Egghead.CLI.Doctor do
       end
 
     escalations = Validate.escalation_warnings(raw, records_dir)
-    warnings = issues ++ escalations
+    dangling = Validate.sandbox_warnings(raw, agent_sandbox, config_sandbox)
+    warnings = issues ++ escalations ++ dangling
 
     result = if warnings == [], do: :ok, else: {:warn, Enum.join(warnings, "; ")}
 
@@ -372,6 +376,13 @@ defmodule Egghead.CLI.Doctor do
   defp records_dir do
     case Config.load() do
       {:ok, config} -> Config.records_dir(config) |> Path.expand()
+      _ -> nil
+    end
+  end
+
+  defp config_sandbox do
+    case Config.load() do
+      {:ok, config} -> Config.sandbox(config)
       _ -> nil
     end
   end

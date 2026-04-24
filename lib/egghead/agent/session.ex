@@ -1272,11 +1272,26 @@ defmodule Egghead.Agent.Session do
 
     on_output = build_output_streamer(room_id, state.agent_id, tool_use)
 
+    # Hoisting chain: agent-level sandbox takes precedence over
+    # config-level; grant-level `in:` beats both (handled in matcher).
+    agent_sandbox = state.identity[:sandbox]
+
+    config_sandbox =
+      case Egghead.Config.load() do
+        {:ok, cfg} -> Egghead.Config.sandbox(cfg)
+        _ -> nil
+      end
+
     ctx = %{
       agent_id: state.agent_id,
       room_id: room_id,
       capabilities: state.identity[:capabilities] || [],
-      on_tool_output: on_output
+      on_tool_output: on_output,
+      agent_sandbox: agent_sandbox,
+      config_sandbox: config_sandbox,
+      # Pre-resolved profile for subprocess spawning, or nil if the
+      # agent holds no external sandbox roots.
+      sandbox: build_sandbox_profile(agent_sandbox, config_sandbox)
     }
 
     {status, result_text} =
@@ -1394,5 +1409,18 @@ defmodule Egghead.Agent.Session do
     DateTime.utc_now()
     |> DateTime.to_iso8601()
     |> String.replace(~r/[:\.]/, "-")
+  end
+
+  # Build a %Sandbox.Profile{} from the effective sandbox root (agent
+  # first, then config). Returns `nil` if neither is set, in which case
+  # tool spawn falls back to unsandboxed Port.open.
+  defp build_sandbox_profile(nil, nil), do: nil
+
+  defp build_sandbox_profile(agent_sandbox, config_sandbox) do
+    root =
+      (agent_sandbox || config_sandbox)
+      |> Path.expand()
+
+    Egghead.Sandbox.Profile.from_root(root, net: false)
   end
 end

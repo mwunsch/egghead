@@ -35,7 +35,6 @@ defmodule Egghead.TUI.Records.Update do
       Enter (cmd mode)   execute selected command
 
     Toggles
-      Ctrl+F             toggle class filter (durable / all)
       Ctrl+T             toggle date format (relative / iso)
 
     Search bar (readline-style)
@@ -144,7 +143,6 @@ defmodule Egghead.TUI.Records.Update do
     end
   end
 
-  def update({:key, :ctrl_f}, model), do: {Model.toggle_class_filter(model), :none}
   def update({:key, :ctrl_t}, model), do: {Model.toggle_date_format(model), :none}
 
   def update({:key, :page_up}, model),

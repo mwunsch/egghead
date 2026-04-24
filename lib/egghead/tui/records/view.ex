@@ -76,8 +76,7 @@ defmodule Egghead.TUI.Records.View do
 
   defp header(model, width) do
     count = length(model.filtered)
-    filter_label = if model.show_all_classes, do: "all", else: "durable"
-    context = "#{filter_label} · #{count} records"
+    context = "#{count} records"
 
     Egghead.TUI.Header.render(:records, context, width, model.providers?)
   end
@@ -586,7 +585,7 @@ defmodule Egghead.TUI.Records.View do
           " NEW │ ⏎ create │ ↑ back to results │ ^q quit"
 
         true ->
-          " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^f filter │ ^t date" <>
+          " REC │ ↑↓ │ ⏎ edit │ tab links │ / cmd │ ^t date" <>
             nav_hint <> " │ ^q quit"
       end
 

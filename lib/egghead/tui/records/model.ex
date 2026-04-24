@@ -44,7 +44,6 @@ defmodule Egghead.TUI.Records.Model do
           selected_id: String.t() | nil,
           selected_record: Egghead.Record.t() | nil,
           selected_body: String.t() | nil,
-          show_all_classes: boolean(),
           date_format: date_format(),
           preview_scroll: non_neg_integer(),
           preview_total_lines: non_neg_integer(),
@@ -72,7 +71,6 @@ defmodule Egghead.TUI.Records.Model do
             selected_id: nil,
             selected_record: nil,
             selected_body: nil,
-            show_all_classes: false,
             date_format: :relative,
             preview_scroll: 0,
             preview_total_lines: 0,
@@ -153,7 +151,7 @@ defmodule Egghead.TUI.Records.Model do
     # as follow_active_link / nav_back within records mode.
     model =
       if prefer_id do
-        %{model | all: all, filter: "", filter_cursor: 0, show_all_classes: true}
+        %{model | all: all, filter: "", filter_cursor: 0}
       else
         %{model | all: all}
       end
@@ -170,26 +168,11 @@ defmodule Egghead.TUI.Records.Model do
     |> hydrate_selection()
   end
 
-  @doc """
-  Recompute `:filtered` from `:all`, the current `:filter`, and
-  `:show_all_classes`.
-  """
   @spec refilter(t()) :: t()
   def refilter(%__MODULE__{} = model) do
     needle = String.downcase(model.filter)
-
-    filtered =
-      model.all
-      |> filter_by_class(model.show_all_classes)
-      |> filter_by_query(needle)
-
+    filtered = filter_by_query(model.all, needle)
     %{model | filtered: filtered}
-  end
-
-  defp filter_by_class(records, true), do: records
-
-  defp filter_by_class(records, false) do
-    Enum.filter(records, fn r -> r.class == :durable end)
   end
 
   defp filter_by_query(records, ""), do: records
@@ -408,7 +391,6 @@ defmodule Egghead.TUI.Records.Model do
               model
               | filter: "",
                 filter_cursor: 0,
-                show_all_classes: true,
                 nav_history: history,
                 link_index: nil
             }
@@ -437,7 +419,6 @@ defmodule Egghead.TUI.Records.Model do
           model
           | filter: "",
             filter_cursor: 0,
-            show_all_classes: true,
             nav_history: rest,
             link_index: nil
         }
@@ -808,7 +789,6 @@ defmodule Egghead.TUI.Records.Model do
     | `Enter` (link)  | Follow active link, push to nav history         |
     | `Backspace`     | Pop nav history (when filter is empty)          |
     | `Esc`           | Exit link mode / command mode                   |
-    | `Ctrl+F`        | Toggle class filter (durable / all)             |
     | `Ctrl+T`        | Toggle date format (relative / iso)             |
     | `Ctrl+Z`        | Suspend to background                           |
     | `Ctrl+Q` / `^C` | Quit                                            |
@@ -1008,15 +988,6 @@ defmodule Egghead.TUI.Records.Model do
     max_scroll = max(model.preview_total_lines - content_h(model), 0)
     new_scroll = model.preview_scroll |> Kernel.+(delta) |> max(0) |> min(max_scroll)
     %{model | preview_scroll: new_scroll}
-  end
-
-  @doc "Toggle whether the list shows only `:durable` or all classes."
-  @spec toggle_class_filter(t()) :: t()
-  def toggle_class_filter(%__MODULE__{} = model) do
-    %{model | show_all_classes: not model.show_all_classes}
-    |> refilter()
-    |> clamp_selection()
-    |> hydrate_selection()
   end
 
   @doc "Toggle the date display format between `:relative` and `:iso`."

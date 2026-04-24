@@ -39,6 +39,7 @@ defmodule Egghead.TUI.Chat.Update do
     %{name: "save", description: "Save transcript as a record"},
     %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
+    %{name: "halt", description: "Interrupt agents mid-turn (or hit Esc)"},
     %{name: "handoff", description: "Handoff an agent's context (space opens picker)"},
     %{name: "join", description: "Join or create a room (type to filter, Enter to join/create)"},
     %{name: "list", description: "List all open rooms"},
@@ -67,6 +68,8 @@ defmodule Egghead.TUI.Chat.Update do
     "save" => :cmd_save,
     "copy" => :cmd_copy,
     "continue" => :cmd_continue,
+    "halt" => :cmd_halt,
+    "stop" => :cmd_halt,
     "handoff" => :cmd_handoff,
     "join" => :cmd_join,
     "list" => :cmd_list,
@@ -134,7 +137,38 @@ defmodule Egghead.TUI.Chat.Update do
     {Model.link_deselect(model), :none}
   end
 
-  def update({:key, key}, %Model{} = model) when key in [:escape, :ctrl_g], do: {model, :none}
+  # A dismissable status bar (the post-halt nudge, "the room is
+  # quiet" after /continue with nothing pending) lets Esc clear the
+  # bar without halting anything else. Takes precedence over the
+  # halt-if-active branch below — the user just wants the bar gone.
+  def update({:key, key}, %Model{status_dismissable: true} = model)
+      when key in [:escape, :ctrl_g] do
+    {clear_status(model), :none}
+  end
+
+  # Bare Esc with nothing else open → halt if anything is in flight
+  # (any agent currently active, or a stream open). Otherwise no-op.
+  # Esc never exits chat mode; that's F1.
+  def update({:key, key}, %Model{} = model) when key in [:escape, :ctrl_g] do
+    if room_busy?(model) do
+      room_id = model.room_id
+
+      cmd =
+        {:exec,
+         fn ->
+           try do
+             if room_id, do: Egghead.chat_halt(room_id)
+             :no_msg
+           catch
+             _, _ -> :no_msg
+           end
+         end}
+
+      {model, cmd}
+    else
+      {model, :none}
+    end
+  end
 
   # When in link-nav mode, Enter follows the active wikilink to records.
   def update({:key, :enter}, %Model{link_index: idx} = model) when idx != nil do
@@ -420,11 +454,21 @@ defmodule Egghead.TUI.Chat.Update do
   defp handle_room_event(:budget_exhausted, model) do
     %{
       model
-      | status_message: "We've been chatting for a bit. Anything to add? If not, /continue."
+      | status_message: "Paused for you. /continue to resume, or send a message.",
+        status_dismissable: false
     }
   end
 
   defp handle_room_event(:continued, model), do: clear_status(model)
+
+  defp handle_room_event({:halted, _room_id}, model) do
+    model
+    |> drop_all_streams()
+    |> idle_all_agents()
+    |> Map.put(:status_message, "Halted. What would you like to do next?")
+    |> Map.put(:status_dismissable, true)
+    |> Map.put(:status_kind, :warning)
+  end
 
   defp handle_room_event({:system_notice, text}, model) do
     require Logger
@@ -777,7 +821,26 @@ defmodule Egghead.TUI.Chat.Update do
 
   defp bump_anim(%Model{} = model), do: %{model | anim_frame: model.anim_frame + 1}
 
-  defp clear_status(%Model{} = model), do: %{model | status_message: nil}
+  defp clear_status(%Model{} = model),
+    do: %{model | status_message: nil, status_dismissable: false, status_kind: :info}
+
+  defp idle_all_agents(%Model{agents: agents} = model) do
+    agents = Enum.map(agents, fn a -> %{a | status: :idle} end)
+    %{model | agents: agents}
+  end
+
+  defp drop_all_streams(%Model{} = model), do: %{model | streams: %{}}
+
+  # Esc-to-halt only fires if anything is actually in flight: an agent
+  # currently active (mid tool-loop or about to respond), an open
+  # stream, or pending activations queued from the user's last message.
+  # Without this gate, Esc on a quiet room would still round-trip a
+  # GenServer call for nothing.
+  defp room_busy?(%Model{streams: streams, agents: agents, pending_activated: pending}) do
+    map_size(streams) > 0 or
+      MapSet.size(pending) > 0 or
+      Enum.any?(agents, fn a -> a.status == :active end)
+  end
 
   defp set_agent_status(%Model{agents: agents} = model, agent_id, status) do
     agents =
@@ -1002,12 +1065,25 @@ defmodule Egghead.TUI.Chat.Update do
          end
        end}
 
-    model =
-      model
-      |> Model.clear_input()
-      |> Model.append_entry(Entry.system("Budget renewed — agents may continue"))
-
+    model = Model.clear_input(model)
     {model, cmd}
+  end
+
+  defp apply_command(:cmd_halt, _arg, model) do
+    room_id = model.room_id
+
+    cmd =
+      {:exec,
+       fn ->
+         try do
+           if room_id, do: Egghead.chat_halt(room_id)
+           :no_msg
+         catch
+           _, _ -> :no_msg
+         end
+       end}
+
+    {Model.clear_input(model), cmd}
   end
 
   defp apply_command(:cmd_handoff, arg, model) do

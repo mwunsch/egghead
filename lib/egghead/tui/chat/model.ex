@@ -65,6 +65,8 @@ defmodule Egghead.TUI.Chat.Model do
           next_paste_id: pos_integer(),
           completion: Completion.t() | nil,
           status_message: String.t() | nil,
+          status_dismissable: boolean(),
+          status_kind: :info | :warning,
           anim_frame: non_neg_integer(),
           providers?: boolean(),
           link_index: non_neg_integer() | nil,
@@ -84,6 +86,8 @@ defmodule Egghead.TUI.Chat.Model do
             next_paste_id: 1,
             completion: nil,
             status_message: nil,
+            status_dismissable: false,
+            status_kind: :info,
             anim_frame: 0,
             providers?: false,
             link_index: nil,
@@ -135,6 +139,8 @@ defmodule Egghead.TUI.Chat.Model do
         input: %EditBuffer{},
         completion: nil,
         status_message: nil,
+        status_dismissable: false,
+        status_kind: :info,
         link_index: nil
     }
   end

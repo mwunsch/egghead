@@ -151,6 +151,97 @@ defmodule Egghead.ChatTest do
       assert state.round_budget == 15
     end
 
+    test "halt clears pending mentions, sets :waiting, and broadcasts {:halted, room_id}" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}", round_budget: 1)
+
+      Room.send_message(room, "Go")
+      Room.agent_respond(room, "agents/alpha", "ask @agents/beta about it")
+
+      # Confirm a mention was queued (budget = 1, response with @-mention exhausts it).
+      state = Room.get_state(room)
+      assert state.pending_mentions > 0
+
+      Room.subscribe(room)
+      Room.halt(room)
+
+      assert_receive {:halted, ^room}, 1000
+
+      state = Room.get_state(room)
+      assert state.status == :waiting
+      assert state.pending_mentions == 0
+    end
+
+    test "halted room swallows agent_respond — no transcript, no broadcast" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+      Room.subscribe(room)
+      Room.send_message(room, "Go")
+
+      assert_receive {:user_message, _}, 1000
+
+      :ok = Room.halt(room)
+      assert_receive {:halted, ^room}, 1000
+
+      # Late-arriving response from an in-flight task: should be a no-op.
+      :ok = Room.agent_respond(room, "agents/late", "I was almost done!")
+
+      refute_receive {:agent_message, _}, 100
+      refute_receive {:agent_mentions, _, _, _, _}, 100
+
+      transcript = Room.get_transcript(room)
+      assert length(transcript) == 1
+    end
+
+    test "send_message after halt clears halted flag and accepts responses again" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+      Room.send_message(room, "Go")
+      Room.halt(room)
+
+      # New user message should reset.
+      Room.send_message(room, "OK back at it")
+      Room.subscribe(room)
+
+      :ok = Room.agent_respond(room, "agents/alpha", "responding")
+
+      # Now agent_message broadcasts should land.
+      assert_receive {:agent_message, _}, 1000
+    end
+
+    test "continue after halt clears halted flag and accepts responses" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+      Room.send_message(room, "Go")
+      Room.halt(room)
+
+      Room.continue(room)
+      Room.subscribe(room)
+
+      :ok = Room.agent_respond(room, "agents/alpha", "responding")
+      assert_receive {:agent_message, _}, 1000
+    end
+
+    test "Room.get_state exposes halted flag for external gates" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+      assert Room.get_state(room).halted == false
+
+      Room.halt(room)
+      assert Room.get_state(room).halted == true
+
+      Room.send_message(room, "back")
+      assert Room.get_state(room).halted == false
+    end
+
+    test "halt on an idle room is safe (no pending state, just broadcasts)" do
+      room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
+
+      Room.subscribe(room)
+      assert :ok = Room.halt(room)
+
+      assert_receive {:halted, ^room}, 1000
+
+      state = Room.get_state(room)
+      assert state.status == :waiting
+      assert state.pending_mentions == 0
+    end
+
     test "budget ticks on every agent response (not just @-mention cascades)" do
       room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
 
@@ -225,6 +316,65 @@ defmodule Egghead.ChatTest do
       refute Enum.any?(state.history, fn entry ->
                entry.role == "user" and entry.content =~ "/pass"
              end)
+    end
+
+    test "aborts in-flight task on {:halted, room_id} and replies :halted to caller" do
+      room_id = "test-room-#{:erlang.unique_integer([:positive])}"
+      {:ok, room_pid} = Room.start_link(id: room_id)
+
+      identity = [
+        id: "agents/alpha",
+        name: "Alpha",
+        model: "anthropic/claude-haiku-4-5",
+        capabilities: [],
+        disposition: "Test agent."
+      ]
+
+      {:ok, session_pid} =
+        Session.start_link(
+          agent_id: "agents/alpha",
+          room_id: room_id,
+          identity: identity,
+          room_pid: room_pid
+        )
+
+      # Stand in for a real LLM task: a long-sleeping process. The
+      # TaskSupervisor isn't started in the test config, so we just
+      # spawn directly — Session.handle_info doesn't care about the
+      # task's supervisor; it kills by pid.
+      task_pid = spawn(fn -> Process.sleep(30_000) end)
+      task_ref = make_ref()
+
+      test_pid = self()
+      reply_ref = make_ref()
+      fake_from = {test_pid, reply_ref}
+
+      pending = %{
+        ref: task_ref,
+        pid: task_pid,
+        from: fake_from,
+        kind: :prompt,
+        input_history_len: 0,
+        call: {:prompt, "stub", []}
+      }
+
+      :sys.replace_state(session_pid, fn state -> %{state | pending_task: pending} end)
+
+      task_mon = Process.monitor(task_pid)
+
+      # Trigger the halt path the way Room.halt would (PubSub broadcast).
+      Phoenix.PubSub.broadcast(Egghead.PubSub, Room.topic(room_id), {:halted, room_id})
+
+      # Caller blocked on the GenServer.call gets {:error, :halted}.
+      assert_receive {^reply_ref, {:error, :halted}}, 1000
+
+      # The standin task is killed.
+      assert_receive {:DOWN, ^task_mon, :process, _pid, _reason}, 1000
+
+      # Session is back to idle.
+      state = :sys.get_state(session_pid)
+      assert state.pending_task == nil
+      assert state.queued_calls == []
     end
 
     test "rehydrates history from room transcript on session init" do

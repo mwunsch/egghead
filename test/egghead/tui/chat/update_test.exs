@@ -180,9 +180,37 @@ defmodule Egghead.TUI.Chat.UpdateTest do
     test "budget_exhausted sets a status flash; continued clears it" do
       {m, :none} = Update.update({:room_event, :budget_exhausted}, model())
       assert m.status_message =~ "continue"
+      # Budget bar is informational and persistent — Esc must not dismiss it.
+      refute m.status_dismissable
 
       {m, :none} = Update.update({:room_event, :continued}, m)
       assert m.status_message == nil
+      refute m.status_dismissable
+    end
+
+    test "halted sets a dismissable status bar and quiesces presence" do
+      m = model()
+
+      # Bring an agent in so set_agent_status has something to update,
+      # then start streaming to mark them active.
+      {m, :none} = Update.update({:room_event, {:agent_joined, "agents/scout"}}, m)
+
+      {m, :none} =
+        Update.update(
+          {:room_event, {:agent_streaming, "default", "agents/scout", "thinking…"}},
+          m
+        )
+
+      assert map_size(m.streams) > 0
+      assert Enum.any?(m.agents, &(&1.status == :active))
+
+      {m, :none} = Update.update({:room_event, {:halted, "default"}}, m)
+
+      assert m.status_message == "Halted. What would you like to do next?"
+      assert m.status_dismissable
+      assert m.status_kind == :warning
+      assert m.streams == %{}
+      refute Enum.any?(m.agents, &(&1.status == :active))
     end
 
     test "agent_joined / agent_left maintains the presence list" do
@@ -298,15 +326,51 @@ defmodule Egghead.TUI.Chat.UpdateTest do
   end
 
   describe "key bindings" do
-    test "escape is a no-op (no navigation or clearing)" do
+    test "escape on an idle room is a no-op (no navigation or clearing)" do
       {_m, cmd} = Update.update({:key, :escape}, model())
       assert cmd == :none
     end
 
-    test "escape with input does not clear it" do
+    test "escape with input but no in-flight activity does not clear input or halt" do
       m = put_input(model(), "draft")
       {m, cmd} = Update.update({:key, :escape}, m)
       assert Model.input_text(m) == "draft"
+      assert cmd == :none
+    end
+
+    test "escape on a busy room (active agent) fires :exec to halt" do
+      m = model()
+      {m, :none} = Update.update({:room_event, {:agent_joined, "agents/scout"}}, m)
+
+      {m, :none} =
+        Update.update(
+          {:room_event, {:agent_streaming, "default", "agents/scout", "thinking…"}},
+          m
+        )
+
+      {_m, cmd} = Update.update({:key, :escape}, m)
+      assert match?({:exec, _}, cmd)
+    end
+
+    test "escape on a dismissable status bar clears the bar without halting" do
+      {m, :none} = Update.update({:room_event, {:halted, "default"}}, model())
+      assert m.status_dismissable
+      assert m.status_kind == :warning
+
+      {m, cmd} = Update.update({:key, :escape}, m)
+      assert m.status_message == nil
+      refute m.status_dismissable
+      assert m.status_kind == :info
+      assert cmd == :none
+    end
+
+    test "escape on the budget bar (not dismissable) is a no-op when room is idle" do
+      {m, :none} = Update.update({:room_event, :budget_exhausted}, model())
+      refute m.status_dismissable
+
+      {m, cmd} = Update.update({:key, :escape}, m)
+      # Bar persists — only /continue or new activity should clear it.
+      assert m.status_message =~ "continue"
       assert cmd == :none
     end
 
@@ -463,11 +527,28 @@ defmodule Egghead.TUI.Chat.UpdateTest do
       assert [%Entry{kind: :system}] = m.transcript
     end
 
-    test "/continue appends a system entry and fires :exec" do
+    test "/continue clears input and fires :exec without leaving a chat entry" do
       m = put_input(model(), "/continue")
       {m, cmd} = Update.update({:key, :enter}, m)
-      assert [%Entry{kind: :system, text: text}] = m.transcript
-      assert text =~ "renewed"
+      assert Model.input_empty?(m)
+      # No chat entry — the status bar carries the resume signal,
+      # and the agents speaking up is the actual feedback.
+      assert m.transcript == []
+      assert match?({:exec, _}, cmd)
+    end
+
+    test "/halt clears input and fires :exec without a chat entry" do
+      m = put_input(model(), "/halt")
+      {m, cmd} = Update.update({:key, :enter}, m)
+      assert Model.input_empty?(m)
+      assert m.transcript == []
+      assert match?({:exec, _}, cmd)
+    end
+
+    test "/stop is an alias for /halt" do
+      m = put_input(model(), "/stop")
+      {m, cmd} = Update.update({:key, :enter}, m)
+      assert Model.input_empty?(m)
       assert match?({:exec, _}, cmd)
     end
 

@@ -68,7 +68,13 @@ defmodule Egghead.Chat.Room do
       muted: MapSet.new(),
       idle_timeout: nil,
       mode: :serial,
-      status: :waiting
+      status: :waiting,
+      # When true, agent_respond / agent_pass / agent_mentions are
+      # all swallowed: in-flight tasks finishing late don't get
+      # appended or fanned out, and Coordinator stops spawning new
+      # cascades. Cleared on send_message (next user turn) or
+      # continue (explicit resume).
+      halted: false
     ]
   end
 
@@ -170,6 +176,19 @@ defmodule Egghead.Chat.Room do
   @spec continue(String.t()) :: :ok
   def continue(room_id) do
     Egghead.Node.call(room_name(room_id), :continue)
+  end
+
+  @doc """
+  Interrupt all in-flight agent activity in the room.
+
+  Clears any queued @-mentions, sets the room to `:waiting`, and
+  broadcasts `{:halted, room_id}` so subscribed Sessions can abort
+  their current LLM call. Agents stay alive; they just stop talking
+  until the next user message.
+  """
+  @spec halt(String.t()) :: :ok
+  def halt(room_id) do
+    Egghead.Node.call(room_name(room_id), :halt)
   end
 
   @doc """
@@ -382,7 +401,8 @@ defmodule Egghead.Chat.Room do
         rounds_remaining: state.round_budget,
         current_round_responded: MapSet.new(),
         pending_mentions: [],
-        status: :active
+        status: :active,
+        halted: false
     }
 
     broadcast(state.id, {:user_message, msg})
@@ -409,6 +429,17 @@ defmodule Egghead.Chat.Room do
         {:reply, {:error, :not_empty}, state}
     end
   end
+
+  # Halted: a late-arriving response or pass from an in-flight task that
+  # finished after the user hit halt. Swallow without persisting or
+  # broadcasting — the user said stop. Reply :ok so the caller doesn't
+  # see this as an error path; we already returned :halted to whatever
+  # was actually waiting on the LLM call.
+  def handle_call({:agent_respond, %Sender{}, _content, _usage}, _from, %{halted: true} = state),
+    do: reply_with_timeout(:ok, state)
+
+  def handle_call({:agent_pass, %Sender{}}, _from, %{halted: true} = state),
+    do: reply_with_timeout(:ok, state)
 
   def handle_call({:agent_pass, %Sender{} = sender}, _from, state) do
     msg = %Message{
@@ -511,6 +542,19 @@ defmodule Egghead.Chat.Room do
     {:reply, result, state}
   end
 
+  def handle_call(:halt, _from, state) do
+    state = %{
+      state
+      | status: :waiting,
+        pending_mentions: [],
+        in_progress: %{},
+        halted: true
+    }
+
+    broadcast(state.id, {:halted, state.id})
+    reply_with_timeout(:ok, state)
+  end
+
   def handle_call(:continue, _from, state) do
     pending = state.pending_mentions
 
@@ -519,7 +563,8 @@ defmodule Egghead.Chat.Room do
       | rounds_remaining: state.round_budget,
         current_round_responded: MapSet.new(),
         status: :active,
-        pending_mentions: []
+        pending_mentions: [],
+        halted: false
     }
 
     broadcast(state.id, :continued)
@@ -580,7 +625,8 @@ defmodule Egghead.Chat.Room do
       round_budget: state.round_budget,
       pending_mentions: length(state.pending_mentions),
       message_count: length(state.transcript),
-      mode: state.mode
+      mode: state.mode,
+      halted: state.halted
     }
 
     {:reply, info, state}

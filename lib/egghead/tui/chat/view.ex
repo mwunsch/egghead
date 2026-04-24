@@ -971,9 +971,14 @@ defmodule Egghead.TUI.Chat.View do
     text(pad_to(label, width), height: 1, fg: Colors.white(), bg: Colors.selected_bg())
   end
 
+  defp status_bar(%Model{status_message: msg, status_kind: :warning}, width) do
+    label = " #{msg} "
+    text(pad_to(label, width), height: 1, fg: Colors.bg(), bg: Colors.warning())
+  end
+
   defp status_bar(%Model{status_message: msg}, width) do
-    label = " ! #{msg} "
-    text(pad_to(label, width), height: 1, fg: Colors.white(), bg: Colors.red())
+    label = " #{msg} "
+    text(pad_to(label, width), height: 1, fg: Colors.fg(), bg: Colors.bg_alt())
   end
 
   # ---- helpers -------------------------------------------------------------

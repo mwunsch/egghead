@@ -304,6 +304,33 @@ defmodule Egghead.Agent.Session do
     {:noreply, %{state | history: state.history ++ [entry]}}
   end
 
+  # User hit /halt or ESC. Abort the in-flight LLM task (closes the
+  # streaming SSE connection and drops any pending tool result), reply
+  # to whoever was blocked on the call, and reject any queued calls so
+  # callers don't hang. The Session itself stays alive — agents are
+  # silenced for this turn, not removed. New prompts after this point
+  # are gated by Coordinator.run_agent_attempt, which checks the Room's
+  # authoritative halted state.
+  def handle_info({:halted, _room_id}, state) do
+    state =
+      case state.pending_task do
+        nil ->
+          state
+
+        %{ref: ref, pid: pid, from: from} ->
+          Process.demonitor(ref, [:flush])
+          Process.exit(pid, :kill)
+          GenServer.reply(from, {:error, :halted})
+          %{state | pending_task: nil}
+      end
+
+    Enum.each(state.queued_calls, fn {from, _call} ->
+      GenServer.reply(from, {:error, :halted})
+    end)
+
+    {:noreply, %{state | queued_calls: []}}
+  end
+
   # Room events we don't need to act on (other agents' lifecycle,
   # streaming chunks, etc.). Ignore silently — we're only listening
   # for commits (agent_message / user_message).
@@ -362,6 +389,7 @@ defmodule Egghead.Agent.Session do
 
     pending = %{
       ref: task.ref,
+      pid: task.pid,
       from: from,
       kind: kind,
       input_history_len: input_history_len,

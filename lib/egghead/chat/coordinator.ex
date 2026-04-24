@@ -100,6 +100,20 @@ defmodule Egghead.Chat.Coordinator do
     Egghead.Node.call(server, :list_registered)
   end
 
+  @doc """
+  Look up an agent's display name. Falls back to the id basename if
+  the agent isn't registered with the Coordinator (rare, but possible
+  during early startup or after a crash-restart).
+  """
+  @spec display_name(GenServer.server(), String.t()) :: String.t()
+  def display_name(server \\ __MODULE__, agent_id) do
+    try do
+      Egghead.Node.call(server, {:display_name, agent_id})
+    catch
+      :exit, _ -> agent_id |> String.split("/") |> List.last() |> String.capitalize()
+    end
+  end
+
   # --- GenServer callbacks ---
 
   @impl true
@@ -167,6 +181,10 @@ defmodule Egghead.Chat.Coordinator do
     state = %{state | rooms: MapSet.put(state.rooms, room_id)}
     Logger.info("Coordinator: watching room #{room_id}")
     {:reply, :ok, state}
+  end
+
+  def handle_call({:display_name, agent_id}, _from, state) do
+    {:reply, agent_display_name(state, agent_id), state}
   end
 
   @impl true
@@ -259,6 +277,21 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info(:continued, state) do
     Logger.debug("Coordinator: human granted more turns")
     {:noreply, state}
+  end
+
+  def handle_info({:halted, room_id}, state) do
+    Logger.info("Coordinator: room #{room_id} halted")
+
+    # Drop any outstanding handoff markers for this room. In-flight
+    # Tasks under the room's Sessions abort themselves on the same
+    # broadcast — Coordinator just clears its own bookkeeping so the
+    # next user message starts from a clean slate.
+    handoffs =
+      state.handoffs_in_progress
+      |> Enum.reject(fn {_agent_id, rid} -> rid == room_id end)
+      |> MapSet.new()
+
+    {:noreply, %{state | handoffs_in_progress: handoffs}}
   end
 
   def handle_info({:agent_joined, agent_id}, state) do
@@ -446,7 +479,7 @@ defmodule Egghead.Chat.Coordinator do
       _ ->
         # Lifecycle-only :started (boot, supervisor restart) — fine
         # to use the live display name; identity is what's relevant.
-        announce_to_rooms(state, "#{display_name(state, agent_id)} joined")
+        announce_to_rooms(state, "#{agent_display_name(state, agent_id)} joined")
     end
 
     {:noreply, state}
@@ -592,7 +625,7 @@ defmodule Egghead.Chat.Coordinator do
   end
 
   defp do_terminate(agent_id, reason, state) do
-    display = display_name(state, agent_id)
+    display = agent_display_name(state, agent_id)
 
     text =
       case reason do
@@ -943,6 +976,11 @@ defmodule Egghead.Chat.Coordinator do
       {:ok, text, usage, tool_calls} ->
         handle_agent_result(agent_id, room_id, text, usage, tool_calls, activation)
 
+      # Halt is intentional, not an error. Don't surface the pass flavor
+      # line either — the room's status bar already tells the user.
+      {:error, :halted} ->
+        Room.clear_in_progress(room_id, agent_id)
+
       {:error, reason} ->
         Logger.warning("Coordinator: agent #{agent_id} failed: #{inspect(reason)}")
         broadcast_agent_error(room_id, agent_id, reason)
@@ -973,6 +1011,20 @@ defmodule Egghead.Chat.Coordinator do
     transcript = Room.get_transcript(room_id)
     room_state = Room.get_state(room_id)
 
+    # The room is the source of truth for halt. A Task can spawn between
+    # the moment the user requests halt and the moment {:halted, _}
+    # reaches subscribed Sessions — this catches that race before we
+    # spend tokens on the LLM call.
+    cond do
+      Map.get(room_state, :halted, false) ->
+        {:error, :halted}
+
+      true ->
+        run_llm_call(agent_id, room_id, message, activation, transcript, room_state)
+    end
+  end
+
+  defp run_llm_call(agent_id, room_id, message, activation, transcript, room_state) do
     room_context = %{
       id: room_id,
       transcript: transcript,
@@ -1179,6 +1231,9 @@ defmodule Egghead.Chat.Coordinator do
             )
         end
 
+      {:error, :halted} ->
+        Room.clear_in_progress(room_id, agent_id)
+
       {:error, reason} ->
         Logger.warning("Coordinator: #{agent_id} huddle retry failed: #{inspect(reason)}")
 
@@ -1239,7 +1294,7 @@ defmodule Egghead.Chat.Coordinator do
       else: full
   end
 
-  defp display_name(state, agent_id) do
+  defp agent_display_name(state, agent_id) do
     case Map.get(state.agents, agent_id) do
       %AgentInfo{name: name} -> name
       _ -> agent_id
@@ -1321,11 +1376,10 @@ defmodule Egghead.Chat.Coordinator do
   # the transcript placeholder) so users see both "Scout errored: …"
   # and the atmospheric pass line, rather than just silence.
   defp broadcast_agent_error(room_id, agent_id, reason) do
-    # We can't resolve the display name without access to state.agents,
-    # and this is called from a Task that doesn't carry state. Fall
-    # back to the basename of the id, which matches the format Room
-    # uses for Sender.name.
-    display = agent_id |> String.split("/") |> List.last() |> String.capitalize()
+    # Sync round-trip to the Coordinator GenServer to resolve the
+    # agent's configured display name. The capitalized id basename
+    # is a fallback when the Coordinator isn't reachable.
+    display = display_name(__MODULE__, agent_id)
     broadcast_system_notice(room_id, "#{display} errored: #{format_reason(reason)}")
   end
 end

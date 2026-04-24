@@ -313,6 +313,14 @@ defmodule Egghead do
   end
 
   @doc """
+  Interrupts in-flight agent activity in a chat room (like /halt or ESC).
+  """
+  @spec chat_halt(String.t()) :: :ok
+  def chat_halt(room_id \\ default_room()) do
+    Egghead.Chat.Room.halt(room_id)
+  end
+
+  @doc """
   Saves the chat room transcript as a deliberation record in the store.
   """
   @spec chat_save(String.t()) :: {:ok, String.t()} | {:error, term()}

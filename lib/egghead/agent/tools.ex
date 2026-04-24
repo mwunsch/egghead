@@ -387,6 +387,28 @@ defmodule Egghead.Agent.Tools do
         }
       },
       %{
+        name: "proc_eval",
+        offers_on: [{:proc, :eval}],
+        resolve: &Egghead.Tool.ProcEval.request_for/1,
+        description:
+          "Evaluate a shell pipeline (bash -c). Supports pipes, redirects, subshells, globs, command substitution. Safe only because the kernel sandbox contains every process the shell spawns — if a command tries to touch files outside `proc.eval{in: <path>}`, the kernel returns EPERM. Use `proc_exec` when you only need a single binary with argv; use this when you need a shell pipeline.",
+        input_schema: %{
+          type: "object",
+          properties: %{
+            cmd: %{
+              type: "string",
+              description: "Full shell string to evaluate (passed to `bash -c`)"
+            },
+            cwd: %{type: "string", description: "Working directory"},
+            timeout: %{
+              type: "integer",
+              description: "Timeout in milliseconds (default 30000)"
+            }
+          },
+          required: ["cmd"]
+        }
+      },
+      %{
         name: "fs_read",
         offers_on: [{:fs, :read}],
         resolve: &Egghead.Tool.FS.request_for_read/1,
@@ -743,6 +765,12 @@ defmodule Egghead.Agent.Tools do
     on_output = Map.get(ctx, :on_tool_output)
     sandbox = Map.get(ctx, :sandbox)
     Egghead.Tool.ProcExec.run(input, on_output: on_output, sandbox: sandbox)
+  end
+
+  defp do_execute("proc_eval", input, ctx) do
+    on_output = Map.get(ctx, :on_tool_output)
+    sandbox = Map.get(ctx, :sandbox)
+    Egghead.Tool.ProcEval.run(input, on_output: on_output, sandbox: sandbox)
   end
 
   defp do_execute("fs_read", input, _ctx) do

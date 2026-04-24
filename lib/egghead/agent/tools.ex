@@ -203,7 +203,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :read}],
         resolve: &req_records_read/1,
         description:
-          "Full-text search across record titles and bodies. Uses porter stemming. Returns ranked results with id, title, tags, and class.",
+          "Full-text search across record titles and bodies (porter-stemmed). Returns plain text, one record per line in the form `- <id>: <title> [<tags>] (<class>)`, sorted by match rank.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -221,7 +221,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :read}],
         resolve: &req_records_read/1,
         description:
-          "Read a record's metadata and a preview of its body. Returns id, title, tags, links, backlinks, and a body preview. Use get_record_body to read the full content if needed.",
+          "Read a record's metadata and body preview. Returns plain text: header lines (`key: value` — id, title, author, class, tags, links, plus any custom meta), a blank line, then up to ~500 chars of the body. If truncated, the last line reads `(~N tokens total — use get_record_body to read full content)`. Always prefer this first — the preview is usually enough.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -235,7 +235,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :read}],
         resolve: &req_records_read/1,
         description:
-          "Read the full body of a record. Only use this when you need the complete content — check get_record preview first. Be mindful of your context window.",
+          "Read the full body of a record as raw markdown (or org-mode for .org files). Use only after `get_record` when the preview isn't enough — the full body can be large and consume significant context.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -249,7 +249,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :read}],
         resolve: &req_records_read/1,
         description:
-          "List records in the store. Optionally filter by tag. Returns id, title, tags, and class.",
+          "List records in the store, optionally filtered by tag. Returns plain text, one record per line in the form `- <id>: <title> [<tags>] (<class>)`. Use `search_records` when you have keywords; use this when you want to enumerate a tag or scan everything.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -261,7 +261,8 @@ defmodule Egghead.Agent.Tools do
         name: "find_backlinks",
         offers_on: [{:records, :read}],
         resolve: &req_records_read/1,
-        description: "Find records that link TO a given record. The reverse graph.",
+        description:
+          "Find records that link TO a given record — the reverse graph. Useful for asking 'who cites this?' or 'what depends on this idea?'. Returns plain text, one record per line in the form `- <id>: <title> [<tags>] (<class>)`.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -274,7 +275,8 @@ defmodule Egghead.Agent.Tools do
         name: "find_links",
         offers_on: [{:records, :read}],
         resolve: &req_records_read/1,
-        description: "Find records that a given record links TO. Forward graph traversal.",
+        description:
+          "Find records that a given record links TO — forward graph traversal from a starting id. `depth` controls how many hops to follow (default 1). Returns plain text, one record per line in the form `- <id>: <title> [<tags>] (<class>)`. Use this to follow references outward from a record.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -288,7 +290,8 @@ defmodule Egghead.Agent.Tools do
         name: "recent_records",
         offers_on: [{:records, :read}],
         resolve: &req_records_read/1,
-        description: "List recently updated or created records.",
+        description:
+          "List records sorted by recent activity — `updated` by default, or pass `order_by: \"created\"` for creation time. Use `since` (ISO 8601 date) to filter from a specific point. Returns plain text, one record per line in the form `- <id>: <title> [<tags>] (<class>)`. Handy for catching up after a break or summarizing today's activity.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -307,7 +310,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :create}, {:agent, :create}],
         resolve: &req_create_record/1,
         description:
-          "Create a new record in the store. Returns the created record's id. Any keys beyond the structural fields (id, title, tags, links, class, body) are preserved as frontmatter metadata — e.g. `model`, `provider`, `capabilities` for agent records, or skill-spec keys like `name`, `description`, `allowed-tools`, `compatibility` for skill records. If `capabilities` is set for an agent record, the caller must hold `agent.grant` and the proposed capabilities must be a subset of the caller's own.",
+          "Create a new record in the store. Returns the new record's id on success. Any keys beyond the structural fields (id, title, tags, links, class, body) are preserved as frontmatter metadata — e.g. `model`, `provider`, `capabilities`, `sandbox` for agent records, or skill-spec keys like `description`, `allowed-tools` for skill records. Proposing `capabilities` on an agent record requires your own `agent.grant`, and the proposed set must be ⊆ what you hold (attenuation — you can only hand out what you already have).",
         input_schema: %{
           type: "object",
           properties: %{
@@ -334,7 +337,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:net, :get}, {:net, :post}, {:net, :put}, {:net, :delete}],
         resolve: &Egghead.Tool.WebFetch.request_for/1,
         description:
-          "Fetch a URL over HTTP. Default method is GET; pass `method` for POST/PUT/DELETE. HTML responses are stripped to readable text with links preserved by default (pass `raw: true` for raw HTML). Scoped by `net.*{hosts: [...]}` capability — the URL's host must be in the allow-list.",
+          "Fetch a URL over HTTP. Default method is GET; pass `method` for POST/PUT/DELETE. HTML responses are stripped to readable text with links preserved by default (pass `raw: true` for raw HTML). Fetches to hosts outside your allow-list return a capability denial — you can catch it and report the failure to the user rather than crashing the conversation.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -367,7 +370,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:proc, :exec}],
         resolve: &Egghead.Tool.ProcExec.request_for/1,
         description:
-          "Run a subprocess. The `cmd` and `args` are passed directly to spawn_executable — no shell interpretation, no injection surface. Gated by `proc.exec{in: <path>, cmds: [...], patterns: [...]}` capability and kernel-fenced by the agent's sandbox. Command output is captured (stdout + stderr combined) and truncated at 30k tokens if oversized.",
+          "Spawn a subprocess with argv — no shell interpretation, no injection surface. Use `proc_exec` for a single binary with arguments; use `proc_eval` instead when you need shell pipelines, redirects, or command substitution. Commands that try to read or write outside your sandbox root fail with permission-denied from the OS. Output is stdout+stderr combined; oversize output is truncated to ~30k tokens.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -391,7 +394,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:proc, :eval}],
         resolve: &Egghead.Tool.ProcEval.request_for/1,
         description:
-          "Evaluate a shell pipeline (bash -c). Supports pipes, redirects, subshells, globs, command substitution. Safe only because the kernel sandbox contains every process the shell spawns — if a command tries to touch files outside `proc.eval{in: <path>}`, the kernel returns EPERM. Use `proc_exec` when you only need a single binary with argv; use this when you need a shell pipeline.",
+          "Evaluate a shell pipeline via `bash -c`. Supports pipes, redirects, subshells, globs, command substitution — the full shell. Commands that try to touch files outside your sandbox root fail with permission-denied, even via shell trickery (redirects, subshells all respect the fence). Use `proc_exec` when you only need a single binary; use this when you need a pipeline or shell features. Output is stdout+stderr combined; oversize output is truncated to ~30k tokens.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -413,7 +416,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:fs, :read}],
         resolve: &Egghead.Tool.FS.request_for_read/1,
         description:
-          "Read a file outside the record store. Gated by `fs.read{paths: [...]}` capability. Non-UTF-8 files are refused; large files are truncated.",
+          "Read a file outside the record store. Paths must be within your `fs.read` grant's sandbox root; non-UTF-8 files are refused, and large files are truncated at `max_bytes` (default ~256KB). Use `fs_grep` when you want to find a specific pattern without reading the whole file.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -428,7 +431,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:fs, :write}],
         resolve: &Egghead.Tool.FS.request_for_write/1,
         description:
-          "Write (or overwrite) a file outside the record store. Atomic via temp + rename. Gated by `fs.write{paths: [...]}` capability.",
+          "Write (or overwrite) a file outside the record store. Paths must be within your `fs.write` grant's sandbox root. The write is atomic — the file either updates cleanly or fails without partial state.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -443,7 +446,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:fs, :read}],
         resolve: &Egghead.Tool.FS.request_for_grep/1,
         description:
-          "Search file contents for a regex pattern. Uses ripgrep if available, Elixir fallback otherwise. Gated by `fs.read{paths: [...]}` capability on the search root.",
+          "Search file contents for a regex pattern across a directory. Returns matches one per line in `path:line:text` format (ripgrep-style) so you see line numbers and context directly. Paths must be within your `fs.read` grant's sandbox root. Prefer this over `fs_read` when you're looking for a specific string rather than reading a whole file.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -459,7 +462,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :delete}, {:agent, :delete}],
         resolve: &req_delete_record/1,
         description:
-          "Move a record to the trash. Reversible — trashed records live in .trash/ under the records directory and can be restored by moving the file back. For agent records this is the 'fire' operation: the agent's process stops when its record disappears from the index. Requires `records.delete` for content records or `agent.delete` for agent records.",
+          "Move a record to the trash. Reversible — trashed records live in `.trash/` under the records directory and can be restored by moving the file back. For agent records this is the 'fire' operation: the agent's process stops as soon as its record leaves the index. Requires `records.delete` for content records or `agent.delete` for agent records.",
         input_schema: %{
           type: "object",
           properties: %{
@@ -473,7 +476,7 @@ defmodule Egghead.Agent.Tools do
         offers_on: [{:records, :update}, {:agent, :update}, {:agent, :grant}],
         resolve: &req_update_record/1,
         description:
-          "Update an existing record by merging new values. Only fields you provide change. Any keys beyond the structural fields become frontmatter metadata — for agent records typical keys are `model`, `provider`, `capabilities`, `thinking`, `max_tokens`, `temperature`, `context_threshold`; for skill records the spec keys like `name`, `description`, `allowed-tools`. Modifying an agent's `capabilities` requires the `agent.grant` capability and is subject to attenuation — grants cannot exceed your own, and you cannot grant capabilities to yourself.",
+          "Update an existing record by merging new values — only fields you provide change. Any keys beyond the structural fields become frontmatter metadata (for agents: `model`, `provider`, `capabilities`, `sandbox`, `thinking`, `max_tokens`, `temperature`, `context_threshold`; for skills: `description`, `allowed-tools`). Modifying an agent's `capabilities` or `sandbox` requires `agent.grant` and is attenuation-bound: you can't grant more than you hold, and you can't grant to yourself.",
         input_schema: %{
           type: "object",
           properties: %{

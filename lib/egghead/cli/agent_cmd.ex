@@ -137,15 +137,19 @@ defmodule Egghead.CLI.AgentCmd do
         defaults: ["records.read"]
       )
 
+    sandbox = prompt_for_sandbox(capabilities)
+
     instructions = edit_instructions(name)
 
-    params = %{
-      name: name,
-      model: model,
-      tags: tags,
-      capabilities: capabilities,
-      instructions: instructions
-    }
+    params =
+      %{
+        name: name,
+        model: model,
+        tags: tags,
+        capabilities: capabilities,
+        instructions: instructions
+      }
+      |> maybe_put_param(:sandbox, sandbox)
 
     if dry_run do
       Widgets.header("Dry run — would create agents/#{name}:")
@@ -154,6 +158,7 @@ defmodule Egghead.CLI.AgentCmd do
       IO.puts("class: agent")
       IO.puts("model: #{model}")
       IO.puts("tags: [#{Enum.join(["agent" | tags], ", ")}]")
+      if sandbox, do: IO.puts("sandbox: #{sandbox}")
       IO.puts("capabilities: [#{Enum.join(capabilities, ", ")}]")
       IO.puts("---")
       IO.puts("")
@@ -213,6 +218,48 @@ defmodule Egghead.CLI.AgentCmd do
       Widgets.input("Model", default: "anthropic/claude-sonnet-4-6")
     end
   end
+
+  # Contextual sandbox prompt. Only asks if the user picked at least one
+  # external capability (fs.*, proc.*, net.*) — a records-only agent has
+  # nothing to fence. Offers the global config `sandbox:` as the default
+  # when set, so most users can hit Enter and inherit it.
+  defp prompt_for_sandbox(capabilities) do
+    if needs_sandbox?(capabilities) do
+      IO.puts("")
+      IO.puts("  \e[2mSandbox root — the agent's fence for fs.* and proc.*\e[0m")
+      IO.puts("  \e[2mThe agent can only read/write/exec under this path.\e[0m")
+      IO.puts("  \e[2mLeave blank to use the global sandbox from config.yml.\e[0m")
+
+      default = Path.expand(global_sandbox() || System.user_home!())
+
+      case Widgets.input("Sandbox root", default: default) do
+        nil -> nil
+        "" -> nil
+        path -> String.trim(path)
+      end
+    else
+      nil
+    end
+  end
+
+  defp needs_sandbox?(capabilities) do
+    Enum.any?(capabilities, fn cap ->
+      String.starts_with?(cap, "fs.") or
+        String.starts_with?(cap, "proc.") or
+        String.starts_with?(cap, "net.")
+    end)
+  end
+
+  defp global_sandbox do
+    case Egghead.Config.load() do
+      {:ok, cfg} -> Egghead.Config.sandbox(cfg)
+      _ -> nil
+    end
+  end
+
+  defp maybe_put_param(params, _key, nil), do: params
+  defp maybe_put_param(params, _key, ""), do: params
+  defp maybe_put_param(params, key, value), do: Map.put(params, key, value)
 
   defp edit_instructions(name) do
     editor = System.get_env("EDITOR") || System.get_env("VISUAL") || "vi"
@@ -587,29 +634,44 @@ defmodule Egghead.CLI.AgentCmd do
     end
   end
 
-  # Fold `access:` expansion into a unified yaml-form capability list.
+  # Fold top-level shortcuts (`access:`, `sandbox:`) into a unified
+  # yaml-form capability list.
   #
-  # Returns `{unified_caps, attrs_override}`. When the record has an
-  # `access:` key, `attrs_override` contains `"access" => :remove` so
-  # the caller can include it in the `update_record/2` attrs to delete
-  # the shortcut in the same write that modifies `capabilities:`. When
-  # `access:` is absent, the returned caps are the existing list as-is
-  # and `attrs_override` is empty.
+  # Returns `{unified_caps, attrs_override}`. `attrs_override` carries
+  # `%{"access" => :remove, "sandbox" => :remove}` entries for whichever
+  # shortcuts were present, so the caller can include them in the
+  # `update_record/2` attrs to delete the shortcuts in the same write
+  # that modifies `capabilities:`. The contract: frontmatter on disk
+  # always reflects the agent's real authority — no shortcut sitting
+  # next to an out-of-sync explicit list.
   defp dissolve_access(record) do
-    access_entries = Egghead.Record.Agent.expand_access(record.meta["access"])
-    explicit = List.wrap(record.meta["capabilities"] || [])
+    has_access? = Map.has_key?(record.meta, "access")
+    has_sandbox? = Map.has_key?(record.meta, "sandbox")
 
-    if Map.has_key?(record.meta, "access") do
+    if has_access? or has_sandbox? do
+      expanded =
+        Egghead.Record.Agent.expand_access(record.meta["access"]) ++
+          Egghead.Record.Agent.expand_sandbox(record.meta["sandbox"]) ++
+          List.wrap(record.meta["capabilities"] || [])
+
       unified =
-        (access_entries ++ explicit)
+        expanded
         |> Egghead.Capability.parse()
         |> Enum.map(&Egghead.Capability.grant_to_yaml/1)
 
-      {unified, %{"access" => :remove}}
+      removes =
+        %{}
+        |> maybe_mark_removed(has_access?, "access")
+        |> maybe_mark_removed(has_sandbox?, "sandbox")
+
+      {unified, removes}
     else
-      {explicit, %{}}
+      {List.wrap(record.meta["capabilities"] || []), %{}}
     end
   end
+
+  defp maybe_mark_removed(map, false, _key), do: map
+  defp maybe_mark_removed(map, true, key), do: Map.put(map, key, :remove)
 
   defp risk_marker(:low), do: "\e[32m●\e[0m"
   defp risk_marker(:medium), do: "\e[33m●\e[0m"

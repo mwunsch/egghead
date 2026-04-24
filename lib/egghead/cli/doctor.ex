@@ -25,9 +25,11 @@ defmodule Egghead.CLI.Doctor do
         - NIF/OpenTUI binary exists for this platform
         - Web endpoint is reachable (or port available if standalone)
         - Log file is writable
+        - Sandbox backend (sandbox-exec on macOS, bwrap on Linux)
         - inotify-tools available (Linux only)
         - Each LLM provider is reachable
-        - Agent capability hygiene (malformed yaml, escalation risks)
+        - Agent capability hygiene (malformed yaml, escalation risks,
+          external grants with no hoistable sandbox root)
 
       FLAGS
         --config PATH   Override config file location
@@ -59,7 +61,8 @@ defmodule Egghead.CLI.Doctor do
         {"SQLite index", &check_index/0},
         {"NIF binary", &check_nif/0},
         {"Web endpoint", &check_web_endpoint/0},
-        {"Log file", &check_log_file/0}
+        {"Log file", &check_log_file/0},
+        {"Sandbox backend", &check_sandbox/0}
       ] ++ linux_only([{"inotify-tools", &check_inotify/0}])
 
     results =
@@ -217,6 +220,45 @@ defmodule Egghead.CLI.Doctor do
     case :os.type() do
       {:unix, :linux} -> checks
       _ -> []
+    end
+  end
+
+  # Verifies the kernel-level sandbox binary is present on this machine.
+  # macOS ships `sandbox-exec` at `/usr/bin/sandbox-exec` — always there
+  # but Apple has technically deprecated it; we ride it anyway because no
+  # command-line replacement exists. Linux needs `bwrap` (bubblewrap), a
+  # small package from every major distro. Unsupported platforms (Windows,
+  # BSDs) fall back to unsandboxed and we say so plainly.
+  defp check_sandbox do
+    case :os.type() do
+      {:unix, :darwin} ->
+        case System.find_executable("sandbox-exec") do
+          nil ->
+            {:error,
+             "sandbox-exec not found — proc.* tools will run unsandboxed. " <>
+               "This should be part of macOS by default; something is very wrong."}
+
+          path ->
+            {:ok, "sandbox-exec at #{path}"}
+        end
+
+      {:unix, :linux} ->
+        case System.find_executable("bwrap") do
+          nil ->
+            {:error,
+             "bwrap (bubblewrap) not found — proc.* tools will run unsandboxed. " <>
+               "Install: sudo apt install bubblewrap (Debian/Ubuntu) " <>
+               "| sudo dnf install bubblewrap (Fedora) " <>
+               "| sudo pacman -S bubblewrap (Arch)"}
+
+          path ->
+            {:ok, "bwrap at #{path}"}
+        end
+
+      other ->
+        {:warn,
+         "unsupported platform #{inspect(other)} — proc.* tools run unsandboxed. " <>
+           "Filesystem grants stay advisory (Elixir-level canonicalize + prefix check)."}
     end
   end
 

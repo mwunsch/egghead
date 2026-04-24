@@ -32,6 +32,7 @@ defmodule Egghead.Agent.Wizard do
   @type params :: %{
           optional(:capabilities) => [String.t()],
           optional(:access) => String.t(),
+          optional(:sandbox) => String.t(),
           name: String.t(),
           model: String.t(),
           tags: [String.t()],
@@ -65,6 +66,7 @@ defmodule Egghead.Agent.Wizard do
         %{"model" => params.model}
         |> maybe_put("capabilities", params[:capabilities])
         |> maybe_put("access", params[:access])
+        |> maybe_put("sandbox", params[:sandbox])
 
       attrs = %{
         id: "agents/#{slug}",
@@ -159,6 +161,7 @@ defmodule Egghead.Agent.Wizard do
       |> validate_model(params[:model])
       |> validate_capabilities(params[:capabilities])
       |> validate_access(params[:access])
+      |> validate_sandbox(params[:sandbox])
       |> validate_instructions(params[:instructions])
 
     if errors == %{}, do: :ok, else: {:error, errors}
@@ -206,6 +209,13 @@ defmodule Egghead.Agent.Wizard do
       Map.put(errors, :access, ["must be \"r\", \"w\", or \"rw\" — got #{inspect(value)}"])
     end
   end
+
+  defp validate_sandbox(errors, nil), do: errors
+  defp validate_sandbox(errors, ""), do: errors
+  defp validate_sandbox(errors, value) when is_binary(value), do: errors
+
+  defp validate_sandbox(errors, value),
+    do: Map.put(errors, :sandbox, ["must be a string path — got #{inspect(value)}"])
 
   defp format_issue(%{problem: problem, suggestion: nil}), do: problem
 

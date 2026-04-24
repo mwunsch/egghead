@@ -116,6 +116,34 @@ if [ "$OS" = "linux" ] && ! command -v inotifywait >/dev/null 2>&1; then
   fi
 fi
 
+# --- Linux sandbox dependency check ---
+#
+# Egghead spawns agent subprocesses inside a kernel-enforced sandbox so
+# a hostile command can't touch files outside the agent's workspace.
+# On Linux this needs `bwrap` (bubblewrap) — tiny (~50KB), audited,
+# maintained by the Flatpak team, packaged in every mainstream distro.
+# macOS has `sandbox-exec` built in — nothing to install.
+
+if [ "$OS" = "linux" ] && ! command -v bwrap >/dev/null 2>&1; then
+  echo ""
+  echo "Warning: \`bwrap\` (bubblewrap) not found. Egghead uses it to"
+  echo "kernel-fence subprocesses spawned by agents. Without it, \`proc.*\`"
+  echo "tool calls run unsandboxed — an agent-run command can touch files"
+  echo "anywhere your shell can."
+  echo ""
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "  sudo apt-get install bubblewrap"
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "  sudo dnf install bubblewrap"
+  elif command -v pacman >/dev/null 2>&1; then
+    echo "  sudo pacman -S bubblewrap"
+  elif command -v zypper >/dev/null 2>&1; then
+    echo "  sudo zypper install bubblewrap"
+  else
+    echo "  Install bubblewrap using your distro's package manager."
+  fi
+fi
+
 echo ""
 echo "Get started:"
 echo "  egghead init    # First-time setup"

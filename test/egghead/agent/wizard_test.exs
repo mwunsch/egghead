@@ -59,6 +59,47 @@ defmodule Egghead.Agent.WizardTest do
     end
   end
 
+  describe "validate (sandbox:)" do
+    test "accepts a string sandbox path" do
+      {:error, errors} =
+        Wizard.create(%{
+          name: "scout",
+          # model omitted to short-circuit before create
+          sandbox: "~/projects/foo",
+          instructions: "You are Scout..."
+        })
+
+      refute Map.has_key?(errors, :sandbox)
+    end
+
+    test "allows nil/empty sandbox (optional)" do
+      for value <- [nil, ""] do
+        {:error, errors} =
+          Wizard.create(%{
+            name: "scout",
+            sandbox: value,
+            instructions: "You are Scout..."
+          })
+
+        refute Map.has_key?(errors, :sandbox),
+               "expected sandbox=#{inspect(value)} to not produce a :sandbox error"
+      end
+    end
+
+    test "rejects non-string sandbox" do
+      {:error, errors} =
+        Wizard.create(%{
+          name: "scout",
+          sandbox: 42,
+          instructions: "You are Scout..."
+        })
+
+      assert Map.has_key?(errors, :sandbox)
+      [msg] = errors.sandbox
+      assert msg =~ "string path"
+    end
+  end
+
   describe "slugify/1" do
     test "lowercases and hyphen-joins words" do
       assert Wizard.slugify("Capability Test") == "capability-test"

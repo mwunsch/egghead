@@ -53,9 +53,29 @@ defmodule Egghead.Tool.PatternTest do
   end
 
   describe "empty grant" do
-    test "no cmds and no patterns denies everything" do
+    test "no in, no cmds, no patterns denies everything" do
       assert {:scope_violation, msg} = Pattern.check(["ls"], %{})
-      assert msg =~ "no cmds or patterns"
+      assert msg =~ "no `in:`, `cmds:`, or `patterns:`"
+    end
+
+    test "bare `in:` (kernel-fence only) allows any argv" do
+      # This is the shape the `sandbox:` sugar expands to for proc.exec:
+      # `{ in: ~/foo }` with no cmds/patterns. The kernel sandbox is the
+      # fence — any command, fenced to the root. Without this, the
+      # sandbox: sugar would be inert for proc.exec.
+      assert :ok = Pattern.check(["ls", "-la"], %{in: "/tmp/ws"})
+      assert :ok = Pattern.check(["git", "status"], %{in: "/tmp/ws"})
+      assert :ok = Pattern.check(["anything", "really"], %{in: "/tmp/ws"})
+    end
+
+    test "`in:` + `cmds:` still honors the cmds allowlist" do
+      # When both are present, cmds narrows — a cmd not in the list is
+      # denied even though the sandbox fence would contain it. Explicit
+      # argv narrowing wins over the implicit any-argv rule.
+      assert :ok = Pattern.check(["git", "status"], %{in: "/tmp/ws", cmds: ["git"]})
+
+      assert {:scope_violation, _} =
+               Pattern.check(["rm", "-rf"], %{in: "/tmp/ws", cmds: ["git"]})
     end
   end
 

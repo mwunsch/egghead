@@ -37,15 +37,27 @@ defmodule Egghead.Tool.Pattern do
   def check([cmd | _] = argv, scope) do
     cmds = Map.get(scope, :cmds, []) |> Enum.map(&to_string/1)
     patterns = Map.get(scope, :patterns, []) |> Enum.map(&to_string/1)
+    in_root = Map.get(scope, :in)
 
     cond do
-      cmds == [] and patterns == [] ->
-        {:scope_violation, "proc.exec with no cmds or patterns — nothing allowed"}
+      # No argv allowlist AND no sandbox fence → truly inert. The
+      # `sandbox_warnings/3` validator flags this at doctor time; we
+      # refuse at dispatch as a belt-and-suspenders.
+      cmds == [] and patterns == [] and in_root == nil ->
+        {:scope_violation, "proc.exec with no `in:`, `cmds:`, or `patterns:` — nothing allowed"}
 
+      # Argv allowlist match wins.
       cmd in cmds ->
         :ok
 
       pattern_allows?(argv, patterns) ->
+        :ok
+
+      # `in:`-only grant: the kernel sandbox is the fence. No argv
+      # restriction at the Elixir layer. Matches the `sandbox:` sugar's
+      # expanded shape (`proc.exec: { in: ~/foo }`) and the design
+      # contract "kernel fence is the boundary, argv is free within it."
+      cmds == [] and patterns == [] and in_root != nil ->
         :ok
 
       true ->

@@ -172,7 +172,7 @@ defmodule Egghead.Capability.ValidateTest do
       raw = [%{"proc.exec" => %{}}]
       assert [warning] = Validate.escalation_warnings(raw, @records_dir)
       assert warning =~ "proc.exec"
-      assert warning =~ "no command or pattern"
+      assert warning =~ "`in:`, `cmds:`, or `patterns:`"
     end
 
     test "bare proc.exec string also flags escalation" do
@@ -184,6 +184,24 @@ defmodule Egghead.Capability.ValidateTest do
     test "proc.exec with cmds is bounded — no warning" do
       raw = [%{"proc.exec" => %{"cmds" => ["git", "ls"]}}]
       assert Validate.escalation_warnings(raw, @records_dir) == []
+    end
+
+    test "proc.exec with `in:` alone is bounded (kernel fence) — no warning" do
+      raw = [%{"proc.exec" => %{"in" => "~/projects/foo"}}]
+      assert Validate.escalation_warnings(raw, @records_dir) == []
+    end
+
+    test "proc.eval with `in:` is bounded — no warning" do
+      # proc.eval's only scope key is `in:` — it has no cmds/patterns at
+      # all. The kernel fence is the whole story.
+      raw = [%{"proc.eval" => %{"in" => "~/projects/foo"}}]
+      assert Validate.escalation_warnings(raw, @records_dir) == []
+    end
+
+    test "proc.eval with no scope flags escalation" do
+      raw = [%{"proc.eval" => %{}}]
+      assert [warning] = Validate.escalation_warnings(raw, @records_dir)
+      assert warning =~ "proc.eval"
     end
 
     test "multiple escalations aggregate" do

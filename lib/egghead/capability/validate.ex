@@ -384,12 +384,17 @@ defmodule Egghead.Capability.Validate do
   defp proc_unrestricted?(scope, label) do
     cmds = scope["cmds"] || scope[:cmds] || []
     patterns = scope["patterns"] || scope[:patterns] || []
+    in_root = scope["in"] || scope[:in]
 
     empty_cmds = not is_list(cmds) or cmds == []
     empty_patterns = not is_list(patterns) or patterns == []
+    no_fence = is_nil(in_root) or in_root == ""
 
-    if empty_cmds and empty_patterns do
-      ["#{label} granted with no command or pattern restriction"]
+    # An `in:` root IS a restriction — the kernel sandbox enforces it.
+    # Only flag when there's no argv allowlist AND no fence at all;
+    # that's the "literally any command, anywhere" grant.
+    if empty_cmds and empty_patterns and no_fence do
+      ["#{label} granted with no `in:`, `cmds:`, or `patterns:` restriction"]
     else
       []
     end

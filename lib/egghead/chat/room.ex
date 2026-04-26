@@ -18,10 +18,13 @@ defmodule Egghead.Chat.Room do
   # Per-user-message activation budget. Each agent activation (direct,
   # @-mention, cascade hop) consumes one slot. Resets on the next user
   # message and on /continue. Computed from the room's roster size:
-  # `clamp(2 * agent_count, floor, ceiling)`. Two-per-agent gives every
-  # agent room to respond plus one cascade hop; the floor keeps tiny
-  # rooms loose; the ceiling caps blast radius in big rooms.
-  @activation_budget_per_agent 2
+  # `clamp(ceil(1.5 * agent_count), floor, ceiling)`. 1.5x gives every
+  # agent room to respond plus a partial cascade allowance — enough for
+  # a real conversation, tight enough that the bar is actually reached
+  # in active rooms. The floor keeps tiny rooms loose; the ceiling caps
+  # blast radius in big rooms.
+  @activation_budget_numerator 3
+  @activation_budget_denominator 2
   @activation_budget_floor 6
   @activation_budget_ceiling 21
 
@@ -75,6 +78,16 @@ defmodule Egghead.Chat.Room do
       # Latched once per turn so we don't spam :budget_exhausted on
       # every queued activation; reset on send_message and continue.
       budget_broadcast?: false,
+      # Set when remaining hits 0 (or a queue happens) while sessions
+      # are still in flight. The bar would lie if it fired now —
+      # agents are visibly streaming. Drain to zero active_sessions,
+      # then broadcast. Reset on send_message and continue.
+      budget_exhausted_pending?: false,
+      # Count of agent sessions that have been granted a slot via
+      # try_activate but haven't yet committed via agent_respond /
+      # agent_pass. Used to defer :budget_exhausted until the room
+      # is genuinely idle, not just "no more slots left."
+      active_sessions: 0,
       current_round_responded: MapSet.new(),
       # %{agent_id => %Message{}} — provisional streaming messages
       in_progress: %{},
@@ -433,8 +446,38 @@ defmodule Egghead.Chat.Room do
   end
 
   defp compute_activation_budget(agents) do
-    raw = @activation_budget_per_agent * MapSet.size(agents)
+    raw =
+      ceil(@activation_budget_numerator * MapSet.size(agents) / @activation_budget_denominator)
+
     raw |> max(@activation_budget_floor) |> min(@activation_budget_ceiling)
+  end
+
+  # Floor at 0 — late-arriving agent_respond / agent_pass from sessions
+  # we already zeroed (e.g. via halt) must not push the count negative.
+  defp decrement_active_session(state) do
+    %{state | active_sessions: max(state.active_sessions - 1, 0)}
+  end
+
+  # Fire :budget_exhausted only when the room is genuinely paused: no
+  # remaining slots AND no agent still streaming. Latched once per
+  # turn via budget_broadcast?. Called from try_activate /
+  # queue_activation (when exhaustion first arises) and from
+  # agent_respond / agent_pass (when active sessions drain).
+  defp maybe_broadcast_exhaustion(state) do
+    cond do
+      state.budget_broadcast? ->
+        state
+
+      state.activations_remaining == 0 and state.active_sessions == 0 ->
+        broadcast(state.id, :budget_exhausted)
+        %{state | budget_broadcast?: true, budget_exhausted_pending?: false, status: :waiting}
+
+      state.activations_remaining == 0 ->
+        %{state | budget_exhausted_pending?: true}
+
+      true ->
+        state
+    end
   end
 
   @impl true
@@ -459,6 +502,7 @@ defmodule Egghead.Chat.Room do
         activations_remaining: new_budget,
         pending_activations: [],
         budget_broadcast?: false,
+        budget_exhausted_pending?: false,
         current_round_responded: MapSet.new(),
         status: :active,
         halted: false
@@ -472,17 +516,21 @@ defmodule Egghead.Chat.Room do
   def handle_call({:try_activate, _agent_id}, _from, state) do
     if state.activations_remaining > 0 do
       new_remaining = state.activations_remaining - 1
-      state = %{state | activations_remaining: new_remaining}
 
-      # Crossing to zero is the moment the user wants to know "we've
-      # hit capacity." Without this, exactly-fits-the-budget cascades
-      # consume every slot but never pop the bar — the bar only fires
-      # on overflow into the queue. Latched so we don't re-broadcast
-      # on every queue beyond zero.
+      state = %{
+        state
+        | activations_remaining: new_remaining,
+          active_sessions: state.active_sessions + 1
+      }
+
+      # Crossing to zero marks "no more slots." But the bar means
+      # "we're paused for you" — broadcasting it while the agent who
+      # just took the last slot is still mid-stream reads as a lie.
+      # Mark it pending; let agent_respond / agent_pass fire it when
+      # active_sessions drains to zero.
       state =
-        if new_remaining == 0 and not state.budget_broadcast? do
-          broadcast(state.id, :budget_exhausted)
-          %{state | budget_broadcast?: true, status: :waiting}
+        if new_remaining == 0 do
+          maybe_broadcast_exhaustion(state)
         else
           state
         end
@@ -496,16 +544,11 @@ defmodule Egghead.Chat.Room do
   def handle_call({:queue_activation, agent_id, opts}, _from, state) do
     state = %{
       state
-      | pending_activations: state.pending_activations ++ [{agent_id, opts}]
+      | pending_activations: state.pending_activations ++ [{agent_id, opts}],
+        budget_exhausted_pending?: true
     }
 
-    state =
-      if state.budget_broadcast? do
-        state
-      else
-        broadcast(state.id, :budget_exhausted)
-        %{state | budget_broadcast?: true, status: :waiting}
-      end
+    state = maybe_broadcast_exhaustion(state)
 
     reply_with_timeout(:ok, state)
   end
@@ -552,12 +595,15 @@ defmodule Egghead.Chat.Room do
       usage: nil
     }
 
-    state = %{
-      state
-      | transcript: state.transcript ++ [msg],
-        current_round_responded: MapSet.put(state.current_round_responded, sender.id),
-        in_progress: Map.delete(state.in_progress, sender.id)
-    }
+    state =
+      %{
+        state
+        | transcript: state.transcript ++ [msg],
+          current_round_responded: MapSet.put(state.current_round_responded, sender.id),
+          in_progress: Map.delete(state.in_progress, sender.id)
+      }
+      |> decrement_active_session()
+      |> maybe_broadcast_exhaustion()
 
     # Fire ONLY :agent_passed, not :agent_message — UI renders this as an
     # atmospheric action line via PassActions, not a regular agent message.
@@ -579,12 +625,15 @@ defmodule Egghead.Chat.Room do
       usage: usage
     }
 
-    state = %{
-      state
-      | transcript: state.transcript ++ [msg],
-        current_round_responded: MapSet.put(state.current_round_responded, sender.id),
-        in_progress: Map.delete(state.in_progress, sender.id)
-    }
+    state =
+      %{
+        state
+        | transcript: state.transcript ++ [msg],
+          current_round_responded: MapSet.put(state.current_round_responded, sender.id),
+          in_progress: Map.delete(state.in_progress, sender.id)
+      }
+      |> decrement_active_session()
+      |> maybe_broadcast_exhaustion()
 
     broadcast(state.id, {:agent_message, msg})
 
@@ -614,6 +663,8 @@ defmodule Egghead.Chat.Room do
       | status: :waiting,
         pending_activations: [],
         in_progress: %{},
+        active_sessions: 0,
+        budget_exhausted_pending?: false,
         halted: true
     }
 
@@ -631,6 +682,7 @@ defmodule Egghead.Chat.Room do
         status: :active,
         pending_activations: [],
         budget_broadcast?: false,
+        budget_exhausted_pending?: false,
         halted: false
     }
 

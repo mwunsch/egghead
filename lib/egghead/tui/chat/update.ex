@@ -372,7 +372,7 @@ defmodule Egghead.TUI.Chat.Update do
     |> Model.drop_stream(msg.sender.id)
     |> set_agent_status(msg.sender.id, :idle)
     |> update_agent_ctx(msg.sender.id, msg)
-    |> clear_status()
+    |> clear_dismissable_status()
   end
 
   defp handle_room_event({:agent_streaming, _room_id, agent_id, delta}, model) do
@@ -841,6 +841,12 @@ defmodule Egghead.TUI.Chat.Update do
 
   defp clear_status(%Model{} = model),
     do: %{model | status_message: nil, status_dismissable: false, status_kind: :info}
+
+  # Sticky status (e.g. the :budget_exhausted bar) survives routine
+  # agent activity. Only :user_message and explicit dismissal should
+  # clear it — agents finishing in-flight responses must not.
+  defp clear_dismissable_status(%Model{status_dismissable: false} = model), do: model
+  defp clear_dismissable_status(%Model{} = model), do: clear_status(model)
 
   defp idle_all_agents(%Model{agents: agents} = model) do
     agents = Enum.map(agents, fn a -> %{a | status: :idle} end)

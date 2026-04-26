@@ -9,6 +9,21 @@ defmodule Egghead.ThemeTest do
     prior_tuple = :persistent_term.get({Egghead.OpenTUI.Theme, :active}, nil)
     prior_env = System.get_env("EGGHEAD_CONFIG")
 
+    # Isolate to a temp config dir
+    temp_dir = Path.join(System.tmp_dir!(), "egghead-theme-test-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(temp_dir)
+    System.put_env("EGGHEAD_CONFIG", temp_dir)
+
+    # Force config reload from temp dir
+    :egghead
+    |> Application.get_env(:config)
+    |> then(fn _ ->
+      case Egghead.Config.load() do
+        {:ok, config} -> Application.put_env(:egghead, :config, config)
+        _ -> :ok
+      end
+    end)
+
     # Pin the starting theme deterministically.
     Theme.commit("dos")
 
@@ -20,6 +35,8 @@ defmodule Egghead.ThemeTest do
         nil -> System.delete_env("EGGHEAD_CONFIG")
         v -> System.put_env("EGGHEAD_CONFIG", v)
       end
+
+      File.rm_rf!(temp_dir)
     end)
 
     :ok

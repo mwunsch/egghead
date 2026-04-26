@@ -10,6 +10,22 @@ defmodule Egghead.TUI.ThemePickerTest do
   setup do
     prior_config = Application.get_env(:egghead, :config)
     prior_active_tuple = :persistent_term.get({Egghead.OpenTUI.Theme, :active}, nil)
+    prior_env = System.get_env("EGGHEAD_CONFIG")
+
+    # Isolate to a temp config dir
+    temp_dir = Path.join(System.tmp_dir!(), "egghead-theme-picker-test-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(temp_dir)
+    System.put_env("EGGHEAD_CONFIG", temp_dir)
+
+    # Force config reload from temp dir
+    :egghead
+    |> Application.get_env(:config)
+    |> then(fn _ ->
+      case Egghead.Config.load() do
+        {:ok, config} -> Application.put_env(:egghead, :config, config)
+        _ -> :ok
+      end
+    end)
 
     # Pin the starting committed theme to something deterministic.
     Theme.commit("dos")
@@ -19,6 +35,13 @@ defmodule Egghead.TUI.ThemePickerTest do
 
       if prior_active_tuple,
         do: :persistent_term.put({Egghead.OpenTUI.Theme, :active}, prior_active_tuple)
+
+      case prior_env do
+        nil -> System.delete_env("EGGHEAD_CONFIG")
+        v -> System.put_env("EGGHEAD_CONFIG", v)
+      end
+
+      File.rm_rf!(temp_dir)
     end)
 
     :ok

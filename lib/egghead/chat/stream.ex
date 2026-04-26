@@ -20,6 +20,7 @@ defmodule Egghead.Chat.Stream do
   concat bug.
   """
 
+  alias Egghead.Chat.PassActions
   alias Egghead.TUI.Chat.Entry
 
   @type opts :: [commit_on: String.t(), trim: boolean()]
@@ -73,7 +74,7 @@ defmodule Egghead.Chat.Stream do
           commits
           |> Enum.map(&maybe_trim(&1, s.trim))
           |> Enum.reject(&(&1 == ""))
-          |> Enum.map(&Entry.agent(s.agent_id, s.name, &1))
+          |> Enum.map(&commit_entry(s, &1))
 
         {%{s | current: last}, entries}
     end
@@ -88,7 +89,25 @@ defmodule Egghead.Chat.Stream do
 
   def finalize(%__MODULE__{current: text, trim: trim} = s) do
     text = maybe_trim(text, trim)
-    if text == "", do: [], else: [Entry.agent(s.agent_id, s.name, text)]
+    if text == "", do: [], else: [commit_entry(s, text)]
+  end
+
+  # Surface a standalone /pass chunk as an atmospheric action rather
+  # than a literal "/pass" line in the transcript. This is a UI-only
+  # transform — the Coordinator's Room.agent_pass path still handles
+  # whole-turn passes through PassActions.pick. This catches the case
+  # where an agent monologues prose AND emits /pass on its own line
+  # (or its own paragraph) within the same turn: the prose entries
+  # render normally, the /pass chunk renders atmospherically.
+  defp commit_entry(%__MODULE__{} = s, text) do
+    if String.trim(text) == "/pass" do
+      flavor =
+        PassActions.pick("#{s.agent_id}-#{s.started_at}-#{System.unique_integer([:positive])}")
+
+      Entry.action(s.agent_id, s.name, flavor)
+    else
+      Entry.agent(s.agent_id, s.name, text)
+    end
   end
 
   @doc """

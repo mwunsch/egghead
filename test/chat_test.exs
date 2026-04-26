@@ -90,7 +90,7 @@ defmodule Egghead.ChatTest do
       assert state.activations_remaining == 0
     end
 
-    test "try_activate broadcasts :budget_exhausted when remaining crosses to zero" do
+    test "try_activate defers :budget_exhausted until active sessions drain" do
       room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 2)
       Room.subscribe(room)
       Room.send_message(room, "Go")
@@ -100,28 +100,46 @@ defmodule Egghead.ChatTest do
       Room.try_activate(room, "agents/a")
       refute_receive :budget_exhausted, 100
 
-      # Second slot crosses to zero → bar fires immediately, even
-      # though nothing has overflowed into the queue yet.
+      # Second slot zeroes out remaining, but agents/a and agents/b are
+      # still mid-stream. Firing now would lie ("paused" while output is
+      # actively flowing). Hold the bar until they commit.
       Room.try_activate(room, "agents/b")
+      refute_receive :budget_exhausted, 100
+
+      # First agent finishes — one still in flight, still no bar.
+      Room.agent_respond(room, "agents/a", "done")
+      assert_receive {:agent_message, _}, 1000
+      refute_receive :budget_exhausted, 100
+
+      # Last in-flight session drains → bar fires honestly.
+      Room.agent_respond(room, "agents/b", "done")
+      assert_receive {:agent_message, _}, 1000
       assert_receive :budget_exhausted, 1000
 
-      # Third try (would overflow) does not re-broadcast.
+      # Subsequent queue overflow does not re-broadcast.
       :exhausted = Room.try_activate(room, "agents/c")
       Room.queue_activation(room, "agents/c", activation: :normal)
       refute_receive :budget_exhausted, 100
     end
 
-    test "queue_activation broadcasts :budget_exhausted once per turn" do
+    test "queue_activation defers :budget_exhausted until active sessions drain" do
       room = start_room("test-room-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
       Room.subscribe(room)
       Room.send_message(room, "Go")
 
       assert_receive {:user_message, _}, 1000
 
+      # Slot consumed — agents/a is in flight.
       Room.try_activate(room, "agents/a")
       :exhausted = Room.try_activate(room, "agents/b")
       Room.queue_activation(room, "agents/b", activation: :normal)
 
+      # agents/a is still streaming; bar must not fire yet.
+      refute_receive :budget_exhausted, 100
+
+      # agents/a finishes → room is genuinely idle, bar fires.
+      Room.agent_respond(room, "agents/a", "done")
+      assert_receive {:agent_message, _}, 1000
       assert_receive :budget_exhausted, 1000
 
       # Second queue does NOT re-broadcast.
@@ -180,27 +198,27 @@ defmodule Egghead.ChatTest do
       # Empty room → floor.
       assert Room.get_state(room).activation_budget == 6
 
-      # 5 agents → 2 * 5 = 10.
+      # 5 agents → ceil(1.5 * 5) = 8.
       Enum.each(1..5, fn i -> Room.join(room, "agents/a#{i}") end)
-      assert Room.get_state(room).activation_budget == 10
+      assert Room.get_state(room).activation_budget == 8
 
-      # 12 agents → would be 24, clamped to 21.
-      Enum.each(6..12, fn i -> Room.join(room, "agents/a#{i}") end)
+      # 15 agents → ceil(1.5 * 15) = 23, clamped to 21.
+      Enum.each(6..15, fn i -> Room.join(room, "agents/a#{i}") end)
       assert Room.get_state(room).activation_budget == 21
 
-      # Leave one — drops to 22, still clamped at 21.
-      Room.leave(room, "agents/a12")
+      # Leave one — 14 → 21, still at the ceiling.
+      Room.leave(room, "agents/a15")
       assert Room.get_state(room).activation_budget == 21
     end
 
     test "send_message recomputes budget from current roster" do
       room = start_room("test-room-#{:erlang.unique_integer([:positive])}")
-      Enum.each(1..4, fn i -> Room.join(room, "agents/a#{i}") end)
+      Enum.each(1..5, fn i -> Room.join(room, "agents/a#{i}") end)
 
       Room.send_message(room, "hi")
 
       state = Room.get_state(room)
-      # 4 agents → max(6, 8) = 8
+      # 5 agents → ceil(1.5 * 5) = 8
       assert state.activation_budget == 8
       assert state.activations_remaining == 8
     end
@@ -610,7 +628,7 @@ defmodule Egghead.ChatTest do
       assert msg.sender.type == :agent
     end
 
-    test "budget_exhausted is broadcast on first queued activation" do
+    test "budget_exhausted is broadcast once the in-flight session drains" do
       room =
         start_room("pubsub-test-#{:erlang.unique_integer([:positive])}", activation_budget: 1)
 
@@ -623,6 +641,10 @@ defmodule Egghead.ChatTest do
       :exhausted = Room.try_activate(room, "agents/b")
       Room.queue_activation(room, "agents/b", activation: :normal)
 
+      # agents/a is still streaming — the bar would lie if it fired now.
+      refute_receive :budget_exhausted, 100
+
+      Room.agent_respond(room, "agents/a", "done")
       assert_receive :budget_exhausted, 1000
     end
 

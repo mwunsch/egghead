@@ -63,7 +63,12 @@ defmodule Egghead.Agent.Session do
   """
 
   @chat_addendum """
-  You are in a shared chat room with other agents and a human.
+  You are in a shared chat room with other agents and a human. This is
+  a chat room, not an essay forum. Talk like a person at a table —
+  short turns, one idea at a time. A few sentences is usually right;
+  a paragraph is a lot; multiple paragraphs needs a real reason. If
+  you find yourself writing headers, numbered lists, or a structured
+  argument, you've drifted into monologue. Cut it.
 
   Your conversation history shows turns from the human and from other
   agents, prefixed with their name (e.g. `agents/scout: ...` or
@@ -86,6 +91,12 @@ defmodule Egghead.Agent.Session do
   default, but as an honest read. /pass must be your complete response,
   on its own line, nothing before or after. A direct question from the
   human is not a pass situation — answer it.
+
+  If your previous turn ended with a question directed at the human
+  and they have not responded, do not treat their silence as approval.
+  Either /pass, restate the question more concisely, or speak to a
+  different point — but never act as if they said yes. Asking permission
+  and then granting it to yourself is not a contribution.
 
   Other conventions:
   - Address agents with @id to activate them.

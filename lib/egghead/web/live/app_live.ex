@@ -7,6 +7,7 @@ defmodule Egghead.Web.AppLive do
   """
   use Egghead.Web, :live_view
 
+  import Egghead.Web.Components.Window
   alias Egghead.Web.MarkdownHTML
   alias Egghead.TUI.Records.Slug
 
@@ -18,11 +19,21 @@ defmodule Egghead.Web.AppLive do
 
     all = Egghead.list_records() |> Enum.sort_by(&(&1.updated || ""), :desc)
 
+    # Notational Velocity behavior: a record is always selected.
+    # When the URL has no id, fall through to the most-recently-updated.
     selected_id =
       case params["id"] do
-        nil -> nil
-        segments when is_list(segments) -> Enum.join(segments, "/")
-        id when is_binary(id) -> id
+        nil ->
+          case all do
+            [%{id: id} | _] -> id
+            _ -> nil
+          end
+
+        segments when is_list(segments) ->
+          Enum.join(segments, "/")
+
+        id when is_binary(id) ->
+          id
       end
 
     # Room comes from `/chat/:room_id` if present, otherwise default room.
@@ -31,9 +42,6 @@ defmodule Egghead.Web.AppLive do
     socket =
       socket
       |> assign(
-        # Layout state
-        nav_open: true,
-        chat_open: true,
         # Nav state
         query: "",
         all: all,
@@ -69,24 +77,31 @@ defmodule Egghead.Web.AppLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
+    # When the URL has no id, fall through to the most-recently-updated.
+    # The chat route also routes here (no `:id`); we keep whichever record
+    # was already selected so navigating to /chat/:room doesn't blank the
+    # record window.
     id =
       case params["id"] do
-        nil -> nil
-        segments when is_list(segments) -> Enum.join(segments, "/")
-        id when is_binary(id) -> id
+        nil ->
+          socket.assigns[:selected_id] ||
+            case socket.assigns[:all] do
+              [%{id: id} | _] -> id
+              _ -> nil
+            end
+
+        segments when is_list(segments) ->
+          Enum.join(segments, "/")
+
+        id when is_binary(id) ->
+          id
       end
 
     socket =
       if id do
         socket |> assign(selected_id: id) |> hydrate_selection()
       else
-        assign(socket,
-          selected_id: nil,
-          selected_record: nil,
-          selected_body_html: nil,
-          backlinks: [],
-          word_count: 0
-        )
+        socket
       end
 
     socket =
@@ -125,15 +140,11 @@ defmodule Egghead.Web.AppLive do
 
   # --- UI events ---
 
+  # Window open/close is purely client-side (WindowManager + localStorage).
+  # No `toggle_nav` / `toggle_chat` server events — toolbar buttons fire
+  # `data-window-toggle` events handled in JS.
+
   @impl true
-  def handle_event("toggle_nav", _, socket) do
-    {:noreply, assign(socket, nav_open: !socket.assigns.nav_open)}
-  end
-
-  def handle_event("toggle_chat", _, socket) do
-    {:noreply, assign(socket, chat_open: !socket.assigns.chat_open)}
-  end
-
   def handle_event("search", %{"query" => query}, socket) do
     {:noreply, socket |> assign(query: query) |> apply_filter()}
   end
@@ -1273,43 +1284,96 @@ defmodule Egghead.Web.AppLive do
     phantom = creation_target(assigns.query, assigns.filtered)
     file_tree = if assigns.nav_view == :tree, do: build_file_tree(assigns.filtered), else: []
 
+    record_title =
+      cond do
+        assigns.selected_record == nil -> "Records"
+        assigns.selected_record.title in [nil, ""] -> assigns.selected_record.id
+        true -> assigns.selected_record.title
+      end
+
+    record_subtitle =
+      case assigns.selected_record do
+        nil -> nil
+        rec -> rec.id
+      end
+
+    chat_window_id = "chat:" <> (assigns.room_id || "default")
+    chat_window_title = "Chat — " <> (assigns.room_id || "default")
+
     assigns =
       assigns
       |> assign(:phantom, phantom)
       |> assign(:file_tree, file_tree)
+      |> assign(:record_title, record_title)
+      |> assign(:record_subtitle, record_subtitle)
+      |> assign(:chat_window_id, chat_window_id)
+      |> assign(:chat_window_title, chat_window_title)
 
     ~H"""
     <div class="app-shell">
-      <header class="app-header">
-        <div class="header-center">
-          <span class="app-title">egghead</span>
-          <span :if={@selected_record} class="breadcrumb">&mdash; {@selected_record.id}</span>
-        </div>
-      </header>
-      <div class="app-toolbar">
-        <button
-          class={["toolbar-icon-btn", @nav_open && "depressed"]}
-          phx-click="toggle_nav"
-          title="Toggle records"
-        >
-          <img src="/assets/icon-search.png" alt="Records" class="toolbar-app-icon" />
-        </button>
-        <span :if={@selected_record} class="toolbar-title">
-          {@selected_record.title || @selected_record.id}
-        </span>
-        <div class="toolbar-spacer"></div>
-        <button
-          class={["toolbar-icon-btn", @chat_open && "depressed"]}
-          phx-click="toggle_chat"
-          title="Toggle chat"
-        >
-          <img src="/assets/icon-chat.png" alt="Chat" class="toolbar-app-icon" />
-        </button>
-      </div>
+      <div class="desktop" id="desktop">
+        <%!-- Deskbar — BeOS-style floating shell. Identity, tray, window list. --%>
+        <aside class="deskbar" id="deskbar" phx-hook="Deskbar">
+          <div class="deskbar-leaf">
+            <span class="deskbar-leaf-label">egghead</span>
+          </div>
 
-      <div class="app-body">
-        <%!-- Left nav sidebar --%>
-        <aside class={["nav-sidebar", !@nav_open && "collapsed"]}>
+          <div class="deskbar-tray">
+            <div :if={@room_id} class="tray-row" title="Current chat room">
+              <span class="tray-key">room</span>
+              <span class="tray-val">#{@room_id}</span>
+            </div>
+            <div class="tray-row" title="Active agents">
+              <span class="tray-key">agents</span>
+              <span class="tray-val">{length(@agents)}</span>
+            </div>
+          </div>
+
+          <div class="deskbar-windows" id="deskbar-windows">
+            <button
+              type="button"
+              class="deskbar-entry"
+              data-window-toggle="search"
+              data-window-entry="search"
+              title="Search records"
+            >
+              <img src="/assets/icon-search.png" alt="" class="deskbar-entry-icon" />
+              <span class="deskbar-entry-label">Search</span>
+            </button>
+            <button
+              type="button"
+              class="deskbar-entry deskbar-entry-anchor"
+              data-window-toggle="record"
+              data-window-entry="record"
+              title="Record viewer"
+            >
+              <img src="/assets/icon-document.png" alt="" class="deskbar-entry-icon" />
+              <span class="deskbar-entry-label">{@record_title}</span>
+            </button>
+            <button
+              type="button"
+              class="deskbar-entry"
+              data-window-toggle={@chat_window_id}
+              data-window-entry={@chat_window_id}
+              title={@chat_window_title}
+            >
+              <img src="/assets/icon-chat.png" alt="" class="deskbar-entry-icon" />
+              <span class="deskbar-entry-label">{@chat_window_title}</span>
+            </button>
+          </div>
+        </aside>
+        <%!-- Search window --%>
+        <.window
+          id="search"
+          title="Search"
+          role={:panel}
+          default_x={8}
+          default_y={8}
+          default_w={280}
+          default_h={720}
+          default_z={1}
+          open={true}
+        >
           <div class="nav-inner">
             <div class="nav-toolbar">
               <button
@@ -1423,130 +1487,154 @@ defmodule Egghead.Web.AppLive do
               </div>
             </div>
           </div>
-        </aside>
+        </.window>
 
-        <%!-- Center: record body --%>
-        <main class="record-pane">
-          <div :if={@selected_record} class="record-content">
-            <details class="properties-block" open>
-              <summary class="properties-summary">
-                <span class="properties-summary-label">Properties</span>
-                <button
-                  class="btn-chrome btn-copy"
-                  id="copy-md-btn"
-                  phx-hook="CopyMarkdown"
-                  data-markdown={@selected_record.body || ""}
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
+        <%!-- Record window (anchor) --%>
+        <.window
+          id="record"
+          title={@record_title}
+          subtitle={@record_subtitle}
+          role={:anchor}
+          default_x={296}
+          default_y={8}
+          default_w={560}
+          default_h={720}
+          default_z={3}
+          open={true}
+          class="window-record"
+        >
+          <main class="record-pane">
+            <div :if={@selected_record} class="record-content">
+              <details class="properties-block" open>
+                <summary class="properties-summary">
+                  <span class="properties-summary-label">Properties</span>
+                  <button
+                    class="btn-chrome btn-copy"
+                    id="copy-md-btn"
+                    phx-hook="CopyMarkdown"
+                    data-markdown={@selected_record.body || ""}
                   >
-                    <rect x="5" y="5" width="9" height="9" rx="1" />
-                    <path d="M3 11V3a1 1 0 0 1 1-1h8" />
-                  </svg>
-                  <span class="btn-label">Copy</span>
-                </button>
-              </summary>
-              <dl class="properties">
-                <div class="prop-row">
-                  <dt>id</dt>
-                  <dd class="prop-id">{@selected_record.id}</dd>
-                </div>
-                <div class="prop-row">
-                  <dt>class</dt>
-                  <dd>
-                    <span class={"class-badge #{@selected_record.class}"}>
-                      {@selected_record.class}
-                    </span>
-                  </dd>
-                </div>
-                <div :if={@selected_record.author} class="prop-row">
-                  <dt>author</dt>
-                  <dd>{@selected_record.author}</dd>
-                </div>
-                <div :if={@selected_record.created} class="prop-row">
-                  <dt>created</dt>
-                  <dd class="prop-date" title={@selected_record.created}>
-                    {format_date(@selected_record.created)}
-                  </dd>
-                </div>
-                <div :if={@selected_record.updated} class="prop-row">
-                  <dt>updated</dt>
-                  <dd class="prop-date" title={@selected_record.updated}>
-                    {format_date(@selected_record.updated)}
-                  </dd>
-                </div>
-                <div :if={@selected_record.tags != []} class="prop-row">
-                  <dt>tags</dt>
-                  <dd>
-                    <span :for={tag <- @selected_record.tags} class="tag-pill">{tag}</span>
-                  </dd>
-                </div>
-                <div :if={Egghead.Record.references(@selected_record) != []} class="prop-row">
-                  <dt>links</dt>
-                  <dd>
-                    <a
-                      :for={link <- Egghead.Record.references(@selected_record)}
-                      class="prop-link"
-                      href={"/records/#{link}"}
-                      data-phx-link="patch"
-                      data-phx-link-state="push"
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
                     >
-                      {link}
-                    </a>
-                  </dd>
-                </div>
-                <div :if={@backlinks != []} class="prop-row">
-                  <dt>backlinks</dt>
-                  <dd>
-                    <a
-                      :for={bl <- @backlinks}
-                      class="prop-link"
-                      href={"/records/#{bl.id}"}
-                      data-phx-link="patch"
-                      data-phx-link-state="push"
-                    >
-                      {bl.id}
-                    </a>
-                  </dd>
-                </div>
-                <%= for {key, val} <- @selected_record.meta do %>
+                      <rect x="5" y="5" width="9" height="9" rx="1" />
+                      <path d="M3 11V3a1 1 0 0 1 1-1h8" />
+                    </svg>
+                    <span class="btn-label">Copy</span>
+                  </button>
+                </summary>
+                <dl class="properties">
                   <div class="prop-row">
-                    <dt>{key}</dt>
-                    <dd>{inspect(val)}</dd>
+                    <dt>id</dt>
+                    <dd class="prop-id">{@selected_record.id}</dd>
                   </div>
-                <% end %>
-              </dl>
-            </details>
-            <div
-              id={"editor-#{@selected_record.id}"}
-              phx-hook="YjsEditor"
-              phx-update="ignore"
-              data-record-id={@selected_record.id}
-              class="record-editor"
-            >
+                  <div class="prop-row">
+                    <dt>class</dt>
+                    <dd>
+                      <span class={"class-badge #{@selected_record.class}"}>
+                        {@selected_record.class}
+                      </span>
+                    </dd>
+                  </div>
+                  <div :if={@selected_record.author} class="prop-row">
+                    <dt>author</dt>
+                    <dd>{@selected_record.author}</dd>
+                  </div>
+                  <div :if={@selected_record.created} class="prop-row">
+                    <dt>created</dt>
+                    <dd class="prop-date" title={@selected_record.created}>
+                      {format_date(@selected_record.created)}
+                    </dd>
+                  </div>
+                  <div :if={@selected_record.updated} class="prop-row">
+                    <dt>updated</dt>
+                    <dd class="prop-date" title={@selected_record.updated}>
+                      {format_date(@selected_record.updated)}
+                    </dd>
+                  </div>
+                  <div :if={@selected_record.tags != []} class="prop-row">
+                    <dt>tags</dt>
+                    <dd>
+                      <span :for={tag <- @selected_record.tags} class="tag-pill">{tag}</span>
+                    </dd>
+                  </div>
+                  <div :if={Egghead.Record.references(@selected_record) != []} class="prop-row">
+                    <dt>links</dt>
+                    <dd>
+                      <a
+                        :for={link <- Egghead.Record.references(@selected_record)}
+                        class="prop-link"
+                        href={"/records/#{link}"}
+                        data-phx-link="patch"
+                        data-phx-link-state="push"
+                      >
+                        {link}
+                      </a>
+                    </dd>
+                  </div>
+                  <div :if={@backlinks != []} class="prop-row">
+                    <dt>backlinks</dt>
+                    <dd>
+                      <a
+                        :for={bl <- @backlinks}
+                        class="prop-link"
+                        href={"/records/#{bl.id}"}
+                        data-phx-link="patch"
+                        data-phx-link-state="push"
+                      >
+                        {bl.id}
+                      </a>
+                    </dd>
+                  </div>
+                  <%= for {key, val} <- @selected_record.meta do %>
+                    <div class="prop-row">
+                      <dt>{key}</dt>
+                      <dd>{inspect(val)}</dd>
+                    </div>
+                  <% end %>
+                </dl>
+              </details>
+              <div
+                id={"editor-#{@selected_record.id}"}
+                phx-hook="YjsEditor"
+                phx-update="ignore"
+                data-record-id={@selected_record.id}
+                class="record-editor"
+              >
+              </div>
             </div>
-          </div>
-          <div :if={!@selected_record} class="empty-state">
-            <p>Select a record to begin.</p>
-          </div>
-        </main>
+            <div :if={!@selected_record} class="empty-state">
+              <p>Select a record to begin.</p>
+            </div>
+          </main>
 
-        <%!-- Status bar --%>
-        <div :if={@selected_record} class="record-status-bar">
-          <span class="status-cell">{length(@backlinks)} backlinks</span>
-          <span class="status-cell">{@word_count} words</span>
-          <span class="status-cell">{@selected_record.class}</span>
-        </div>
+          <%!-- Status bar lives at the bottom of the record window --%>
+          <div :if={@selected_record} class="record-status-bar">
+            <span class="status-cell">{length(@backlinks)} backlinks</span>
+            <span class="status-cell">{@word_count} words</span>
+            <span class="status-cell">{@selected_record.class}</span>
+          </div>
+        </.window>
 
-        <%!-- Right: chat sidebar --%>
-        <aside class={["chat-sidebar", !@chat_open && "collapsed"]}>
+        <%!-- Chat window — one per active room, keyed by room_id --%>
+        <.window
+          id={@chat_window_id}
+          title={@chat_window_title}
+          role={:panel}
+          default_x={864}
+          default_y={8}
+          default_w={280}
+          default_h={720}
+          default_z={2}
+          open={true}
+        >
           <div class="chat-inner">
             <div class="chat-header">
               <span class="chat-title">Chat</span>
@@ -1730,7 +1818,7 @@ defmodule Egghead.Web.AppLive do
               </form>
             </div>
           </div>
-        </aside>
+        </.window>
       </div>
     </div>
     """

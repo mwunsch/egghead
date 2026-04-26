@@ -393,16 +393,64 @@ body { min-height: 100vh; }
   overflow: hidden;
 }
 
+/* Slot content fills the body above the footer. position:relative so
+   absolute children (like .record-status-bar) anchor here, not on
+   .window-body (which would put them behind the footer). */
+.window-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Bottom chrome strip — matches Haiku's frame color and gives the
+   resize knob a proper "ledge" to sit on instead of floating at the
+   corner. The strip holds an optional status row on the left
+   (footer slot) and the resize knob on the right. The status sits
+   IN the strip so it reads as one chrome unit, no floating gap. */
+.window-footer {
+  height: 20px;
+  flex-shrink: 0;
+  background: #E0E0E0; /* B_WINDOW_BORDER_COLOR */
+  border-top: 1px solid var(--frame-light);
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.window:not(.focused) .window-footer {
+  background: #E8E8E8; /* B_WINDOW_INACTIVE_BORDER_COLOR */
+}
+
+.window-footer-status {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  /* leave room for the 16px knob on the right */
+  padding-right: 18px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--fg);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 /* Resize knob — exact Haiku _DrawResizeKnob: 16x16 square with a
    diagonal gray gradient, dark top + left bevel lines, and a 10-dot
    triangular pattern in the bottom-right (each dot = dark pixel +
    white pixel offset by 1px diagonally for the embossed look).
    Rendered as an SVG asset because CSS can't economically express
-   the dot pattern. */
+   the dot pattern. The knob lives in the bottom-right of the footer
+   strip — it overhangs by 1px on right + bottom so it reads as a
+   distinct corner element rather than blending into the frame. */
 .window-grip {
   position: absolute;
-  right: 0;
-  bottom: 0;
+  right: -1px;
+  bottom: -1px;
   width: 16px;
   height: 16px;
   cursor: se-resize;
@@ -689,37 +737,47 @@ body { min-height: 100vh; }
   opacity: 0.4;
 }
 
-/* Sunken text input */
+/* Haiku text control — frame + subtle inset bevel (sunken vs. button's
+   raised). Focus replaces the frame with the keyboard-nav color. */
 .nav-search input {
   width: 100%;
   padding: 4px 6px 4px 22px;
   background: #FFFFFF;
   color: var(--fg);
-  border: none;
+  border: 1px solid #8C8C8C;
+  box-shadow:
+    inset 1px 1px 0 #C1C1C1,
+    inset -1px -1px 0 #F4F4F4;
   font-family: var(--font-ui);
   font-size: 13px;
   outline: none;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
+}
+.nav-search input:focus {
+  border-color: #0000E5; /* B_KEYBOARD_NAVIGATION_COLOR */
 }
 
-/* Nav toolbar — icon buttons above the search bar */
+/* Nav toolbar — panel-chrome strip above the search input. The
+   buttons inside need this gray base because their gradient is
+   tinted from #D8D8D8; on white they'd look washed out. */
 .nav-toolbar {
   display: flex;
   align-items: center;
   padding: 4px 6px;
   background: var(--chrome);
-  border-bottom: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 1px 0 var(--chrome-hi);
+  border-bottom: 1px solid #8C8C8C;
   gap: 4px;
 }
 
+/* Haiku button — exact reproduction of HaikuControlLook::DrawButton.
+   On a panel base of (216, 216, 216) the gradient is a 4-stop glossy:
+     top = tint(base, 0.6)    → #E7E7E7
+     m1  = tint(base, 0.75)   → #E1E1E1
+     m2  = tint(base, 0.9)    → #DBDBDB
+     bot = tint(base, 1.01)   → #D5D5D5
+   Frame edge tint(base, 1.35) = #8C8C8C, inner bevel light tint(0.2)
+   = #F4F4F4 / shadow tint(1.105) = #C1C1C1. Activated state inverts
+   the gradient and bevel for a sunken look. */
 .toolbar-btn {
-  background: var(--chrome);
-  border: none;
   padding: 3px 10px;
   cursor: pointer;
   display: flex;
@@ -728,28 +786,42 @@ body { min-height: 100vh; }
   font-family: var(--font-ui);
   font-size: 11px;
   color: var(--fg);
+  border: 1px solid #8C8C8C;
+  background: linear-gradient(
+    to bottom,
+    #E7E7E7 0%,
+    #E1E1E1 33%,
+    #DBDBDB 66%,
+    #D5D5D5 100%
+  );
   box-shadow:
-    inset 1px 1px 0 var(--chrome-hi),
-    inset -1px -1px 0 var(--chrome-dk),
-    inset 2px 2px 0 var(--chrome-mid),
-    inset -2px -2px 0 var(--chrome-lo);
+    inset 1px 1px 0 #F4F4F4,
+    inset -1px -1px 0 #C1C1C1;
 }
 
-.toolbar-btn:active {
+/* Hover: gradient lightens (Haiku multiplies tints by kHoverTintFactor=0.85). */
+.toolbar-btn:hover {
+  background: linear-gradient(
+    to bottom,
+    #EFEFEF 0%,
+    #EAEAEA 33%,
+    #E2E2E2 66%,
+    #DDDDDD 100%
+  );
+}
+
+/* Activated/pressed/toggled: darker gradient + inverted bevel (sunken). */
+.toolbar-btn:active,
+.toolbar-btn.toggled {
+  background: linear-gradient(to bottom, #BABABA 0%, #C1C1C1 100%);
   box-shadow:
-    inset 1px 1px 0 var(--chrome-dk),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-lo),
-    inset -2px -2px 0 var(--chrome-mid);
+    inset 1px 1px 0 #C1C1C1,
+    inset -1px -1px 0 #F4F4F4;
 }
 
 .toolbar-btn.toggled {
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-dk),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-lo),
-    inset -2px -2px 0 var(--chrome-mid);
   background: var(--chrome-mid);
+  border-color: var(--chrome-dk);
 }
 
 .toolbar-btn svg { display: block; flex-shrink: 0; }
@@ -818,12 +890,7 @@ body { min-height: 100vh; }
   flex: 1;
   overflow-y: auto;
   background: #FFFFFF;
-  margin: 0 4px 4px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
+  border-top: 1px solid var(--chrome-lo);
 }
 
 .record-list {
@@ -923,27 +990,16 @@ body { min-height: 100vh; }
 
 .folder-name { font-weight: 600; }
 
-/* Record status bar */
-.record-status-bar {
-  position: absolute;
-  bottom: 2px;
-  left: 0;
-  right: 0;
-  display: flex;
-  padding: 1px 4px;
-  background: var(--chrome);
-  font-family: var(--font-ui);
-  font-size: 11px;
+/* Status cells inside .window-footer-status — flat text, separated
+   by a thin vertical divider. No chips, no bezels — the footer
+   strip itself is the only chrome at the window edge. */
+.status-cell {
+  padding: 0 8px;
+  border-right: 1px solid var(--chrome-lo);
   color: var(--fg);
-  gap: 2px;
 }
-
-.record-status-bar .status-cell {
-  padding: 1px 8px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi);
-}
+.status-cell:last-child { border-right: none; }
+.status-cell:first-child { padding-left: 4px; }
 
 /* ---- Center: record pane ---- */
 
@@ -952,13 +1008,7 @@ body { min-height: 100vh; }
   overflow-y: auto;
   padding: 16px 24px;
   min-width: 0;
-  /* Sunken content area */
   background: #FFFFFF;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
 }
 
 .record-content {
@@ -1410,13 +1460,12 @@ details[open] > .properties-summary::before {
 
 .chat-header {
   padding: 4px 8px;
-  background: var(--chrome);
+  background: transparent;
   font-family: var(--font-ui);
   display: flex;
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 1px 0 var(--chrome-hi);
 }
 
 .chat-title { font-weight: 700; font-size: 13px; color: var(--fg); }
@@ -1435,16 +1484,9 @@ details[open] > .properties-summary::before {
   flex: 1;
   overflow-y: auto;
   padding: 6px 8px;
-  margin: 4px;
   font-family: var(--font-ui);
   font-size: 13px;
-  /* Sunken white well */
   background: #FFFFFF;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
 }
 
 /* Chat bubbles */
@@ -1757,50 +1799,52 @@ details[open] > .properties-summary::before {
 .chat-input-wrap {
   display: flex;
   flex-direction: column;
-  background: var(--chrome);
   flex-shrink: 0;
+  background: #FFFFFF;
 }
 
 .chat-drag-handle {
-  height: 10px;
+  height: 8px;
   cursor: row-resize;
-  background: var(--chrome);
   display: flex;
   align-items: center;
   justify-content: center;
+  background: #FFFFFF;
 }
 
 .chat-drag-handle::after {
   content: "";
-  width: 32px;
+  width: 28px;
   height: 2px;
   background: var(--chrome-lo);
 }
 
 .chat-input {
-  padding: 4px;
-  padding-bottom: 13px;
-  background: var(--chrome);
+  padding: 0;
+  background: #FFFFFF;
 }
 
 .chat-input textarea {
   width: 100%;
-  padding: 4px 6px;
+  padding: 6px 8px;
   background: #FFFFFF;
   color: var(--fg);
+  /* Borderless — sits flush on the body. The window frame is the
+     only frame; the drag handle separator above and footer strip
+     below visually delimit this region. */
   border: none;
+  border-top: 1px solid var(--chrome-lo);
   font-family: var(--font-ui);
   font-size: 13px;
   outline: none;
   resize: none;
   min-height: 36px;
   overflow-y: auto;
-  /* Sunken input */
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
+  box-shadow: none;
+}
+
+.chat-input textarea:focus {
+  border-top-color: var(--accent);
 }
 
 .chat-input textarea:disabled { opacity: 0.4; }
@@ -1918,7 +1962,8 @@ body.desktop-mobile .window-body {
   margin-top: 0;
 }
 
-body.desktop-mobile .window-grip { display: none; }
+body.desktop-mobile .window-grip,
+body.desktop-mobile .window-footer { display: none; }
 
 /* Anchor (record) takes the bulk of the screen. */
 body.desktop-mobile .window-anchor {

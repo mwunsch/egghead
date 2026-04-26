@@ -478,6 +478,24 @@ defmodule Egghead.Web.AppLive do
     end)
   end
 
+  # Search-window footer label. "N records" when no filter or query is
+  # active, "N of TOTAL" when filtering down. The full class set is the
+  # implicit "no filter" baseline (mounts with all classes enabled).
+  defp search_count_label(filtered, all, query, class_filter) do
+    fcount = length(filtered)
+    total = length(all)
+    full_classes = MapSet.size(class_filter) == 5
+
+    if query == "" and full_classes do
+      "#{total} #{pluralize(total, "record")}"
+    else
+      "#{fcount} of #{total}"
+    end
+  end
+
+  defp pluralize(1, word), do: word
+  defp pluralize(_, word), do: word <> "s"
+
   defp creation_target(query, filtered) do
     title = String.trim(query)
 
@@ -1330,16 +1348,7 @@ defmodule Egghead.Web.AppLive do
           </div>
 
           <div class="deskbar-windows" id="deskbar-windows">
-            <button
-              type="button"
-              class="deskbar-entry"
-              data-window-toggle="search"
-              data-window-entry="search"
-              title="Search records"
-            >
-              <img src="/assets/icon-search.png" alt="" class="deskbar-entry-icon" />
-              <span class="deskbar-entry-label">Search</span>
-            </button>
+            <%!-- Record entry first — it can't be dismissed, so it anchors the list. --%>
             <button
               type="button"
               class="deskbar-entry deskbar-entry-anchor"
@@ -1349,6 +1358,16 @@ defmodule Egghead.Web.AppLive do
             >
               <img src="/assets/icon-document.png" alt="" class="deskbar-entry-icon" />
               <span class="deskbar-entry-label">{@record_title}</span>
+            </button>
+            <button
+              type="button"
+              class="deskbar-entry"
+              data-window-toggle="search"
+              data-window-entry="search"
+              title="Search records"
+            >
+              <img src="/assets/icon-search.png" alt="" class="deskbar-entry-icon" />
+              <span class="deskbar-entry-label">Search</span>
             </button>
             <button
               type="button"
@@ -1487,6 +1506,11 @@ defmodule Egghead.Web.AppLive do
               </div>
             </div>
           </div>
+          <:footer>
+            <span class="status-cell">
+              {search_count_label(@filtered, @all, @query, @class_filter)}
+            </span>
+          </:footer>
         </.window>
 
         <%!-- Record window (anchor) --%>
@@ -1615,12 +1639,11 @@ defmodule Egghead.Web.AppLive do
             </div>
           </main>
 
-          <%!-- Status bar lives at the bottom of the record window --%>
-          <div :if={@selected_record} class="record-status-bar">
+          <:footer :if={@selected_record}>
             <span class="status-cell">{length(@backlinks)} backlinks</span>
             <span class="status-cell">{@word_count} words</span>
             <span class="status-cell">{@selected_record.class}</span>
-          </div>
+          </:footer>
         </.window>
 
         <%!-- Chat window — one per active room, keyed by room_id --%>

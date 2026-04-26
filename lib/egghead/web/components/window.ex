@@ -27,6 +27,7 @@ defmodule Egghead.Web.Components.Window do
   attr :open, :boolean, default: true
   attr :class, :string, default: nil
   slot :inner_block, required: true
+  slot :footer
 
   def window(assigns) do
     ~H"""
@@ -60,9 +61,12 @@ defmodule Egghead.Web.Components.Window do
         </span>
       </header>
       <div class="window-body">
-        {render_slot(@inner_block)}
+        <div class="window-content">{render_slot(@inner_block)}</div>
+        <footer class="window-footer">
+          <div class="window-footer-status">{render_slot(@footer)}</div>
+          <div class="window-grip" data-window-resize aria-hidden="true"></div>
+        </footer>
       </div>
-      <div class="window-grip" data-window-resize aria-hidden="true"></div>
     </section>
     """
   end

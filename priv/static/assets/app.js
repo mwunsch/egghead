@@ -100,7 +100,14 @@ const WindowManager = {
   // Pull a geometry into the visible viewport. In desktop mode, the
   // deskbar reserves a strip on the right — windows are clamped to
   // not overlap it.
-  clamp(g) {
+  //
+  // Two modes:
+  //   default     — clamp x, y, w, h to viewport
+  //   fixedOrigin — keep x, y; only constrain w, h to the space
+  //                 between the current origin and the edges. Used
+  //                 during a resize-from-corner drag so the window
+  //                 doesn't jump leftward when w hits its cap.
+  clamp(g, opts = {}) {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     let reservedRight = 0;
@@ -112,6 +119,15 @@ const WindowManager = {
       }
     }
     const usableW = vw - reservedRight;
+
+    if (opts.fixedOrigin) {
+      const maxW = usableW - g.x - WM_MARGIN;
+      const maxH = vh - g.y - WM_MARGIN;
+      const w = Math.max(WM_MIN_W, Math.min(g.w, maxW));
+      const h = Math.max(WM_MIN_H, Math.min(g.h, maxH));
+      return { ...g, w, h };
+    }
+
     const w = Math.max(WM_MIN_W, Math.min(g.w, usableW - WM_MARGIN * 2));
     const h = Math.max(WM_MIN_H, Math.min(g.h, vh - WM_MARGIN * 2));
     const x = Math.max(WM_MARGIN, Math.min(g.x, usableW - w - WM_MARGIN));
@@ -346,7 +362,10 @@ Hooks.Window = {
       if (!resizing) return;
       this._geom.w = Math.max(WM_MIN_W, startW + (e.clientX - startX));
       this._geom.h = Math.max(WM_MIN_H, startH + (e.clientY - startY));
-      this._geom = WindowManager.clamp(this._geom);
+      // fixedOrigin: keep x/y locked while resizing — without this,
+      // hitting the right edge would clamp w then re-clamp x leftward,
+      // visually growing the window in the wrong direction.
+      this._geom = WindowManager.clamp(this._geom, { fixedOrigin: true });
       this.applyGeom();
     };
 

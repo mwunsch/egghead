@@ -496,7 +496,15 @@ main { display: block; }
   .feature--inverted .feature__body   { order: 2; }
 }
 
-.feature__figure { margin: 0; min-width: 0; }
+.landing { counter-reset: figure; }
+
+.feature__figure {
+  margin: 0;
+  min-width: 0;
+  counter-increment: figure;
+  padding: 6px;
+  border: 0.5px solid var(--rule);
+}
 .feature__body { min-width: 0; }
 
 .feature__image {
@@ -504,9 +512,10 @@ main { display: block; }
   aspect-ratio: 4 / 5;
   max-height: 72vh;
   background: var(--paper-deep);
-  border: 0.5px solid var(--rule-strong);
+  display: block;
 }
 .feature__image--placeholder {
+  border: 0.5px solid var(--rule-strong);
   background-image:
     repeating-linear-gradient(-45deg, transparent 0 12px, rgba(0,0,0,0.04) 12px 13px);
   position: relative;
@@ -519,15 +528,24 @@ main { display: block; }
 }
 
 .feature__caption {
-  margin-top: 0.65rem;
-  padding-top: 0.5rem;
-  border-top: 0.5px solid var(--rule);
+  margin-top: 0.5rem;
+  padding: 0 0.25rem;
   font-family: var(--serif);
   font-size: 0.88rem;
   line-height: 1.5;
   color: var(--ink-soft);
   font-style: italic;
   font-variation-settings: "opsz" 10;
+}
+.feature__caption::before {
+  content: "Fig. " counter(figure) ". ";
+  font-family: var(--sans-label);
+  font-style: normal;
+  font-variant: small-caps;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  color: var(--ink);
+  margin-right: 0.25em;
 }
 
 .feature__body p {

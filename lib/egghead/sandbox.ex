@@ -230,6 +230,15 @@ defmodule Egghead.Sandbox do
   # --- Linux bwrap argv ---
 
   defp bwrap_args(%Profile{roots: roots, net: net, extra_rw: extra_rw}, cwd) do
+    # bwrap applies bind/tmpfs args in order. We layer:
+    #   1. ro-bind the entire host root (so /usr, /bin, /lib, etc. are
+    #      visible — needed for any executable to run)
+    #   2. tmpfs /tmp (private scratch; redirect_tmpdir/2 also points
+    #      $TMPDIR into the workspace so well-behaved tools stay there)
+    #   3. tmpfs /etc, then ro-bind back only the files libc / dyld /
+    #      SSL / NSS legitimately need. /etc/hosts, /etc/shadow,
+    #      /etc/ssh/*, etc. stay invisible — matching the macOS
+    #      sandbox-exec profile, which also masks /etc by default.
     base =
       [
         "--ro-bind",
@@ -242,8 +251,36 @@ defmodule Egghead.Sandbox do
         "--tmpfs",
         "/tmp",
         "--die-with-parent",
-        "--new-session"
+        "--new-session",
+        "--tmpfs",
+        "/etc"
       ]
+
+    # Files under /etc that real-world programs need to start at all.
+    # ro-bind-try silently skips entries missing on this host (distros
+    # vary — Debian has /etc/alternatives, RHEL has /etc/pki, etc.).
+    etc_allowed =
+      [
+        "/etc/passwd",
+        "/etc/group",
+        "/etc/nsswitch.conf",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/ld.so.conf.d",
+        "/etc/localtime",
+        "/etc/ssl",
+        "/etc/ca-certificates",
+        "/etc/pki",
+        "/etc/alternatives"
+      ]
+      |> Enum.flat_map(fn p -> ["--ro-bind-try", p, p] end)
+
+    # Resolver config matters only when the network is reachable; a
+    # net-fenced process has no use for nameserver pointers.
+    resolv =
+      if net == false,
+        do: [],
+        else: ["--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf"]
 
     rw = Enum.flat_map(roots ++ extra_rw, fn p -> ["--bind", p, p] end)
 
@@ -251,7 +288,7 @@ defmodule Egghead.Sandbox do
 
     chdir = ["--chdir", cwd]
 
-    base ++ rw ++ net_args ++ chdir
+    base ++ etc_allowed ++ resolv ++ rw ++ net_args ++ chdir
   end
 
   # --- Port open helpers ---

@@ -32,6 +32,17 @@ jobs:
       - name: Install runtime deps
         run: sudo apt-get update && sudo apt-get install -y inotify-tools bubblewrap
 
+      # Ubuntu 24.04 ships with kernel.apparmor_restrict_unprivileged_userns=1,
+      # which blocks CAP_NET_ADMIN inside an unprivileged user namespace.
+      # bwrap --unshare-net creates a fresh netns and unconditionally tries
+      # to bring up the loopback interface (RTM_NEWADDR), which fails:
+      #   bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+      # Flipping this sysctl restores the pre-24.04 behavior so bwrap can
+      # set up its own loopback. Same workaround GH's runner-images repo
+      # documents for any tool that uses unprivileged user namespaces.
+      - name: Allow unprivileged user namespaces (AppArmor)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}

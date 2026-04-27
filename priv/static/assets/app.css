@@ -18,8 +18,27 @@
   --chrome-mid: #E4E4E4;
   --chrome-lo:  #9E9E9E;
   --chrome-dk:  #505050;
-  --titlebar:   #F0B030;
-  --titlebar-end: #C88A10;
+  /* Haiku decorator palette (exact values from haiku/haiku
+     src/kits/interface/InterfaceDefs.cpp + src/servers/app/decorator/).
+     B_WINDOW_TAB_COLOR = (255, 203, 0). The tab gradient is the tab
+     color's tint(LIGHTEN_MAX+LIGHTEN_2)/2 = 0.1925 at top fading to
+     the full color at bottom. Tints are precomputed because CSS can't
+     do BeOS's tint_color() function inline. */
+  --titlebar:        #FFCB00; /* B_WINDOW_TAB_COLOR */
+  --titlebar-light:  #FFF5CE; /* tint(0.1925) — top of focused gradient */
+  --titlebar-hover:  #FFD326; /* tint(kHoverTintFactor=0.85) — close-btn hover */
+  --titlebar-darken1: #DAAD00; /* tint(DARKEN_1=1.147) — pressed start */
+  --titlebar-darken2: #B48F00; /* tint(DARKEN_2=1.295) — button outline */
+
+  --titlebar-inactive:       #E8E8E8; /* B_WINDOW_INACTIVE_TAB_COLOR */
+  --titlebar-inactive-light: #FAFAFA; /* tint(0.1925) of inactive */
+  --titlebar-inactive-text:  #505050; /* B_WINDOW_INACTIVE_TEXT_COLOR */
+
+  /* Frame colors derive from B_WINDOW_BORDER_COLOR (224,224,224).
+     Tab outline uses tint(DARKEN_2)=light + tint(DARKEN_3)=dark.
+     The "light" still reads dark because the frame base is gray. */
+  --frame-light:     #9E9E9E; /* tint(WINDOW_BORDER, DARKEN_2) */
+  --frame-dark:      #858585; /* tint(WINDOW_BORDER, DARKEN_3) */
   --code-bg:    #F0F0F0;
   --tag:        #006400;
   --danger:     #CC0000;
@@ -67,7 +86,7 @@ body { min-height: 100vh; }
   justify-content: space-between;
   height: 24px;
   padding: 0 6px;
-  background: linear-gradient(to bottom, var(--titlebar), var(--titlebar-end));
+  background: linear-gradient(to bottom, var(--titlebar-light), var(--titlebar));
   border-bottom: 1px solid var(--chrome-dk);
   font-family: var(--font-ui);
   font-size: 13px;
@@ -202,16 +221,673 @@ body { min-height: 100vh; }
   pointer-events: none;
 }
 
-/* ---- Three-pane body ---- */
+/* ---- Desktop surface ---- */
 
-.app-body {
-  display: flex;
+.desktop {
+  position: relative;
   flex: 1;
   overflow: hidden;
   background: var(--chrome);
-  padding: 2px;
-  gap: 2px;
+}
+
+/* Subtle Haiku-style speckle on the desktop. Two transparent radial
+   gradients give a textured cream surface without an image dep. */
+.desktop::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px),
+    radial-gradient(rgba(255,255,255,0.5) 1px, transparent 1px);
+  background-size: 8px 8px, 12px 12px;
+  background-position: 0 0, 4px 4px;
+  pointer-events: none;
+}
+
+/* ================================================================
+   Window — BeOS-flavored
+
+   Structurally each .window is a logical container holding two
+   visually-separate elements stacked vertically:
+     - .window-tab  (partial-width yellow tab, top-left)
+     - .window-body (the framed white content area)
+   To the right of the tab, the desktop pattern shows through —
+   .window itself has no background or border.
+   ================================================================ */
+
+.window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 240px;
+  min-height: 140px;
+}
+
+.window[hidden] { display: none !important; }
+
+/* Hide a window until its hook has applied geometry — prevents a
+   default-position flash on remount (e.g. when /chat/:room changes). */
+.window:not([data-window-ready]) {
+  visibility: hidden;
+}
+
+/* Tab gradient: COLOR_TAB_LIGHT at top → COLOR_TAB at bottom (vertical).
+   Outline: top + left = FRAME_LIGHT, right = FRAME_DARK (Haiku draws
+   the right edge slightly darker than top/left). */
+.window-tab {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 12px 0 4px;
+  gap: 6px;
+  background: linear-gradient(
+    to bottom,
+    var(--titlebar-light) 0%,
+    var(--titlebar) 100%
+  );
+  border: 1px solid var(--frame-light);
+  border-right-color: var(--frame-dark);
+  border-bottom: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  color: #000;
+  cursor: move;
+  user-select: none;
+  max-width: 100%;
+  flex-shrink: 0;
+  overflow: hidden;
   position: relative;
+  z-index: 1;
+}
+
+.window:not(.focused) .window-tab {
+  background: linear-gradient(
+    to bottom,
+    var(--titlebar-inactive-light) 0%,
+    var(--titlebar-inactive) 100%
+  );
+  color: var(--titlebar-inactive-text);
+}
+
+/* Close button — exact Haiku _DrawBlendedRect rendering. Diagonal
+   gradient (top-left → bottom-right) from white to the tab color,
+   outlined in tint(BUTTON, DARKEN_2) = #B48F00. The diagonal
+   gradient is what gives BeOS buttons their characteristic
+   "polished knob" look — not a flat raised bevel. */
+.window-close {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 1px solid var(--titlebar-darken2);
+  background: linear-gradient(
+    135deg,
+    #FFFFFF 0%,
+    var(--titlebar) 100%
+  );
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 0;
+  color: transparent;
+  box-sizing: border-box;
+}
+.window-close:hover {
+  /* Haiku BControlLook applies kHoverTintFactor (0.85) to the
+     button color — a subtle ~15% lift, not a bleach to off-white.
+     Using --titlebar-light (tint 0.1925) was leaning on the tab
+     gradient stop, which made the button vanish on hover. */
+  background: linear-gradient(135deg, #FFFFFF 0%, var(--titlebar-hover) 100%);
+}
+.window-close:active {
+  /* Pressed state — gradient inverts: DARKEN_1 → BUTTON_LIGHT */
+  background: linear-gradient(
+    135deg,
+    var(--titlebar-darken1) 0%,
+    var(--titlebar-light) 100%
+  );
+}
+.window:not(.focused) .window-close {
+  background: linear-gradient(
+    135deg,
+    #FFFFFF 0%,
+    var(--titlebar-inactive) 100%
+  );
+  border-color: var(--frame-light);
+}
+
+.window-title {
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.window-subtitle {
+  margin-left: 8px;
+  color: var(--chrome-dk);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.window:not(.focused) .window-subtitle { color: var(--chrome-lo); }
+
+.window-body {
+  flex: 1;
+  background: #FFFFFF;
+  /* Haiku frame: top + left = FRAME_LIGHT, right + bottom = FRAME_DARK
+     so the window body reads with a subtle 3D edge. */
+  border: 1px solid var(--frame-light);
+  border-right-color: var(--frame-dark);
+  border-bottom-color: var(--frame-dark);
+  box-shadow: 3px 3px 8px rgba(0, 0, 0, 0.18);
+  /* Push up 1px so the body's top border merges with the tab's bottom. */
+  margin-top: -1px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Slot content fills the body above the footer. position:relative so
+   absolute children (like .record-status-bar) anchor here, not on
+   .window-body (which would put them behind the footer). */
+.window-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Bottom chrome strip — matches Haiku's frame color and gives the
+   resize knob a proper "ledge" to sit on instead of floating at the
+   corner. The strip holds an optional status row on the left
+   (footer slot) and the resize knob on the right. The status sits
+   IN the strip so it reads as one chrome unit, no floating gap. */
+.window-footer {
+  height: 20px;
+  flex-shrink: 0;
+  background: #E0E0E0; /* B_WINDOW_BORDER_COLOR */
+  border-top: 1px solid var(--frame-light);
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.window:not(.focused) .window-footer {
+  background: #E8E8E8; /* B_WINDOW_INACTIVE_BORDER_COLOR */
+}
+
+.window-footer-status {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  /* leave room for the 16px knob on the right */
+  padding-right: 18px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--fg);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Resize knob — exact Haiku _DrawResizeKnob: 16x16 square with a
+   diagonal gray gradient, dark top + left bevel lines, and a 10-dot
+   triangular pattern in the bottom-right (each dot = dark pixel +
+   white pixel offset by 1px diagonally for the embossed look).
+   Rendered as an SVG asset because CSS can't economically express
+   the dot pattern. The knob lives in the bottom-right of the footer
+   strip — it overhangs by 1px on right + bottom so it reads as a
+   distinct corner element rather than blending into the frame. */
+.window-grip {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 16px;
+  height: 16px;
+  cursor: se-resize;
+  z-index: 3;
+  background-image: url("/assets/window-grip.svg");
+  background-size: 16px 16px;
+}
+
+.window:not(.focused) .window-grip { opacity: 0.6; }
+
+/* ----------------------------------------------------------------
+   Haiku BMenuField — labeled button with a ▾ indicator that opens a
+   popup menu of items. Used for the chat Rooms picker. Sunken frame
+   matches Haiku's BTextControl/BMenuField visual language.
+   ---------------------------------------------------------------- */
+
+.menu-field-wrap,
+.rooms-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Optional small count badge inside a menu-field button (e.g. "3" of 5
+   classes selected on the Filter button). */
+.menu-field-badge {
+  display: inline-block;
+  min-width: 14px;
+  padding: 0 4px;
+  background: var(--accent);
+  color: #FFFFFF;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 14px;
+  margin-left: 2px;
+}
+
+/* Two-state toggle pill (date format) — same chrome as menu-field but
+   without the dropdown arrow. */
+.date-toggle .menu-field-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.menu-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px 4px 10px;
+  background: linear-gradient(
+    to bottom,
+    #E7E7E7 0%,
+    #E1E1E1 33%,
+    #DBDBDB 66%,
+    #D5D5D5 100%
+  );
+  border: 1px solid #8C8C8C;
+  box-shadow:
+    inset 1px 1px 0 #F4F4F4,
+    inset -1px -1px 0 #C1C1C1;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.menu-field:hover {
+  background: linear-gradient(
+    to bottom,
+    #EFEFEF 0%,
+    #EAEAEA 33%,
+    #E2E2E2 66%,
+    #DDDDDD 100%
+  );
+}
+
+.menu-field:active,
+.menu-field.toggled {
+  background: linear-gradient(to bottom, #BABABA 0%, #C1C1C1 100%);
+  box-shadow:
+    inset 1px 1px 0 #C1C1C1,
+    inset -1px -1px 0 #F4F4F4;
+}
+
+.menu-field-icon {
+  width: 20px;
+  height: 20px;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+}
+
+.menu-field-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.menu-field-arrow {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--chrome-dk);
+  margin-left: 2px;
+}
+
+.menu-field-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  min-width: 180px;
+  margin-top: 1px;
+  background: var(--chrome);
+  border: 1px solid var(--chrome-dk);
+  box-shadow:
+    2px 2px 6px rgba(0, 0, 0, 0.25),
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo);
+  padding: 2px 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+/* Each row in the dropdown is a flex container with the item button
+   on the left and an optional close × button on the right (for closeable
+   open rooms). */
+.menu-field-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.menu-field-row:hover { background: var(--accent); color: #FFFFFF; }
+.menu-field-row:hover .menu-field-marker { color: #FFFFFF; }
+
+.menu-field-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 3px 12px 3px 8px;
+  background: none;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.menu-field-close {
+  width: 18px;
+  padding: 0 2px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.4;
+}
+
+.menu-field-row:hover .menu-field-close { opacity: 1; }
+.menu-field-close:hover {
+  background: var(--danger);
+  color: #FFFFFF;
+  opacity: 1;
+}
+
+.menu-field-marker {
+  display: inline-block;
+  width: 10px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* Small icon shown next to a menu-field-text in a dropdown row.
+   Distinct from .menu-field-icon (which sits on the trigger button)
+   because the row icons are slightly inset and the trigger icon
+   anchors the chrome strip. */
+.menu-field-row-icon {
+  width: 17px;
+  height: 17px;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+}
+
+/* "+ new room" button — same chrome as a menu-field, square-ish to
+   read as an action affordance, with the + glyph centered. */
+.new-room-btn {
+  padding: 4px 10px;
+  font-weight: 700;
+}
+.new-room-btn .menu-field-label {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.menu-field-item.is-active .menu-field-marker { color: var(--accent); }
+.menu-field-item.is-active:hover .menu-field-marker { color: #FFFFFF; }
+.menu-field-item.is-open .menu-field-text { font-weight: 600; }
+
+.menu-field-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  flex: 1;
+}
+
+
+/* ================================================================
+   Deskbar — BeOS-style floating shell
+
+   Always-on-top panel docked upper-right. Three sections stacked
+   vertically: leaf menu → tray → window list.
+   ================================================================ */
+
+.deskbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 168px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome);
+  border: 1px solid var(--chrome-dk);
+  box-shadow:
+    1px 1px 0 var(--chrome-dk),
+    3px 3px 8px rgba(0, 0, 0, 0.22),
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  user-select: none;
+}
+
+/* --- Leaf — egghead identity, BeOS grey panel.
+   The gold tab gradient is reserved for actual window tabs;
+   the Deskbar's identity strip stays in panel chrome and lets
+   the wordmark do the heavy lifting (set in Bodoni Moda to match
+   egghead.computer). --- */
+
+.deskbar-leaf {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-dk);
+  text-align: center;
+  box-shadow: inset 0 1px 0 var(--chrome-hi);
+}
+
+.deskbar-leaf-label {
+  font-family: 'Bodoni Moda', 'Bodoni 72', 'Didot', Georgia, serif;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--fg);
+  line-height: 1;
+}
+
+.deskbar-leaf-menu {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  min-width: 160px;
+  background: var(--chrome);
+  border: 1px solid var(--chrome-dk);
+  box-shadow:
+    2px 2px 6px rgba(0, 0, 0, 0.25),
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo);
+  padding: 4px 0;
+  z-index: 1001;
+}
+
+.deskbar-leaf-menu[hidden] { display: none; }
+
+.deskbar-leaf-menu-item {
+  display: block;
+  width: 100%;
+  padding: 4px 12px;
+  background: none;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.deskbar-leaf-menu-item:hover {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+.deskbar-leaf-menu-divider {
+  height: 1px;
+  background: var(--chrome-lo);
+  margin: 4px 0;
+}
+
+/* --- Tray (clock + status rows) --- */
+
+.deskbar-tray {
+  padding: 6px 8px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-dk);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tray-clock {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--fg);
+  letter-spacing: 1px;
+  padding: 2px 0 0;
+}
+
+.tray-date {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  text-align: center;
+  color: var(--chrome-dk);
+  letter-spacing: 0.5px;
+  padding: 0 0 2px;
+}
+
+.tray-divider {
+  height: 1px;
+  background: var(--chrome-lo);
+  margin: 2px -8px 4px;
+}
+
+.tray-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--chrome-dk);
+}
+
+.tray-key {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tray-val {
+  font-family: var(--font-mono);
+  color: var(--fg);
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Window list --- */
+
+.deskbar-windows {
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome);
+  padding: 2px;
+}
+
+/* Each entry is a small button. State maps to button visuals:
+     - default (window closed): raised bevel
+     - .open (window present, not focused): flat / hover-only
+     - .focused (window present and on top): depressed sunken bevel
+   This is the same chrome language as Win95/BeOS toolbars. The
+   focused entry is also tinted with the accent color. */
+.deskbar-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--chrome);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  margin-bottom: 1px;
+  border: none;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-dk),
+    inset 2px 2px 0 var(--chrome-mid),
+    inset -2px -2px 0 var(--chrome-lo);
+}
+
+.deskbar-entry:last-child { margin-bottom: 0; }
+
+.deskbar-entry-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+
+.deskbar-entry-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.deskbar-entry:hover { background: var(--chrome-mid); }
+
+/* Open window — flat (neutral, no bevel) */
+.deskbar-entry.open {
+  background: var(--chrome);
+  box-shadow: inset 0 0 0 1px var(--chrome-lo);
+}
+
+/* Focused window — depressed (sunken bevel) + accent */
+.deskbar-entry.focused {
+  background: var(--accent);
+  color: #FFFFFF;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-dk),
+    inset -1px -1px 0 var(--chrome-hi),
+    inset 2px 2px 0 var(--chrome-lo),
+    inset -2px -2px 0 var(--chrome-mid);
 }
 
 /* ================================================================
@@ -289,37 +965,47 @@ body { min-height: 100vh; }
   opacity: 0.4;
 }
 
-/* Sunken text input */
+/* Haiku text control — frame + subtle inset bevel (sunken vs. button's
+   raised). Focus replaces the frame with the keyboard-nav color. */
 .nav-search input {
   width: 100%;
   padding: 4px 6px 4px 22px;
   background: #FFFFFF;
   color: var(--fg);
-  border: none;
+  border: 1px solid #8C8C8C;
+  box-shadow:
+    inset 1px 1px 0 #C1C1C1,
+    inset -1px -1px 0 #F4F4F4;
   font-family: var(--font-ui);
   font-size: 13px;
   outline: none;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
+}
+.nav-search input:focus {
+  border-color: #0000E5; /* B_KEYBOARD_NAVIGATION_COLOR */
 }
 
-/* Nav toolbar — icon buttons above the search bar */
+/* Nav toolbar — panel-chrome strip above the search input. The
+   buttons inside need this gray base because their gradient is
+   tinted from #D8D8D8; on white they'd look washed out. */
 .nav-toolbar {
   display: flex;
   align-items: center;
   padding: 4px 6px;
   background: var(--chrome);
-  border-bottom: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 1px 0 var(--chrome-hi);
+  border-bottom: 1px solid #8C8C8C;
   gap: 4px;
 }
 
+/* Haiku button — exact reproduction of HaikuControlLook::DrawButton.
+   On a panel base of (216, 216, 216) the gradient is a 4-stop glossy:
+     top = tint(base, 0.6)    → #E7E7E7
+     m1  = tint(base, 0.75)   → #E1E1E1
+     m2  = tint(base, 0.9)    → #DBDBDB
+     bot = tint(base, 1.01)   → #D5D5D5
+   Frame edge tint(base, 1.35) = #8C8C8C, inner bevel light tint(0.2)
+   = #F4F4F4 / shadow tint(1.105) = #C1C1C1. Activated state inverts
+   the gradient and bevel for a sunken look. */
 .toolbar-btn {
-  background: var(--chrome);
-  border: none;
   padding: 3px 10px;
   cursor: pointer;
   display: flex;
@@ -328,28 +1014,42 @@ body { min-height: 100vh; }
   font-family: var(--font-ui);
   font-size: 11px;
   color: var(--fg);
+  border: 1px solid #8C8C8C;
+  background: linear-gradient(
+    to bottom,
+    #E7E7E7 0%,
+    #E1E1E1 33%,
+    #DBDBDB 66%,
+    #D5D5D5 100%
+  );
   box-shadow:
-    inset 1px 1px 0 var(--chrome-hi),
-    inset -1px -1px 0 var(--chrome-dk),
-    inset 2px 2px 0 var(--chrome-mid),
-    inset -2px -2px 0 var(--chrome-lo);
+    inset 1px 1px 0 #F4F4F4,
+    inset -1px -1px 0 #C1C1C1;
 }
 
-.toolbar-btn:active {
+/* Hover: gradient lightens (Haiku multiplies tints by kHoverTintFactor=0.85). */
+.toolbar-btn:hover {
+  background: linear-gradient(
+    to bottom,
+    #EFEFEF 0%,
+    #EAEAEA 33%,
+    #E2E2E2 66%,
+    #DDDDDD 100%
+  );
+}
+
+/* Activated/pressed/toggled: darker gradient + inverted bevel (sunken). */
+.toolbar-btn:active,
+.toolbar-btn.toggled {
+  background: linear-gradient(to bottom, #BABABA 0%, #C1C1C1 100%);
   box-shadow:
-    inset 1px 1px 0 var(--chrome-dk),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-lo),
-    inset -2px -2px 0 var(--chrome-mid);
+    inset 1px 1px 0 #C1C1C1,
+    inset -1px -1px 0 #F4F4F4;
 }
 
 .toolbar-btn.toggled {
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-dk),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-lo),
-    inset -2px -2px 0 var(--chrome-mid);
   background: var(--chrome-mid);
+  border-color: var(--chrome-dk);
 }
 
 .toolbar-btn svg { display: block; flex-shrink: 0; }
@@ -357,30 +1057,11 @@ body { min-height: 100vh; }
 
 .toolbar-spacer { flex: 1; }
 
-/* Class filter dropdown */
-.class-filter-wrap { position: relative; }
-
+/* The class-filter dropdown shares menu-field-dropdown's chrome but
+   widens slightly and hosts checkbox rows + an All/None action bar. */
 .class-dropdown {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  z-index: 10;
-  width: 160px;
-  background: var(--chrome);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-hi),
-    inset -1px -1px 0 var(--chrome-dk),
-    2px 2px 0 rgba(0,0,0,0.2);
-  padding: 2px;
-}
-
-.class-dropdown-inner {
-  background: #FFFFFF;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi);
+  width: 200px;
+  padding: 0;
 }
 
 .dropdown-actions {
@@ -418,12 +1099,7 @@ body { min-height: 100vh; }
   flex: 1;
   overflow-y: auto;
   background: #FFFFFF;
-  margin: 0 4px 4px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
+  border-top: 1px solid var(--chrome-lo);
 }
 
 .record-list {
@@ -523,27 +1199,16 @@ body { min-height: 100vh; }
 
 .folder-name { font-weight: 600; }
 
-/* Record status bar */
-.record-status-bar {
-  position: absolute;
-  bottom: 2px;
-  left: 0;
-  right: 0;
-  display: flex;
-  padding: 1px 4px;
-  background: var(--chrome);
-  font-family: var(--font-ui);
-  font-size: 11px;
+/* Status cells inside .window-footer-status — flat text, separated
+   by a thin vertical divider. No chips, no bezels — the footer
+   strip itself is the only chrome at the window edge. */
+.status-cell {
+  padding: 0 8px;
+  border-right: 1px solid var(--chrome-lo);
   color: var(--fg);
-  gap: 2px;
 }
-
-.record-status-bar .status-cell {
-  padding: 1px 8px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi);
-}
+.status-cell:last-child { border-right: none; }
+.status-cell:first-child { padding-left: 4px; }
 
 /* ---- Center: record pane ---- */
 
@@ -552,13 +1217,7 @@ body { min-height: 100vh; }
   overflow-y: auto;
   padding: 16px 24px;
   min-width: 0;
-  /* Sunken content area */
   background: #FFFFFF;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
 }
 
 .record-content {
@@ -566,38 +1225,50 @@ body { min-height: 100vh; }
   margin: 0 auto;
 }
 
-/* Properties block — collapsible groupbox */
+/* Properties block — collapsible groupbox.
+   Summary acts like a Haiku BButton-style disclosure header: a 16px
+   chevron in a sunken tag, the label in regular UI weight, and a
+   1px divider beneath that anchors it as a row of chrome. */
 .properties-block {
-  margin-bottom: 20px;
-  border-bottom: 1px solid var(--chrome);
+  margin-bottom: 12px;
 }
 
 .properties-summary {
   display: flex;
   align-items: center;
+  gap: 6px;
   cursor: pointer;
-  padding: 4px 0 8px;
+  padding: 4px 6px;
+  background: var(--chrome);
+  border: 1px solid var(--chrome-lo);
   font-family: var(--font-ui);
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 13px;
+  color: var(--fg);
   user-select: none;
   list-style: none;
 }
+
+.properties-summary:hover { background: var(--chrome-mid); }
 
 .properties-summary::-webkit-details-marker { display: none; }
 
 .properties-summary::before {
   content: "▸";
-  margin-right: 4px;
-  font-size: 11px;
-  transition: transform 0.1s ease;
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1;
 }
 
-details[open] > .properties-summary::before {
-  content: "▾";
-}
+details[open] > .properties-summary::before { content: "▾"; }
 
-.properties-summary-label { flex: 1; }
+.properties-summary-label {
+  flex: 1;
+  font-weight: 600;
+}
 
 .properties-summary .btn-copy {
   margin-left: auto;
@@ -864,6 +1535,25 @@ details[open] > .properties-summary::before {
   font-weight: 600;
 }
 
+/* Inline markdown inside table cells — keep delimiters visible
+   (muted, mono) while applying the formatting. */
+.record-editor .cm-table .cm-md-syntax {
+  color: var(--syntax);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-style: normal;
+  font-size: 0.85em;
+}
+
+.record-editor .cm-table strong { font-weight: 700; }
+.record-editor .cm-table em { font-style: italic; }
+.record-editor .cm-table del { color: var(--muted); text-decoration: line-through; }
+.record-editor .cm-table .cm-code-inline {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  color: var(--fg);
+}
+
 /* Raw table editing — mono so pipe columns align */
 .record-editor .cm-line.cm-table-source {
   font-family: var(--font-mono);
@@ -950,6 +1640,15 @@ details[open] > .properties-summary::before {
 
 .btn-chrome svg { display: inline-block; vertical-align: -2px; margin-right: 4px; }
 
+.btn-icon {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  vertical-align: -5px;
+  margin-right: 4px;
+  image-rendering: pixelated;
+}
+
 /* Win95 raised chrome button */
 .btn-chrome {
   background: var(--chrome);
@@ -980,74 +1679,137 @@ details[open] > .properties-summary::before {
 }
 
 /* ================================================================
-   Chat sidebar
+   Chat — IRC-style nick-prefixed lines
+   Layout vertical:
+     [chat-header]      — Rooms ▾, #channel, agent toggle
+     [chat-roster]?     — collapsible agent list
+     [chat-transcript]  — flex:1 scrollable nick-line list
+     [chat-status]?     — inline notice
+     [paste-chips]?
+     [chat-completion]? — popover floating above the input
+     [chat-input-wrap]  — drag handle + ❯ prompt + textarea
    ================================================================ */
 
-.chat-sidebar {
-  width: 24%;
-  min-width: 200px;
-  max-width: 400px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition: width 0.15s ease, min-width 0.15s ease;
-  /* Sunken content well */
-  background: var(--chrome);
-}
-
-.chat-sidebar.collapsed {
-  width: 0;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.chat-inner {
+.chat-irc {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-width: 200px;
+  min-width: 240px;
+  position: relative;
 }
 
 .chat-header {
-  padding: 4px 8px;
-  background: var(--chrome);
-  font-family: var(--font-ui);
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--chrome);
   border-bottom: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 1px 0 var(--chrome-hi);
+  font-family: var(--font-ui);
+  flex-shrink: 0;
 }
 
-.chat-title { font-weight: 700; font-size: 13px; color: var(--fg); }
-.chat-room-id {
+.chat-channel {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+  padding: 0 4px;
+}
+
+.roster-toggle .menu-field-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* --- Roster (collapsible agent list) ------------------------------- */
+
+.chat-roster {
+  background: #FAFAFA;
+  border-bottom: 1px solid var(--chrome-lo);
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  flex-shrink: 0;
+  max-height: 30%;
+  overflow-y: auto;
+}
+
+.roster-empty {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.roster-row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.roster-dot {
+  text-align: center;
   font-size: 11px;
   color: var(--muted);
-  font-family: var(--font-mono);
-  margin-left: auto;
-  margin-right: 8px;
-  user-select: text;
-  cursor: text;
 }
-.room-id { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
+
+.roster-dot.active { color: #008000; }
+.roster-dot.handoff {
+  color: #b8860b;
+  display: inline-block;
+  animation: roster-handoff-spin 1.4s linear infinite;
+}
+
+@keyframes roster-handoff-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.roster-name { font-weight: 600; }
+.roster-ctx {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.roster-bar {
+  grid-column: 2 / span 2;
+  height: 4px;
+  background: var(--chrome-mid);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi);
+}
+
+.roster-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+/* --- Transcript: chat bubbles ------------------------------------- */
 
 .chat-transcript {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 6px 8px;
-  margin: 4px;
+  padding: 8px 8px;
+  background: #FFFFFF;
   font-family: var(--font-ui);
   font-size: 13px;
-  /* Sunken white well */
-  background: #FFFFFF;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
 }
 
-/* Chat bubbles */
 .bubble-row {
   display: flex;
   margin-bottom: 6px;
@@ -1104,7 +1866,9 @@ details[open] > .properties-summary::before {
 .bubble-body p { margin: 0 0 0.3em; }
 .bubble-body p:last-child { margin-bottom: 0; }
 
-/* Chat bubbles: NO isomorphic markdown. Sans font. Standard HTML rendering. */
+/* Chat bubbles render markdown without isomorphic syntax markers — chat
+   is readable prose, not source. Wikilinks keep [[…]] for the
+   addressability cue. */
 .bubble-body.markdown-body {
   font-family: var(--font-ui);
   font-size: 13px;
@@ -1122,7 +1886,6 @@ details[open] > .properties-summary::before {
   color: var(--fg);
 }
 
-/* Kill ALL isomorphic pseudo-elements inside bubbles */
 .bubble-body.markdown-body h1::before,
 .bubble-body.markdown-body h2::before,
 .bubble-body.markdown-body h3::before,
@@ -1142,41 +1905,46 @@ details[open] > .properties-summary::before {
   content: none;
 }
 
-/* Standard lists inside bubbles — no dash markers */
-.bubble-body.markdown-body ul { list-style-type: disc; }
+.bubble-body.markdown-body ul { list-style-type: disc; margin: 0 0 0.3em 1.3em; }
 
-/* Standard code inside bubbles */
 .bubble-body.markdown-body code {
   font-size: 12px;
-  background: rgba(0,0,0,0.06);
+  background: rgba(0, 0, 0, 0.06);
   padding: 1px 4px;
+  font-family: var(--font-mono);
 }
 
 .bubble-body.markdown-body pre {
   font-size: 12px;
   padding: 6px 8px;
-  background: rgba(0,0,0,0.04);
+  background: rgba(0, 0, 0, 0.04);
   box-shadow: none;
+  margin: 0.3em 0;
 }
 
-/* Keep wikilink and mention styling visible in chat */
-.bubble-body.markdown-body a.wikilink::before { content: "[["; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em; }
-.bubble-body.markdown-body a.wikilink::after { content: "]]"; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em; }
+.bubble-body.markdown-body a.wikilink::before {
+  content: "[["; color: var(--syntax);
+  font-family: var(--font-mono); font-size: 0.8em;
+}
+.bubble-body.markdown-body a.wikilink::after {
+  content: "]]"; color: var(--syntax);
+  font-family: var(--font-mono); font-size: 0.8em;
+}
 
-/* Action and system meta lines — not bubbles */
+/* Action and system meta lines — atmospheric italics, no bubble */
 .meta-line {
   display: flex;
   gap: 4px;
+  align-items: baseline;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: 12px;
   font-style: italic;
   padding: 2px 8px;
+  margin: 1px 0;
 }
 
-/* Action lines render as `/me`-style atmospheric italic — IRC convention.
-   Used by `/pass` flavor lines and other in-character actions. */
-.meta-line.action { font-style: italic; }
+.meta-line.action .action-nick { font-weight: 700; font-style: normal; margin-right: 4px; }
 
 /* Capability denial — amber guardrail, not red crash */
 .meta-line.denial {
@@ -1190,8 +1958,9 @@ details[open] > .properties-summary::before {
 .meta-line.denial .denial-line { display: block; margin-top: 2px; }
 .meta-line.denial .denial-line:first-of-type { margin-top: 4px; }
 
-.meta-sym { font-weight: 700; font-style: normal; flex-shrink: 0; }
+.meta-sym { font-weight: 700; font-style: normal; flex-shrink: 0; color: var(--muted); }
 .meta-text p { display: inline; margin: 0; }
+.meta-text { flex: 1; }
 
 /* Typing indicator bubble */
 .typing-bubble {
@@ -1207,185 +1976,215 @@ details[open] > .properties-summary::before {
   color: var(--muted);
 }
 
-/* Agent roster */
-.agent-roster {
+/* --- Status / paste chips ----------------------------------------- */
+
+.chat-status {
+  flex-shrink: 0;
   padding: 4px 8px;
   background: var(--chrome);
-  border-bottom: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 -1px 0 var(--chrome-hi);
-}
-
-.agent-card-wrap {
-  padding: 3px 0;
-  border-bottom: 1px solid var(--chrome-lo);
-}
-
-.agent-card-wrap:last-child { border-bottom: none; }
-
-.agent-card {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  border-top: 1px solid var(--chrome-lo);
   font-family: var(--font-ui);
   font-size: 12px;
+  color: var(--fg);
 }
 
-.agent-status-dot { font-size: 12px; color: var(--muted); flex-shrink: 0; }
-.agent-status-dot.active { color: #008000; }
-.agent-status-dot.handoff {
-  color: #b8860b;
-  display: inline-block;
-  animation: agent-handoff-spin 1.4s linear infinite;
-}
-.agent-card.handoff { opacity: 0.75; }
-.agent-status-label {
-  font-size: 10px;
-  color: #b8860b;
-  font-style: italic;
-  margin-left: 4px;
-}
-@keyframes agent-handoff-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-.agent-name { color: var(--fg); font-weight: 600; flex: 1; }
-.agent-ctx {
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-align: right;
-  white-space: nowrap;
-}
-
-.agent-bar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding-left: 18px;
-  padding-bottom: 2px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.agent-bar-track {
-  flex: 1;
-  height: 8px;
-  background: var(--chrome-mid);
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi);
-}
-
-.agent-bar-fill {
-  height: 100%;
-  background: #316AC5;
-}
-
-.agent-bar-label { flex-shrink: 0; }
-
-/* Chat dropdown (commands / mentions) */
-.chat-dropdown {
-  background: #FFFFFF;
-  margin: 0 4px;
-  max-height: 160px;
-  overflow-y: auto;
-  font-family: var(--font-ui);
-  font-size: 12px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
-}
-
-.dropdown-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 3px 8px;
-  cursor: pointer;
-  gap: 8px;
-}
-
-.dropdown-item:hover, .dropdown-item.selected {
-  background: #316AC5;
-  color: #FFFFFF;
-}
-
-.dropdown-item.selected .dd-desc,
-.dropdown-item:hover .dd-desc { color: rgba(255,255,255,0.7); }
-
-.dd-name { font-weight: 600; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
-.dd-desc { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Paste chips */
 .paste-chips {
-  padding: 2px 4px;
+  flex-shrink: 0;
+  padding: 4px 6px;
   background: var(--chrome);
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
+  border-top: 1px solid var(--chrome-lo);
 }
 
-.paste-chip {
+/* Wrapper holds the clickable chip and a small × delete button as
+   siblings, so the chip preview opens via the main button while the
+   ×  removes the paste outright. */
+.paste-chip-wrap {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  font-family: var(--font-ui);
-  font-size: 12px;
+  align-items: stretch;
   background: var(--chrome-mid);
   box-shadow:
     inset 1px 1px 0 var(--chrome-hi),
     inset -1px -1px 0 var(--chrome-lo);
 }
 
-.paste-icon { font-size: 14px; }
-.paste-head { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paste-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.paste-chip:hover { background: rgba(49, 106, 197, 0.10); }
+
+.paste-icon {
+  width: 18px;
+  height: 18px;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+}
+
+.paste-head {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .paste-tail { color: var(--muted); font-style: italic; font-size: 11px; }
 
-.chat-status {
-  padding: 4px 8px;
-  color: var(--fg);
-  background: var(--chrome);
-  border-top: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 1px 0 var(--chrome-hi);
-  font-size: 12px;
-  font-family: var(--font-ui);
+.paste-chip-close {
+  width: 20px;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--chrome-lo);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
 }
+.paste-chip-close:hover {
+  background: var(--danger);
+  color: #FFFFFF;
+}
+
+/* Paste modal — full BeOS window chrome (provided by .window), the
+   body is a scrollable <pre> so long pastes don't blow the layout. */
+.paste-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  background: #FFFFFF;
+}
+
+.paste-content {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.paste-modal-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+/* --- Completion popover -------------------------------------------- */
+
+/* Floats above the input bar. Items use mousedown+preventDefault in
+   JS to avoid blurring the textarea. */
+.chat-completion {
+  flex-shrink: 0;
+  background: #FFFFFF;
+  margin: 0 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  border: 1px solid var(--chrome-dk);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo),
+    0 -2px 6px rgba(0, 0, 0, 0.18);
+}
+
+.completion-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 8px;
+  cursor: pointer;
+  gap: 12px;
+}
+
+.completion-item:hover,
+.completion-item.selected {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+
+.completion-item:hover .completion-desc,
+.completion-item.selected .completion-desc { color: rgba(255, 255, 255, 0.75); }
+
+.completion-name {
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.completion-desc {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Input bar ---------------------------------------------------- */
 
 .chat-input-wrap {
   display: flex;
   flex-direction: column;
-  background: var(--chrome);
   flex-shrink: 0;
+  background: #FFFFFF;
 }
 
 .chat-drag-handle {
-  height: 10px;
+  height: 8px;
   cursor: row-resize;
-  background: var(--chrome);
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--chrome);
+  border-top: 1px solid var(--chrome-lo);
 }
 
 .chat-drag-handle::after {
   content: "";
-  width: 32px;
+  width: 28px;
   height: 2px;
   background: var(--chrome-lo);
 }
 
 .chat-input {
-  padding: 4px;
-  padding-bottom: 13px;
-  background: var(--chrome);
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  background: #FFFFFF;
+}
+
+.chat-prompt {
+  flex-shrink: 0;
+  padding: 6px 4px 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--accent);
+  background: #FFFFFF;
+  user-select: none;
+  align-self: flex-start;
+  line-height: 1.4;
 }
 
 .chat-input textarea {
-  width: 100%;
-  padding: 4px 6px;
+  flex: 1;
+  padding: 6px 8px 6px 0;
   background: #FFFFFF;
   color: var(--fg);
   border: none;
@@ -1393,14 +2192,10 @@ details[open] > .properties-summary::before {
   font-size: 13px;
   outline: none;
   resize: none;
-  min-height: 36px;
+  min-height: 28px;
   overflow-y: auto;
-  /* Sunken input */
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
+  box-shadow: none;
+  line-height: 1.4;
 }
 
 .chat-input textarea:disabled { opacity: 0.4; }
@@ -1428,55 +2223,129 @@ details[open] > .properties-summary::before {
 }
 
 /* ================================================================
-   Responsive
+   Responsive — windowing system
+
+   Below 768px the WindowManager sets `body.desktop-mobile` and stops
+   applying absolute geometry to windows. CSS takes over: the desktop
+   becomes a single column, the record window fills the screen, search
+   sits as a sheet above it, and chat slides in from the side as an
+   overlay. Persisted desktop geometry is preserved (just unused) so
+   resizing back snaps everything home.
    ================================================================ */
 
-@media (max-width: 1024px) {
-  .nav-sidebar { width: 30%; }
-  .chat-sidebar { width: 28%; }
+body.desktop-mobile .desktop {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding-top: 30px; /* room for the horizontal deskbar strip */
 }
 
-@media (max-width: 768px) {
-  /* Full notational-velocity: search above record, no sidebar */
-  .app-body {
-    flex-direction: column;
-  }
+body.desktop-mobile .desktop::before { display: none; }
 
-  .nav-sidebar {
-    width: 100% !important;
-    max-width: none !important;
-    min-width: 0;
-    max-height: 35vh;
-    box-shadow: none;
-  }
+/* Deskbar collapses to a horizontal strip across the top. */
+body.desktop-mobile .deskbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: auto;
+  flex-direction: row;
+  height: 30px;
+  z-index: 200;
+  align-items: stretch;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
 
-  .nav-sidebar.collapsed {
-    max-height: 0;
-  }
+body.desktop-mobile .deskbar-leaf {
+  width: auto;
+  height: auto;
+  border-bottom: none;
+  border-right: 1px solid var(--chrome-dk);
+  flex-shrink: 0;
+}
 
-  .nav-inner { min-width: 0; }
+body.desktop-mobile .deskbar-tray { display: none; }
 
-  .chat-sidebar {
-    position: fixed;
-    top: 58px; /* title bar (24px) + toolbar (~34px) */
-    right: 0;
-    bottom: 0;
-    z-index: 100;
-    width: 100% !important;
-    max-width: none !important;
-    min-width: 0;
-  }
+body.desktop-mobile .deskbar-windows {
+  flex-direction: row;
+  flex: 1;
+  padding: 2px 4px;
+  gap: 2px;
+  overflow-x: auto;
+}
 
-  .chat-sidebar.collapsed {
-    width: 0 !important;
-    min-width: 0;
-  }
+body.desktop-mobile .deskbar-entry {
+  width: auto;
+  margin: 0;
+  padding: 2px 6px;
+}
 
-  .chat-inner { min-width: 100vw; }
+body.desktop-mobile .deskbar-entry-label {
+  display: none; /* icons-only on mobile */
+}
 
-  .record-pane { padding: 12px; }
-  .record-heading { font-size: 22px; }
-  .record-status-bar { position: relative; bottom: auto; }
+body.desktop-mobile .deskbar-leaf-menu { top: 32px; }
+
+body.desktop-mobile .window {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  inset: auto;
+  width: 100% !important;
+  height: auto;
+  min-height: 0;
+  z-index: auto !important;
+  margin: 0;
+}
+
+body.desktop-mobile .window-tab {
+  align-self: stretch;
+  max-width: none;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+
+body.desktop-mobile .window-body {
+  border-left: none;
+  border-right: none;
+  box-shadow: none;
+  margin-top: 0;
+}
+
+body.desktop-mobile .window-grip,
+body.desktop-mobile .window-footer { display: none; }
+
+/* Anchor (record) takes the bulk of the screen. */
+body.desktop-mobile .window-anchor {
+  flex: 1;
+  order: 2;
+  min-height: 60vh;
+}
+
+/* Search docks above the record, capped at 35vh. */
+body.desktop-mobile .window[data-window-id="search"] {
+  order: 1;
+  max-height: 35vh;
+  flex-shrink: 0;
+}
+body.desktop-mobile .window[data-window-id="search"] .window-body {
+  overflow-y: auto;
+}
+
+/* Chat windows overlay from the right. The .focused chat window
+   takes the foreground; others stack behind it. Toolbar Chat button
+   toggles the window and brings it to front. */
+body.desktop-mobile .window[data-window-id^="chat:"] {
+  position: fixed;
+  inset: 58px 0 0 0;
+  z-index: 100;
+  background: #FFFFFF;
+  height: auto;
+}
+
+body.desktop-mobile .window[data-window-id^="chat:"] .window-body {
+  height: 100%;
 }
 
 @media (max-width: 480px) {

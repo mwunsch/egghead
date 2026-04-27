@@ -38,37 +38,23 @@ defmodule Egghead.Web.AppLiveTest do
   end
 
   describe "layout shell" do
-    test "mounts with three-pane layout", %{conn: conn} do
+    test "mounts the desktop with search, record, and chat windows", %{conn: conn} do
       {:ok, view, html} = live(conn, "/")
 
       assert html =~ "egghead"
-      assert has_element?(view, ".nav-sidebar")
+      assert has_element?(view, ".desktop")
+      assert has_element?(view, ".window[data-window-id=\"search\"]")
+      assert has_element?(view, ".window[data-window-id=\"record\"]")
+      assert has_element?(view, ".window[data-window-id=\"chat-window\"]")
       assert has_element?(view, ".record-pane")
-      assert has_element?(view, ".chat-sidebar")
     end
 
-    test "toggle nav sidebar", %{conn: conn} do
+    test "deskbar shows entries for record, search, and chat", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/")
 
-      # Nav should be open by default
-      assert has_element?(view, ".nav-sidebar:not(.collapsed)")
-
-      # Toggle it closed
-      view |> element("button[phx-click=\"toggle_nav\"]") |> render_click()
-      assert has_element?(view, ".nav-sidebar.collapsed")
-
-      # Toggle it back open
-      view |> element("button[phx-click=\"toggle_nav\"]") |> render_click()
-      assert has_element?(view, ".nav-sidebar:not(.collapsed)")
-    end
-
-    test "toggle chat sidebar", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/")
-
-      assert has_element?(view, ".chat-sidebar:not(.collapsed)")
-
-      view |> element("button[phx-click=\"toggle_chat\"]") |> render_click()
-      assert has_element?(view, ".chat-sidebar.collapsed")
+      assert has_element?(view, ".deskbar-entry[data-window-entry=\"record\"]")
+      assert has_element?(view, ".deskbar-entry[data-window-entry=\"search\"]")
+      assert has_element?(view, ".deskbar-entry[data-window-entry=\"chat-window\"]")
     end
   end
 
@@ -85,7 +71,10 @@ defmodule Egghead.Web.AppLiveTest do
         view |> element("form[phx-change=\"search\"]") |> render_change(%{"query" => "hello"})
 
       assert html =~ "Hello World"
-      refute html =~ "Design Document"
+      # Scope to the record list — the deskbar/record-tab still shows the
+      # currently-selected record's title (Notational Velocity behavior),
+      # so a global refute would fail on a label outside the list.
+      refute html =~ ~s(<span class="record-title">Design Document)
     end
 
     test "clicking a record shows it in center pane", %{conn: conn} do
@@ -140,8 +129,8 @@ defmodule Egghead.Web.AppLiveTest do
       assert html =~ "Design Document"
       assert html =~ "Hello World"
 
-      # Open dropdown via the filter icon button
-      view |> element(".class-filter-wrap .toolbar-btn") |> render_click()
+      # Open dropdown via the BMenuField filter button
+      view |> element(".class-filter-wrap .menu-field") |> render_click()
       assert has_element?(view, ".class-dropdown")
     end
 
@@ -223,35 +212,25 @@ defmodule Egghead.Web.AppLiveTest do
       assert html =~ "meta-line"
     end
 
-    test "slash command detection populates dropdown", %{conn: conn} do
+    test "chat completion corpus is pushed to client", %{conn: conn} do
+      # The completion popover, candidate filtering, arrow nav, Tab,
+      # and Esc are owned by the ChatInput JS hook. The server's only
+      # job is to push the corpus (commands, agents, broadcasts,
+      # records) to the client; the rest is verified in the browser,
+      # not here. Assert that the `chat_corpus` event fires with at
+      # least the hardcoded slash commands so a regression on the
+      # push_chat_corpus path is caught.
       {:ok, view, _html} = live(conn, "/")
-
-      # Simulate typing /sa
-      render_hook(view, "chat_input_change", %{"value" => "/sa"})
-      Process.sleep(50)
-
-      html = render(view)
-      assert html =~ "dropdown-item"
-      assert html =~ "/save"
-    end
-
-    test "agent mention detection populates dropdown", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/")
-
-      render_hook(view, "chat_input_change", %{"value" => "@sco"})
-      Process.sleep(50)
-
-      # Dropdown should appear if agents are registered
-      # (may be empty in test env without agents)
-      html = render(view)
-      assert is_binary(html)
+      assert_push_event(view, "chat_corpus", %{commands: commands})
+      assert is_list(commands)
+      assert Enum.any?(commands, &(&1.name == "save"))
     end
 
     test "toggle agent roster", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/")
 
-      view |> element(".chat-header .toolbar-btn") |> render_click()
-      assert has_element?(view, ".agent-roster")
+      view |> element(".chat-header .roster-toggle") |> render_click()
+      assert has_element?(view, ".chat-roster")
     end
   end
 end

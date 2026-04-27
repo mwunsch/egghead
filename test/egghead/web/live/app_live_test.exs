@@ -38,37 +38,23 @@ defmodule Egghead.Web.AppLiveTest do
   end
 
   describe "layout shell" do
-    test "mounts with three-pane layout", %{conn: conn} do
+    test "mounts the desktop with search, record, and chat windows", %{conn: conn} do
       {:ok, view, html} = live(conn, "/")
 
       assert html =~ "egghead"
-      assert has_element?(view, ".nav-sidebar")
+      assert has_element?(view, ".desktop")
+      assert has_element?(view, ".window[data-window-id=\"search\"]")
+      assert has_element?(view, ".window[data-window-id=\"record\"]")
+      assert has_element?(view, ".window[data-window-id=\"chat-window\"]")
       assert has_element?(view, ".record-pane")
-      assert has_element?(view, ".chat-sidebar")
     end
 
-    test "toggle nav sidebar", %{conn: conn} do
+    test "deskbar shows entries for record, search, and chat", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/")
 
-      # Nav should be open by default
-      assert has_element?(view, ".nav-sidebar:not(.collapsed)")
-
-      # Toggle it closed
-      view |> element("button[phx-click=\"toggle_nav\"]") |> render_click()
-      assert has_element?(view, ".nav-sidebar.collapsed")
-
-      # Toggle it back open
-      view |> element("button[phx-click=\"toggle_nav\"]") |> render_click()
-      assert has_element?(view, ".nav-sidebar:not(.collapsed)")
-    end
-
-    test "toggle chat sidebar", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/")
-
-      assert has_element?(view, ".chat-sidebar:not(.collapsed)")
-
-      view |> element("button[phx-click=\"toggle_chat\"]") |> render_click()
-      assert has_element?(view, ".chat-sidebar.collapsed")
+      assert has_element?(view, ".deskbar-entry[data-window-entry=\"record\"]")
+      assert has_element?(view, ".deskbar-entry[data-window-entry=\"search\"]")
+      assert has_element?(view, ".deskbar-entry[data-window-entry=\"chat-window\"]")
     end
   end
 
@@ -85,7 +71,10 @@ defmodule Egghead.Web.AppLiveTest do
         view |> element("form[phx-change=\"search\"]") |> render_change(%{"query" => "hello"})
 
       assert html =~ "Hello World"
-      refute html =~ "Design Document"
+      # Scope to the record list — the deskbar/record-tab still shows the
+      # currently-selected record's title (Notational Velocity behavior),
+      # so a global refute would fail on a label outside the list.
+      refute html =~ ~s(<span class="record-title">Design Document)
     end
 
     test "clicking a record shows it in center pane", %{conn: conn} do

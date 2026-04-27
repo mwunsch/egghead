@@ -36,8 +36,12 @@ defmodule Egghead.Web.AppLive do
           id
       end
 
-    # Room comes from `/chat/:room_id` if present, otherwise default room.
-    room_id = params["room_id"] || Egghead.default_room()
+    # Active room comes from `/chat/:room_id` if present, otherwise
+    # the default room. In tests / record-only mode, default_room may
+    # be nil — fall back to a sentinel so the render layer never tries
+    # `<>` on nil.
+    default_room = Egghead.default_room() || "default"
+    active_room = params["room_id"] || default_room
 
     socket =
       socket
@@ -56,13 +60,18 @@ defmodule Egghead.Web.AppLive do
         selected_body_html: nil,
         backlinks: [],
         word_count: 0,
-        # Chat state
-        room_id: room_id,
+        # Chat state — only the active room is subscribed and has full
+        # transcript/stream state. The Rooms ▾ dropdown lists every
+        # room in the system (Egghead.list_rooms) so there's no
+        # separate "open tabs" list to manage.
+        active_chat_room: active_room,
+        room_id: active_room,
         transcript: [],
         active_streams: %{},
         chat_status: nil,
         chat_input: "",
         chat_dropdown: nil,
+        rooms_menu_open: false,
         paste_chips: [],
         agents: [],
         show_agents: false,
@@ -109,18 +118,21 @@ defmodule Egghead.Web.AppLive do
         nil ->
           socket
 
-        room_id when room_id == socket.assigns.room_id ->
+        room_id when room_id == socket.assigns.active_chat_room ->
           socket
 
         new_room_id ->
           socket
-          |> unsubscribe_room(socket.assigns.room_id)
+          |> unsubscribe_room(socket.assigns.active_chat_room)
           |> assign(
+            active_chat_room: new_room_id,
             room_id: new_room_id,
             transcript: [],
             active_streams: %{},
             chat_status: nil,
-            chat_dropdown: nil
+            chat_input: "",
+            chat_dropdown: nil,
+            paste_chips: []
           )
           |> hydrate_chat()
       end
@@ -267,6 +279,48 @@ defmodule Egghead.Web.AppLive do
 
   def handle_event("toggle_agents", _, socket) do
     {:noreply, assign(socket, show_agents: !socket.assigns.show_agents)}
+  end
+
+  def handle_event("toggle_rooms_menu", _, socket) do
+    {:noreply, assign(socket, rooms_menu_open: !socket.assigns.rooms_menu_open)}
+  end
+
+  # Switch the chat window to a different room. Same path as /join —
+  # the target may be an existing room, a transcript record, or a
+  # brand-new room name (which will be created). Always closes the
+  # rooms dropdown.
+  def handle_event("switch_chat_room", %{"room" => target}, socket) do
+    socket = assign(socket, rooms_menu_open: false)
+
+    case resolve_join_target(target) do
+      {:ok, room_id} ->
+        {:noreply, switch_active_room(socket, room_id)}
+
+      {:error, reason} ->
+        {:noreply,
+         append_entry(
+           socket,
+           Egghead.TUI.Chat.Entry.system("Cannot switch to #{inspect(target)}: #{reason}")
+         )}
+    end
+  end
+
+  # Drop a room: stop the GenServer (with transcript save) and remove
+  # it from the system. If it was the active room, room_stopped PubSub
+  # will land and bounce us back to the default room. The default room
+  # itself can't be dropped.
+  def handle_event("drop_chat_room", %{"room" => room}, socket) do
+    default = Egghead.default_room()
+
+    if room == default do
+      {:noreply, socket}
+    else
+      Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+        Egghead.stop_room(room, no_save: false)
+      end)
+
+      {:noreply, assign(socket, rooms_menu_open: false)}
+    end
   end
 
   def handle_event("select_dropdown", %{"index" => idx}, socket) do
@@ -593,6 +647,29 @@ defmodule Egghead.Web.AppLive do
 
   defp message_to_entry(%{sender: %{type: :agent, id: id, name: name}, content: content}) do
     Egghead.TUI.Chat.Entry.agent(id, name, content)
+  end
+
+  # Swap which chat room is active. Unsubscribes the old room, marks
+  # the new one active, drops streaming/dropdown state, and rehydrates
+  # transcript from the new room's GenServer.
+  defp switch_active_room(socket, room_id) do
+    if socket.assigns.active_chat_room == room_id do
+      socket
+    else
+      socket
+      |> unsubscribe_room(socket.assigns.active_chat_room)
+      |> assign(
+        active_chat_room: room_id,
+        room_id: room_id,
+        transcript: [],
+        active_streams: %{},
+        chat_status: nil,
+        chat_input: "",
+        chat_dropdown: nil,
+        paste_chips: []
+      )
+      |> hydrate_chat()
+    end
   end
 
   defp hydrate_chat(socket) do
@@ -1288,6 +1365,20 @@ defmodule Egghead.Web.AppLive do
 
   defp format_date(other), do: inspect(other)
 
+  # Render-time safe lookup of all rooms — never crashes the LV if the
+  # room registry is partially up. Always includes the default room.
+  defp list_chat_rooms_safe do
+    rooms =
+      try do
+        Egghead.list_rooms()
+      catch
+        _, _ -> []
+      end
+
+    default = Egghead.default_room() || "default"
+    [default | rooms] |> Enum.reject(&is_nil/1) |> Enum.uniq()
+  end
+
   # Deterministic color for agent nicks
   defp agent_nick_color(sender_id) do
     colors = ["#800000", "#008000", "#000080", "#808000", "#800080", "#008080", "#804000"]
@@ -1315,8 +1406,10 @@ defmodule Egghead.Web.AppLive do
         rec -> rec.id
       end
 
-    chat_window_id = "chat:" <> (assigns.room_id || "default")
-    chat_window_title = "Chat — " <> (assigns.room_id || "default")
+    # The chat window id is stable across room switches so the window's
+    # persisted geom isn't lost every time the user picks a new room
+    # from the Rooms menu. The title pivots to whichever room is active.
+    chat_window_title = "Chat — " <> (assigns.active_chat_room || "default")
 
     assigns =
       assigns
@@ -1324,7 +1417,6 @@ defmodule Egghead.Web.AppLive do
       |> assign(:file_tree, file_tree)
       |> assign(:record_title, record_title)
       |> assign(:record_subtitle, record_subtitle)
-      |> assign(:chat_window_id, chat_window_id)
       |> assign(:chat_window_title, chat_window_title)
 
     ~H"""
@@ -1372,8 +1464,8 @@ defmodule Egghead.Web.AppLive do
             <button
               type="button"
               class="deskbar-entry"
-              data-window-toggle={@chat_window_id}
-              data-window-entry={@chat_window_id}
+              data-window-toggle="chat-window"
+              data-window-entry="chat-window"
               title={@chat_window_title}
             >
               <img src="/assets/icon-chat.png" alt="" class="deskbar-entry-icon" />
@@ -1646,10 +1738,15 @@ defmodule Egghead.Web.AppLive do
           </:footer>
         </.window>
 
-        <%!-- Chat window — one per active room, keyed by room_id --%>
+        <%!-- Chat window — stable id so persisted geom survives room
+             switches. The Rooms ▾ menu lists every room in the system;
+             clicking a row switches the chat to it; clicking × on a
+             non-default room stops the room (saves the transcript). --%>
+        <% default_room = Egghead.default_room() || "default" %>
+        <% all_rooms = list_chat_rooms_safe() %>
         <.window
-          id={@chat_window_id}
-          title={@chat_window_title}
+          id="chat-window"
+          title={"Chat — " <> @active_chat_room}
           role={:panel}
           default_x={864}
           default_y={8}
@@ -1660,10 +1757,48 @@ defmodule Egghead.Web.AppLive do
         >
           <div class="chat-inner">
             <div class="chat-header">
-              <span class="chat-title">Chat</span>
-              <span :if={@room_id} class="chat-room-id" title="Room id">
-                #{@room_id}
-              </span>
+              <div class="rooms-menu-wrap">
+                <button
+                  type="button"
+                  class="menu-field"
+                  phx-click="toggle_rooms_menu"
+                  title="Open or switch chat rooms"
+                >
+                  <span class="menu-field-label">Rooms</span>
+                  <span class="menu-field-arrow">▾</span>
+                </button>
+                <div :if={@rooms_menu_open} class="menu-field-dropdown" role="menu">
+                  <%= for room <- all_rooms do %>
+                    <% active? = room == @active_chat_room %>
+                    <% droppable? = room != default_room %>
+                    <div class="menu-field-row">
+                      <button
+                        type="button"
+                        class={["menu-field-item", active? && "is-active"]}
+                        phx-click="switch_chat_room"
+                        phx-value-room={room}
+                      >
+                        <span class="menu-field-marker">
+                          {if active?, do: "●", else: Phoenix.HTML.raw("&nbsp;")}
+                        </span>
+                        <span class="menu-field-text">{room}</span>
+                      </button>
+                      <button
+                        :if={droppable?}
+                        type="button"
+                        class="menu-field-close"
+                        phx-click="drop_chat_room"
+                        phx-value-room={room}
+                        aria-label={"Drop " <> room}
+                        title="Drop this room (saves transcript)"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  <% end %>
+                </div>
+              </div>
+              <span class="chat-room-id" title="Active room">#{@active_chat_room}</span>
               <button class="toolbar-btn" phx-click="toggle_agents" title="Agent roster">
                 <span class="toolbar-label">{length(@agents)} agents</span>
               </button>
@@ -1822,13 +1957,20 @@ defmodule Egghead.Web.AppLive do
               <div :for={chip <- @paste_chips} class="paste-chip">
                 <span class="paste-icon">📋</span>
                 <span class="paste-head">{chip.head}</span>
-                <span :if={chip.extra_lines > 0} class="paste-tail">+{chip.extra_lines} lines</span>
+                <span :if={chip.extra_lines > 0} class="paste-tail">
+                  +{chip.extra_lines} lines
+                </span>
               </div>
             </div>
 
             <div class="chat-input-wrap">
               <div class="chat-drag-handle" id="chat-drag-handle" phx-hook="DragHandle"></div>
-              <form phx-submit="send_chat" class="chat-input" id="chat-input-form" phx-update="ignore">
+              <form
+                phx-submit="send_chat"
+                class="chat-input"
+                id="chat-input-form"
+                phx-update="ignore"
+              >
                 <textarea
                   id="chat-textarea"
                   name="message"

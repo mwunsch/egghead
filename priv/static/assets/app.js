@@ -16,11 +16,15 @@ const WM_MIN_W = 240;
 const WM_MIN_H = 140;
 
 const WindowManager = {
-  _state: { version: 1, windows: {}, groups: [] },
+  _state: { version: 1, windows: {} },
   _z: WM_Z_BASE,
   _windows: new Map(),
   _mobile: false,
   _initialized: false,
+  // Tracks which window is currently focused. Re-applied in Window
+  // updated() because morphdom strips JS-added classes that aren't
+  // in the server template.
+  _focusedId: null,
 
   init() {
     if (this._initialized) return;
@@ -41,7 +45,6 @@ const WindowManager = {
       this._mobile = e.matches;
       document.body.classList.toggle("desktop-mobile", this._mobile);
       this._windows.forEach((w) => w.applyMode());
-      this._refreshToggleButtons();
     });
 
     // Document-level click delegation for [data-window-toggle]
@@ -57,11 +60,11 @@ const WindowManager = {
   _load() {
     try {
       const raw = localStorage.getItem(WM_STORAGE_KEY);
-      if (!raw) return { version: 1, windows: {}, groups: [] };
+      if (!raw) return { version: 1, windows: {} };
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.version === 1) return parsed;
+      if (parsed && parsed.version === 1) return { version: 1, windows: parsed.windows || {} };
     } catch {}
-    return { version: 1, windows: {}, groups: [] };
+    return { version: 1, windows: {} };
   },
 
   _save() {
@@ -198,7 +201,7 @@ Hooks.Window = {
 
     // The anchor focuses itself on mount if no other window is focused —
     // so first load lands with the Record window in focus.
-    if (this._role === "anchor" && !document.querySelector(".window.focused")) {
+    if (this._role === "anchor" && !WindowManager._focusedId) {
       this.raise();
     }
 
@@ -224,6 +227,12 @@ Hooks.Window = {
     // Re-apply geom/open in case morphdom touched style/hidden attrs.
     this.applyMode();
     this.applyOpen();
+    // morphdom strips JS-only data attributes on re-render; the
+    // `:not([data-window-ready])` CSS rule would then hide every
+    // window. Re-set on every update.
+    this.el.dataset.windowReady = "true";
+    // morphdom also strips JS-added classes; re-apply focused.
+    this.el.classList.toggle("focused", WindowManager._focusedId === this._id);
   },
 
   destroyed() {
@@ -252,6 +261,10 @@ Hooks.Window = {
       this.raise();
       return;
     }
+    // Server-managed close: the close button has its own phx-click.
+    // Don't fight it — server prunes the element and our destroyed()
+    // hook handles cleanup.
+    if (this.el.dataset.serverClose === "1") return;
     this._open = false;
     this.applyOpen();
     WindowManager.put(this._id, { open: false });
@@ -277,6 +290,7 @@ Hooks.Window = {
       if (el !== this.el) el.classList.remove("focused");
     });
     this.el.classList.add("focused");
+    WindowManager._focusedId = this._id;
     WindowManager.put(this._id, { z });
     WindowManager.notifyFocusChanged();
   },

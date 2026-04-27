@@ -461,6 +461,153 @@ body { min-height: 100vh; }
 
 .window:not(.focused) .window-grip { opacity: 0.6; }
 
+/* ----------------------------------------------------------------
+   Haiku BMenuField — labeled button with a ▾ indicator that opens a
+   popup menu of items. Used for the chat Rooms picker. Sunken frame
+   matches Haiku's BTextControl/BMenuField visual language.
+   ---------------------------------------------------------------- */
+
+.rooms-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.menu-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 8px;
+  background: linear-gradient(
+    to bottom,
+    #E7E7E7 0%,
+    #E1E1E1 33%,
+    #DBDBDB 66%,
+    #D5D5D5 100%
+  );
+  border: 1px solid #8C8C8C;
+  box-shadow:
+    inset 1px 1px 0 #F4F4F4,
+    inset -1px -1px 0 #C1C1C1;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.menu-field:hover {
+  background: linear-gradient(
+    to bottom,
+    #EFEFEF 0%,
+    #EAEAEA 33%,
+    #E2E2E2 66%,
+    #DDDDDD 100%
+  );
+}
+
+.menu-field:active,
+.menu-field.toggled {
+  background: linear-gradient(to bottom, #BABABA 0%, #C1C1C1 100%);
+  box-shadow:
+    inset 1px 1px 0 #C1C1C1,
+    inset -1px -1px 0 #F4F4F4;
+}
+
+.menu-field-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.menu-field-arrow {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--chrome-dk);
+  margin-left: 2px;
+}
+
+.menu-field-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  min-width: 180px;
+  margin-top: 1px;
+  background: var(--chrome);
+  border: 1px solid var(--chrome-dk);
+  box-shadow:
+    2px 2px 6px rgba(0, 0, 0, 0.25),
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo);
+  padding: 2px 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+/* Each row in the dropdown is a flex container with the item button
+   on the left and an optional close × button on the right (for closeable
+   open rooms). */
+.menu-field-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.menu-field-row:hover { background: var(--accent); color: #FFFFFF; }
+.menu-field-row:hover .menu-field-marker { color: #FFFFFF; }
+
+.menu-field-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 3px 12px 3px 8px;
+  background: none;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.menu-field-close {
+  width: 18px;
+  padding: 0 2px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.4;
+}
+
+.menu-field-row:hover .menu-field-close { opacity: 1; }
+.menu-field-close:hover {
+  background: var(--danger);
+  color: #FFFFFF;
+  opacity: 1;
+}
+
+.menu-field-marker {
+  display: inline-block;
+  width: 10px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.menu-field-item.is-active .menu-field-marker { color: var(--accent); }
+.menu-field-item.is-active:hover .menu-field-marker { color: #FFFFFF; }
+.menu-field-item.is-open .menu-field-text { font-weight: 600; }
+
+.menu-field-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  flex: 1;
+}
+
+
 /* ================================================================
    Deskbar — BeOS-style floating shell
 
@@ -1467,6 +1614,7 @@ details[open] > .properties-summary::before {
   align-items: center;
   border-bottom: 1px solid var(--chrome-lo);
 }
+
 
 .chat-title { font-weight: 700; font-size: 13px; color: var(--fg); }
 .chat-room-id {

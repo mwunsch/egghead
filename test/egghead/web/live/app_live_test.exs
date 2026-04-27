@@ -129,8 +129,8 @@ defmodule Egghead.Web.AppLiveTest do
       assert html =~ "Design Document"
       assert html =~ "Hello World"
 
-      # Open dropdown via the filter icon button
-      view |> element(".class-filter-wrap .toolbar-btn") |> render_click()
+      # Open dropdown via the BMenuField filter button
+      view |> element(".class-filter-wrap .menu-field") |> render_click()
       assert has_element?(view, ".class-dropdown")
     end
 
@@ -212,35 +212,25 @@ defmodule Egghead.Web.AppLiveTest do
       assert html =~ "meta-line"
     end
 
-    test "slash command detection populates dropdown", %{conn: conn} do
+    test "chat completion corpus is pushed to client", %{conn: conn} do
+      # The completion popover, candidate filtering, arrow nav, Tab,
+      # and Esc are owned by the ChatInput JS hook. The server's only
+      # job is to push the corpus (commands, agents, broadcasts,
+      # records) to the client; the rest is verified in the browser,
+      # not here. Assert that the `chat_corpus` event fires with at
+      # least the hardcoded slash commands so a regression on the
+      # push_chat_corpus path is caught.
       {:ok, view, _html} = live(conn, "/")
-
-      # Simulate typing /sa
-      render_hook(view, "chat_input_change", %{"value" => "/sa"})
-      Process.sleep(50)
-
-      html = render(view)
-      assert html =~ "dropdown-item"
-      assert html =~ "/save"
-    end
-
-    test "agent mention detection populates dropdown", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/")
-
-      render_hook(view, "chat_input_change", %{"value" => "@sco"})
-      Process.sleep(50)
-
-      # Dropdown should appear if agents are registered
-      # (may be empty in test env without agents)
-      html = render(view)
-      assert is_binary(html)
+      assert_push_event(view, "chat_corpus", %{commands: commands})
+      assert is_list(commands)
+      assert Enum.any?(commands, &(&1.name == "save"))
     end
 
     test "toggle agent roster", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/")
 
-      view |> element(".chat-header .toolbar-btn") |> render_click()
-      assert has_element?(view, ".agent-roster")
+      view |> element(".chat-header .roster-toggle") |> render_click()
+      assert has_element?(view, ".chat-roster")
     end
   end
 end

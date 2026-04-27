@@ -15,6 +15,8 @@ defmodule Egghead.Web.AppLive do
   def mount(params, _session, socket) do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Egghead.PubSub, Egghead.RecordStore.records_topic())
+      # Push chat completion corpus once we're handling messages.
+      send(self(), :push_chat_corpus)
     end
 
     all = Egghead.list_records() |> Enum.sort_by(&(&1.updated || ""), :desc)
@@ -52,6 +54,8 @@ defmodule Egghead.Web.AppLive do
         filtered: all,
         class_filter: MapSet.new([:durable, :inbox, :deliberation, :transcript, :agent]),
         class_dropdown_open: false,
+        view_dropdown_open: false,
+        date_format: :relative,
         nav_view: :search,
         tree_open: MapSet.new(),
         # Record state
@@ -70,7 +74,6 @@ defmodule Egghead.Web.AppLive do
         active_streams: %{},
         chat_status: nil,
         chat_input: "",
-        chat_dropdown: nil,
         rooms_menu_open: false,
         paste_chips: [],
         agents: [],
@@ -131,7 +134,6 @@ defmodule Egghead.Web.AppLive do
             active_streams: %{},
             chat_status: nil,
             chat_input: "",
-            chat_dropdown: nil,
             paste_chips: []
           )
           |> hydrate_chat()
@@ -193,7 +195,20 @@ defmodule Egghead.Web.AppLive do
   end
 
   def handle_event("switch_nav_view", %{"view" => view}, socket) do
-    {:noreply, assign(socket, nav_view: String.to_existing_atom(view))}
+    {:noreply,
+     assign(socket,
+       nav_view: String.to_existing_atom(view),
+       view_dropdown_open: false
+     )}
+  end
+
+  def handle_event("toggle_view_dropdown", _, socket) do
+    {:noreply, assign(socket, view_dropdown_open: !socket.assigns.view_dropdown_open)}
+  end
+
+  def handle_event("toggle_date_format", _, socket) do
+    next = if socket.assigns.date_format == :relative, do: :iso, else: :relative
+    {:noreply, assign(socket, date_format: next)}
   end
 
   def handle_event("toggle_folder", %{"dir" => dir}, socket) do
@@ -231,7 +246,7 @@ defmodule Egghead.Web.AppLive do
       end)
       |> String.trim()
 
-    socket = assign(socket, chat_input: "", chat_dropdown: nil, paste_chips: [])
+    socket = assign(socket, chat_input: "", paste_chips: [])
 
     cond do
       message == "" ->
@@ -249,30 +264,10 @@ defmodule Egghead.Web.AppLive do
     end
   end
 
-  def handle_event("chat_input_change", %{"value" => value}, socket) do
-    {:noreply, socket |> assign(chat_input: value) |> detect_completion(value)}
-  end
-
-  def handle_event("chat_dropdown_up", _, socket) do
-    {:noreply, move_dropdown(socket, -1)}
-  end
-
-  def handle_event("chat_dropdown_down", _, socket) do
-    {:noreply, move_dropdown(socket, 1)}
-  end
-
-  def handle_event("chat_tab_complete", _, socket) do
-    {:noreply, accept_completion(socket)}
-  end
-
-  def handle_event("chat_escape", _, socket) do
-    {:noreply, assign(socket, chat_dropdown: nil)}
-  end
-
   def handle_event("chat_paste", %{"text" => text}, socket) do
     chip = build_paste_chip(text, socket.assigns.paste_chips)
     chips = socket.assigns.paste_chips ++ [chip]
-    # The placeholder gets inserted into the textarea via the current input
+
     {:noreply,
      assign(socket, paste_chips: chips, chat_input: socket.assigns.chat_input <> chip.placeholder)}
   end
@@ -323,17 +318,6 @@ defmodule Egghead.Web.AppLive do
     end
   end
 
-  def handle_event("select_dropdown", %{"index" => idx}, socket) do
-    case socket.assigns.chat_dropdown do
-      %{candidates: cands} = dd when is_list(cands) ->
-        i = String.to_integer(idx)
-        {:noreply, assign(socket, chat_dropdown: %{dd | selected: i}) |> accept_completion()}
-
-      _ ->
-        {:noreply, socket}
-    end
-  end
-
   # --- PubSub: record changes ---
 
   @impl true
@@ -345,8 +329,17 @@ defmodule Egghead.Web.AppLive do
       |> assign(all: all)
       |> apply_filter()
       |> hydrate_selection()
+      |> push_chat_corpus()
 
     {:noreply, socket}
+  end
+
+  # Send the chat-completion candidate corpus to the JS hook. This is
+  # the only thing the server tells the client about completion —
+  # filtering, popover state, arrow nav, and acceptance all happen
+  # browser-side.
+  def handle_info(:push_chat_corpus, socket) do
+    {:noreply, push_chat_corpus(socket)}
   end
 
   # --- PubSub: chat room events ---
@@ -455,12 +448,29 @@ defmodule Egghead.Web.AppLive do
 
   def handle_info({:agent_joined, agent_id}, socket) do
     entry = Egghead.TUI.Chat.Entry.system("#{agent_display_name(agent_id)} joined")
-    {:noreply, append_entry(socket, entry)}
+
+    {:noreply,
+     socket
+     |> append_entry(entry)
+     |> assign(agents: hydrate_agents_for_room(socket.assigns.room_id))
+     |> push_chat_corpus()}
   end
 
   def handle_info({:agent_left, agent_id}, socket) do
     entry = Egghead.TUI.Chat.Entry.system("#{agent_display_name(agent_id)} left")
-    {:noreply, append_entry(socket, entry)}
+
+    {:noreply,
+     socket
+     |> append_entry(entry)
+     |> assign(agents: hydrate_agents_for_room(socket.assigns.room_id))
+     |> push_chat_corpus()}
+  end
+
+  # Coordinator broadcasts this whenever the room's roster changes
+  # via lifecycle events (agent started / stopped). Re-hydrate so
+  # placeholder ids get real display names.
+  def handle_info({:agent_roster_changed}, socket) do
+    {:noreply, assign(socket, agents: hydrate_agents_for_room(socket.assigns.room_id))}
   end
 
   def handle_info({:agent_handoff_started, _room_id, agent_id}, socket) do
@@ -493,6 +503,8 @@ defmodule Egghead.Web.AppLive do
     do: {:noreply, socket}
 
   def handle_info({:room_stopped, room_id}, socket) do
+    socket = push_chat_corpus(socket)
+
     if room_id == socket.assigns.room_id do
       {:noreply, push_patch(socket, to: ~p"/chat/#{Egghead.default_room()}")}
     else
@@ -665,7 +677,6 @@ defmodule Egghead.Web.AppLive do
         active_streams: %{},
         chat_status: nil,
         chat_input: "",
-        chat_dropdown: nil,
         paste_chips: []
       )
       |> hydrate_chat()
@@ -694,25 +705,52 @@ defmodule Egghead.Web.AppLive do
             _, _ -> []
           end
 
-        agents =
-          try do
-            Egghead.list_agents()
-            |> Enum.map(
-              &%{
-                id: &1.id,
-                name: &1.name,
-                status: :idle,
-                ctx_pct: 0.0,
-                ctx_window: 0,
-                ctx_tokens: 0
-              }
-            )
-          catch
-            _, _ -> []
-          end
-
-        assign(socket, transcript: transcript, agents: agents)
+        assign(socket,
+          transcript: transcript,
+          agents: hydrate_agents_for_room(room_id)
+        )
     end
+  end
+
+  # The roster shows agents that are members of the *current room*,
+  # not every agent the system knows about. Pull the room's member
+  # list from its GenServer state and join with `list_agents/0` for
+  # display info; agents in the room but not yet in `list_agents`
+  # render under their bare id until they materialise.
+  defp hydrate_agents_for_room(nil), do: []
+
+  defp hydrate_agents_for_room(room_id) do
+    member_ids =
+      try do
+        room_id
+        |> Egghead.Chat.Room.get_state()
+        |> Map.get(:agents, [])
+      catch
+        _, _ -> []
+      end
+
+    running_by_id =
+      try do
+        Egghead.list_agents() |> Map.new(&{&1.id, &1})
+      catch
+        _, _ -> %{}
+      end
+
+    Enum.map(member_ids, fn id ->
+      base = %{
+        id: id,
+        name: id,
+        status: :idle,
+        ctx_pct: 0.0,
+        ctx_window: 0,
+        ctx_tokens: 0
+      }
+
+      case Map.get(running_by_id, id) do
+        %{name: name} when is_binary(name) and name != "" -> %{base | name: name}
+        _ -> base
+      end
+    end)
   end
 
   # Buffer streaming deltas via the shared Chat.Stream module.
@@ -846,7 +884,10 @@ defmodule Egghead.Web.AppLive do
 
   @chat_commands %{
     "save" => :cmd_save,
+    "copy" => :cmd_copy,
     "continue" => :cmd_continue,
+    "halt" => :cmd_halt,
+    "stop" => :cmd_halt,
     "handoff" => :cmd_handoff,
     "join" => :cmd_join,
     "list" => :cmd_list,
@@ -854,18 +895,33 @@ defmodule Egghead.Web.AppLive do
     "drop" => :cmd_drop,
     "mute" => :cmd_mute,
     "unmute" => :cmd_unmute,
+    "invite" => :cmd_invite,
+    "kick" => :cmd_kick,
+    "whois" => :cmd_whois,
+    "tools" => :cmd_tools,
+    "mcp" => :cmd_mcp,
     "help" => :cmd_help
   }
 
   @chat_command_list [
     %{name: "save", description: "Save transcript as a record"},
+    %{name: "copy", description: "Copy transcript to clipboard"},
     %{name: "continue", description: "Grant agents more turns"},
-    %{name: "handoff", description: "Handoff an agent's context"},
-    %{name: "join", description: "Join or create a room"},
+    %{name: "halt", description: "Interrupt agents mid-turn"},
+    %{name: "handoff", description: "Handoff an agent's context (space opens picker)"},
+    %{name: "join", description: "Join or create a room (space opens picker)"},
     %{name: "list", description: "List all open rooms"},
     %{name: "drop", description: "Drop the current room"},
-    %{name: "mute", description: "Mute an agent"},
-    %{name: "unmute", description: "Unmute a muted agent"},
+    %{name: "mute", description: "Mute an agent (space opens picker)"},
+    %{name: "unmute", description: "Unmute a muted agent (space opens picker)"},
+    %{name: "invite", description: "Invite an agent into this room (space opens picker)"},
+    %{name: "kick", description: "Evict an agent from this room (space opens picker)"},
+    %{
+      name: "whois",
+      description: "Show an agent's model, capabilities, rooms (space opens picker)"
+    },
+    %{name: "tools", description: "Summary of tools available to agents"},
+    %{name: "mcp", description: "Summary of MCP servers"},
     %{name: "help", description: "Show keybindings & commands"}
   ]
 
@@ -1070,164 +1126,289 @@ defmodule Egghead.Web.AppLive do
           socket
         end
 
+      :cmd_copy ->
+        # Push the formatted transcript to the browser; a small JS
+        # handler in ChatInput writes it to the clipboard. The
+        # synthesised transcript is what's currently in the room
+        # GenServer (same source the TUI's /copy uses).
+        if socket.assigns.room_id do
+          room_id = socket.assigns.room_id
+
+          msgs =
+            try do
+              Egghead.Chat.Room.get_transcript(room_id)
+            catch
+              _, _ -> []
+            end
+
+          case msgs do
+            [] ->
+              append_entry(socket, Egghead.TUI.Chat.Entry.system("Transcript is empty"))
+
+            list ->
+              body = Egghead.Chat.Room.format_transcript(list)
+
+              socket
+              |> push_event("chat_copy", %{text: body})
+              |> append_entry(Egghead.TUI.Chat.Entry.system("Transcript copied to clipboard"))
+          end
+        else
+          socket
+        end
+
+      :cmd_halt ->
+        if socket.assigns.room_id do
+          room_id = socket.assigns.room_id
+
+          Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+            try do
+              Egghead.chat_halt(room_id)
+            catch
+              _, _ -> :ok
+            end
+          end)
+
+          append_entry(
+            socket,
+            Egghead.TUI.Chat.Entry.system(
+              "Halt requested — agents will stop after their current step"
+            )
+          )
+        else
+          socket
+        end
+
+      :cmd_invite ->
+        target = String.trim(arg)
+
+        cond do
+          target == "" ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /invite <agent>"))
+
+          socket.assigns.room_id == nil ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("/invite requires an active room"))
+
+          true ->
+            do_invite(target, socket.assigns.room_id, socket)
+        end
+
+      :cmd_kick ->
+        target = String.trim(arg)
+
+        cond do
+          target == "" ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /kick <agent>"))
+
+          socket.assigns.room_id == nil ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("/kick requires an active room"))
+
+          true ->
+            do_kick(target, socket.assigns.room_id, socket)
+        end
+
+      :cmd_whois ->
+        target = String.trim(arg)
+
+        if target == "" do
+          append_entry(socket, Egghead.TUI.Chat.Entry.system("Usage: /whois <agent>"))
+        else
+          append_entry(socket, Egghead.TUI.Chat.Entry.system(format_whois(target)))
+        end
+
+      :cmd_tools ->
+        append_entry(
+          socket,
+          Egghead.TUI.Chat.Entry.system(Egghead.TUI.ToolCatalog.tools_summary())
+        )
+
+      :cmd_mcp ->
+        append_entry(
+          socket,
+          Egghead.TUI.Chat.Entry.system(Egghead.TUI.ToolCatalog.mcp_summary())
+        )
+
       :cmd_help ->
         socket
         |> append_entry(
           Egghead.TUI.Chat.Entry.system(
-            "Commands: /save /continue /handoff <agent> /join <room> /list /drop /mute /unmute /help"
+            "Commands: /save /copy /continue /halt /handoff <agent> /join <room> /list /drop /mute <agent> /unmute <agent> /invite <agent> /kick <agent> /whois <agent> /tools /mcp /help"
           )
         )
         |> append_entry(
           Egghead.TUI.Chat.Entry.system(
-            "Enter send | Shift+Enter newline | @agent mention | \\[\\[record\\]\\] link"
+            "Enter send | Shift+Enter newline | @agent mention | \\[\\[record\\]\\] link | Tab accept"
           )
         )
     end
   end
 
-  # --- Completion detection ---
+  # ---- /invite, /kick, /whois helpers (web-side adaptation of TUI) ----
 
-  defp detect_completion(socket, value) do
+  defp do_invite(agent_id, room_id, socket) do
+    in_room =
+      try do
+        room_id |> Egghead.Chat.Room.get_state() |> Map.get(:agents, []) |> MapSet.new()
+      catch
+        _, _ -> MapSet.new()
+      end
+
     cond do
-      # Slash commands
-      String.starts_with?(value, "/") and not String.contains?(value, "\n") ->
-        prefix = value |> String.trim_leading("/") |> String.downcase()
-
-        candidates =
-          @chat_command_list
-          |> Enum.filter(&String.starts_with?(&1.name, prefix))
-
-        assign(socket,
-          chat_dropdown: %{kind: :command, prefix: prefix, candidates: candidates, selected: 0}
+      MapSet.member?(in_room, agent_id) ->
+        append_entry(
+          socket,
+          Egghead.TUI.Chat.Entry.system("#{agent_id} is already in this room.")
         )
-
-      # @agent mention
-      String.match?(value, ~r/(^|\s)@([a-zA-Z0-9\/_\-]*)$/) ->
-        [_, _, prefix] = Regex.run(~r/(^|\s)@([a-zA-Z0-9\/_\-]*)$/, value)
-
-        agents =
-          try do
-            Egghead.list_agents()
-          catch
-            _, _ -> []
-          end
-
-        broadcasts =
-          Egghead.TUI.Chat.Mentions.broadcast_tokens()
-          |> Enum.filter(&String.starts_with?(&1.id, String.downcase(prefix)))
-          |> Enum.map(&%{id: &1.id, name: &1.name, kind: :broadcast, label: &1.label})
-
-        agent_candidates =
-          agents
-          |> Enum.filter(fn a ->
-            basename = a.id |> String.split("/") |> List.last() |> String.downcase()
-            String.starts_with?(basename, String.downcase(prefix))
-          end)
-          |> Enum.map(&%{id: &1.id, name: &1.name})
-
-        candidates = (broadcasts ++ agent_candidates) |> Enum.take(8)
-
-        if candidates != [] do
-          ghost =
-            case Enum.at(candidates, 0) do
-              %{id: id} ->
-                basename = id |> String.split("/") |> List.last()
-
-                if String.starts_with?(String.downcase(basename), String.downcase(prefix)),
-                  do: String.slice(basename, String.length(prefix)..-1//1),
-                  else: ""
-
-              _ ->
-                ""
-            end
-
-          assign(socket,
-            chat_dropdown: %{
-              kind: :agent,
-              prefix: prefix,
-              candidates: candidates,
-              selected: 0,
-              ghost: ghost
-            }
-          )
-        else
-          assign(socket, chat_dropdown: nil)
-        end
-
-      # [[record]] wikilink
-      String.match?(value, ~r/\[\[([a-zA-Z0-9\/_\-]*)$/) ->
-        [_, prefix] = Regex.run(~r/\[\[([a-zA-Z0-9\/_\-]*)$/, value)
-
-        candidates =
-          Egghead.recent(limit: 50)
-          |> Enum.filter(fn r ->
-            String.starts_with?(String.downcase(r.id || ""), String.downcase(prefix))
-          end)
-          |> Enum.take(8)
-          |> Enum.map(&%{id: &1.id, title: &1.title})
-
-        if candidates != [] do
-          assign(socket,
-            chat_dropdown: %{
-              kind: :record,
-              prefix: prefix,
-              candidates: candidates,
-              selected: 0,
-              ghost: ""
-            }
-          )
-        else
-          assign(socket, chat_dropdown: nil)
-        end
 
       true ->
-        assign(socket, chat_dropdown: nil)
+        case resolve_invite_record(agent_id) do
+          {:error, reason} ->
+            append_entry(socket, Egghead.TUI.Chat.Entry.system("/invite: #{reason}"))
+
+          {:ok, record} ->
+            Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+              ensure_agent_started(record)
+              Egghead.Chat.Room.join(room_id, agent_id)
+              broadcast_system_notice(room_id, "#{agent_id} invited")
+            end)
+
+            socket
+        end
     end
   end
 
-  defp move_dropdown(socket, dir) do
-    case socket.assigns.chat_dropdown do
-      %{candidates: cands, selected: sel} = dd when cands != [] ->
-        n = length(cands)
-        new_sel = rem(sel + dir + n, n)
-        assign(socket, chat_dropdown: %{dd | selected: new_sel})
+  defp do_kick(agent_id, room_id, socket) do
+    members =
+      try do
+        room_id |> Egghead.Chat.Room.get_state() |> Map.get(:agents, []) |> MapSet.new()
+      catch
+        _, _ -> MapSet.new()
+      end
 
-      _ ->
+    default = Egghead.default_room()
+
+    cond do
+      not MapSet.member?(members, agent_id) ->
+        append_entry(
+          socket,
+          Egghead.TUI.Chat.Entry.system("#{agent_id} is not in this room.")
+        )
+
+      room_id == default and MapSet.size(members) == 1 ->
+        append_entry(
+          socket,
+          Egghead.TUI.Chat.Entry.system("Cannot kick the last agent from the default room.")
+        )
+
+      true ->
+        Task.Supervisor.start_child(Egghead.Tool.TaskSupervisor, fn ->
+          Egghead.Chat.Room.leave(room_id, agent_id)
+          _ = Egghead.Agent.drop_session(agent_id, room_id)
+          broadcast_system_notice(room_id, "#{agent_id} kicked")
+        end)
+
         socket
     end
   end
 
-  defp accept_completion(socket) do
-    new_value =
-      case socket.assigns.chat_dropdown do
-        %{kind: :command, candidates: [_ | _] = cands, selected: sel} ->
-          "/#{Enum.at(cands, sel).name} "
+  defp resolve_invite_record(agent_id) do
+    case Egghead.get_record(agent_id) do
+      {:ok, %{class: :agent} = record} ->
+        {:ok, record}
 
-        %{kind: :agent, candidates: [_ | _] = cands, selected: sel} ->
-          Regex.replace(
-            ~r/@[a-zA-Z0-9\/_\-]*$/,
-            socket.assigns.chat_input,
-            "@#{Enum.at(cands, sel).id} "
-          )
+      {:ok, _other_class} ->
+        {:error, "#{agent_id} is not an agent record"}
 
-        %{kind: :record, candidates: [_ | _] = cands, selected: sel} ->
-          Regex.replace(
-            ~r/\[\[[a-zA-Z0-9\/_\-]*$/,
-            socket.assigns.chat_input,
-            "[[#{Enum.at(cands, sel).id}]] "
-          )
+      {:error, :not_found} ->
+        if agent_id == "index" do
+          {:ok, Egghead.Agent.Supervisor.default_agent()}
+        else
+          {:error, "no agent record for #{agent_id}"}
+        end
 
-        _ ->
-          nil
+      {:error, reason} ->
+        {:error, "could not load #{agent_id}: #{inspect(reason)}"}
+    end
+  end
+
+  defp ensure_agent_started(record) do
+    name = Egghead.Agent.agent_name(record.id)
+
+    case GenServer.whereis(name) do
+      nil ->
+        case Egghead.Agent.Supervisor.start_agent(record) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, _reason} -> :ok
+        end
+
+      _pid ->
+        :ok
+    end
+  end
+
+  defp format_whois(agent_id) do
+    info =
+      try do
+        Egghead.list_agents() |> Enum.find(&(&1.id == agent_id))
+      catch
+        _, _ -> nil
       end
 
-    if new_value do
-      socket
-      |> assign(chat_input: new_value, chat_dropdown: nil)
-      |> push_event("update_input", %{value: new_value})
-    else
-      socket
-    end
+    record =
+      case Egghead.get_record(agent_id) do
+        {:ok, _} -> {:ok, agent_id}
+        _ -> if agent_id == "index", do: :builtin, else: :missing
+      end
+
+    rooms =
+      try do
+        Egghead.list_rooms()
+        |> Enum.filter(fn rid ->
+          members =
+            try do
+              rid |> Egghead.Chat.Room.get_state() |> Map.get(:agents, []) |> MapSet.new()
+            catch
+              _, _ -> MapSet.new()
+            end
+
+          MapSet.member?(members, agent_id)
+        end)
+      catch
+        _, _ -> []
+      end
+
+    header =
+      case record do
+        {:ok, _} -> "#{agent_id} — [[#{agent_id}]]"
+        :builtin -> "#{agent_id} (built-in — no backing record)"
+        :missing -> "#{agent_id} (no backing record)"
+      end
+
+    model_line =
+      case info do
+        %{model: m} when is_binary(m) and m != "" -> "  model: #{m}"
+        _ -> "  model: (not running)"
+      end
+
+    caps_line =
+      case info do
+        %{capabilities: caps} when is_list(caps) and caps != [] ->
+          "  caps: #{caps |> Enum.map(&Egghead.Capability.grant_to_spec/1) |> Enum.join(", ")}"
+
+        %{capabilities: _} ->
+          "  caps: (none)"
+
+        _ ->
+          "  caps: (not running)"
+      end
+
+    rooms_line =
+      case rooms do
+        [] -> "  rooms: (none)"
+        list -> "  rooms: #{Enum.join(list, ", ")}"
+      end
+
+    Enum.join([header, model_line, caps_line, rooms_line], "\n")
   end
 
   # --- Paste chips ---
@@ -1348,6 +1529,57 @@ defmodule Egghead.Web.AppLive do
   defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
   defp format_tokens(n), do: "#{n}"
 
+  # Pushes the candidate corpus (commands, agents, broadcast tokens,
+  # recent records, rooms) to the browser. The ChatInput JS hook
+  # stores this and uses it to drive a fully client-side completion
+  # popover — including second-argument pickers for `/mute <agent>`,
+  # `/handoff <agent>`, `/join <room>`, etc.
+  defp push_chat_corpus(socket) do
+    if connected?(socket) do
+      agents =
+        try do
+          Egghead.list_agents()
+          |> Enum.map(&%{id: &1.id, name: &1.name})
+        catch
+          _, _ -> []
+        end
+
+      broadcasts =
+        Egghead.TUI.Chat.Mentions.broadcast_tokens()
+        |> Enum.map(&%{id: &1.id, name: &1.name, label: &1.label, broadcast: true})
+
+      records =
+        try do
+          Egghead.recent(limit: 200)
+          |> Enum.map(&%{id: &1.id, title: &1.title})
+        catch
+          _, _ -> []
+        end
+
+      rooms =
+        try do
+          default = Egghead.default_room()
+
+          [default | Egghead.list_rooms()]
+          |> Enum.reject(&is_nil/1)
+          |> Enum.uniq()
+          |> Enum.map(&%{id: &1})
+        catch
+          _, _ -> []
+        end
+
+      push_event(socket, "chat_corpus", %{
+        commands: @chat_command_list,
+        agents: agents,
+        broadcasts: broadcasts,
+        records: records,
+        rooms: rooms
+      })
+    else
+      socket
+    end
+  end
+
   defp format_date(nil), do: nil
 
   defp format_date(iso) when is_binary(iso) do
@@ -1364,6 +1596,37 @@ defmodule Egghead.Web.AppLive do
   end
 
   defp format_date(other), do: inspect(other)
+
+  defp view_label(:tree), do: "Tree"
+  defp view_label(_), do: "List"
+
+  # Mirror TUI Records.View.format_time/2 — short relative ("3h", "2d") or ISO date.
+  defp format_record_time(nil, _), do: ""
+
+  defp format_record_time(s, :relative) when is_binary(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _} ->
+        diff = DateTime.diff(DateTime.utc_now(), dt, :second)
+
+        cond do
+          diff < 60 -> "#{diff}s"
+          diff < 3600 -> "#{div(diff, 60)}m"
+          diff < 86_400 -> "#{div(diff, 3600)}h"
+          diff < 604_800 -> "#{div(diff, 86_400)}d"
+          true -> "#{div(diff, 604_800)}w"
+        end
+
+      _ ->
+        ""
+    end
+  end
+
+  defp format_record_time(s, :iso) when is_binary(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _} -> Calendar.strftime(dt, "%Y-%m-%d")
+      _ -> ""
+    end
+  end
 
   # Render-time safe lookup of all rooms — never crashes the LV if the
   # room registry is partially up. Always includes the default room.
@@ -1428,14 +1691,19 @@ defmodule Egghead.Web.AppLive do
             <span class="deskbar-leaf-label">egghead</span>
           </div>
 
-          <div class="deskbar-tray">
-            <div :if={@room_id} class="tray-row" title="Current chat room">
-              <span class="tray-key">room</span>
-              <span class="tray-val">#{@room_id}</span>
-            </div>
-            <div class="tray-row" title="Active agents">
-              <span class="tray-key">agents</span>
-              <span class="tray-val">{length(@agents)}</span>
+          <%!-- Deskbar tray — BeOS canon. Live clock + date, plus a
+               quiet status row for the record store. The Deskbar's
+               original tray held a clock and small applets; this
+               keeps that idiom, dropped the inaccurate room/agent
+               readouts, and surfaces a number that's actually
+               grounded in the data layer. --%>
+          <div class="deskbar-tray" id="deskbar-tray" phx-hook="Clock">
+            <div class="tray-clock" data-tray-clock>—</div>
+            <div class="tray-date" data-tray-date>—</div>
+            <div class="tray-divider"></div>
+            <div class="tray-row" title="Records in the store">
+              <span class="tray-key">records</span>
+              <span class="tray-val">{length(@all)}</span>
             </div>
           </div>
 
@@ -1487,24 +1755,74 @@ defmodule Egghead.Web.AppLive do
         >
           <div class="nav-inner">
             <div class="nav-toolbar">
-              <button
-                class={["toolbar-btn", @nav_view == :tree && "toggled"]}
-                phx-click="switch_nav_view"
-                phx-value-view={if @nav_view == :tree, do: "search", else: "tree"}
-              >
-                <img src="/assets/icon-tree.png" alt="Tree" class="toolbar-icon" />
-                <span class="toolbar-label">Tree</span>
-              </button>
-              <div class="toolbar-spacer"></div>
-              <div class="class-filter-wrap">
+              <%!-- View ▾ — BMenuField picking list/tree --%>
+              <div class="menu-field-wrap">
                 <button
-                  class="toolbar-btn"
-                  phx-click="toggle_class_dropdown"
+                  type="button"
+                  class={["menu-field", @view_dropdown_open && "toggled"]}
+                  phx-click="toggle_view_dropdown"
+                  title="Choose how records are listed"
                 >
-                  <img src="/assets/icon-filter.png" alt="Filter" class="toolbar-icon" />
-                  <span class="toolbar-label">Filter</span>
+                  <img
+                    src={
+                      if @nav_view == :tree,
+                        do: "/assets/icon-tree.png",
+                        else: "/assets/icon-list.png"
+                    }
+                    alt=""
+                    class="menu-field-icon"
+                  />
+                  <span class="menu-field-label">{view_label(@nav_view)}</span>
+                  <span class="menu-field-arrow">▾</span>
                 </button>
-                <div :if={@class_dropdown_open} class="class-dropdown">
+                <div :if={@view_dropdown_open} class="menu-field-dropdown" role="menu">
+                  <div class="menu-field-row">
+                    <button
+                      type="button"
+                      class={["menu-field-item", @nav_view == :search && "is-active"]}
+                      phx-click="switch_nav_view"
+                      phx-value-view="search"
+                    >
+                      <span class="menu-field-marker">
+                        {if @nav_view == :search, do: "●", else: ""}
+                      </span>
+                      <img src="/assets/icon-list.png" alt="" class="menu-field-row-icon" />
+                      <span class="menu-field-text">List</span>
+                    </button>
+                  </div>
+                  <div class="menu-field-row">
+                    <button
+                      type="button"
+                      class={["menu-field-item", @nav_view == :tree && "is-active"]}
+                      phx-click="switch_nav_view"
+                      phx-value-view="tree"
+                    >
+                      <span class="menu-field-marker">
+                        {if @nav_view == :tree, do: "●", else: ""}
+                      </span>
+                      <img src="/assets/icon-tree.png" alt="" class="menu-field-row-icon" />
+                      <span class="menu-field-text">Tree</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <%!-- Filter ▾ — BMenuField with class checkboxes --%>
+              <div class="menu-field-wrap class-filter-wrap">
+                <button
+                  type="button"
+                  class={["menu-field", @class_dropdown_open && "toggled"]}
+                  phx-click="toggle_class_dropdown"
+                  title="Filter by record class"
+                >
+                  <img src="/assets/icon-filter.png" alt="" class="menu-field-icon" />
+                  <span class="menu-field-label">Filter</span>
+                  <span :if={MapSet.size(@class_filter) < 5} class="menu-field-badge">
+                    {MapSet.size(@class_filter)}
+                  </span>
+                  <span class="menu-field-arrow">▾</span>
+                </button>
+                <div :if={@class_dropdown_open} class="menu-field-dropdown class-dropdown" role="menu">
                   <div class="dropdown-actions">
                     <button class="dropdown-link" phx-click="class_select_all">All</button>
                     <button class="dropdown-link" phx-click="class_select_none">None</button>
@@ -1523,6 +1841,20 @@ defmodule Egghead.Web.AppLive do
                   </label>
                 </div>
               </div>
+
+              <div class="toolbar-spacer"></div>
+
+              <%!-- Date format two-state toggle. Mirrors TUI ^t. --%>
+              <button
+                type="button"
+                class="menu-field date-toggle"
+                phx-click="toggle_date_format"
+                title="Toggle date format (relative / ISO)"
+              >
+                <span class="menu-field-label">
+                  {if @date_format == :relative, do: "rel", else: "iso"}
+                </span>
+              </button>
             </div>
             <div class="nav-search">
               <form phx-change="search" phx-submit={if @phantom, do: "create_record", else: "search"}>
@@ -1549,7 +1881,9 @@ defmodule Egghead.Web.AppLive do
                   phx-value-id={record.id}
                 >
                   <span class="record-title">{record.title || record.id}</span>
-                  <span class="record-meta">{record.class}</span>
+                  <span class="record-meta" title={record.updated}>
+                    {format_record_time(record.updated, @date_format)}
+                  </span>
                 </li>
                 <li
                   :if={@phantom}
@@ -1621,7 +1955,13 @@ defmodule Egghead.Web.AppLive do
         >
           <main class="record-pane">
             <div :if={@selected_record} class="record-content">
-              <details class="properties-block" open>
+              <details
+                class="properties-block"
+                open
+                id="properties-disclosure"
+                phx-hook="Disclosure"
+                data-disclosure-key="properties"
+              >
                 <summary class="properties-summary">
                   <span class="properties-summary-label">Properties</span>
                   <button
@@ -1630,19 +1970,7 @@ defmodule Egghead.Web.AppLive do
                     phx-hook="CopyMarkdown"
                     data-markdown={@selected_record.body || ""}
                   >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <rect x="5" y="5" width="9" height="9" rx="1" />
-                      <path d="M3 11V3a1 1 0 0 1 1-1h8" />
-                    </svg>
+                    <img src="/assets/icon-copy.png" alt="" class="btn-icon" />
                     <span class="btn-label">Copy</span>
                   </button>
                 </summary>
@@ -1755,15 +2083,19 @@ defmodule Egghead.Web.AppLive do
           default_z={2}
           open={true}
         >
-          <div class="chat-inner">
+          <div class="chat-irc">
+            <%!-- Header strip: Rooms ▾ menu, new-room button, agents ▾.
+                 Room name is intentionally absent — the window tab
+                 already shows it. --%>
             <div class="chat-header">
               <div class="rooms-menu-wrap">
                 <button
                   type="button"
-                  class="menu-field"
+                  class={["menu-field", @rooms_menu_open && "toggled"]}
                   phx-click="toggle_rooms_menu"
-                  title="Open or switch chat rooms"
+                  title="Switch or open chat rooms"
                 >
+                  <img src="/assets/icon-chat.png" alt="" class="menu-field-icon" />
                   <span class="menu-field-label">Rooms</span>
                   <span class="menu-field-arrow">▾</span>
                 </button>
@@ -1798,56 +2130,74 @@ defmodule Egghead.Web.AppLive do
                   <% end %>
                 </div>
               </div>
-              <span class="chat-room-id" title="Active room">#{@active_chat_room}</span>
-              <button class="toolbar-btn" phx-click="toggle_agents" title="Agent roster">
-                <span class="toolbar-label">{length(@agents)} agents</span>
+
+              <%!-- New room. The hook prompts for a name and pushes
+                   `switch_chat_room` (which validates + creates +
+                   switches in one path). --%>
+              <button
+                type="button"
+                id="new-room-btn"
+                class="menu-field new-room-btn"
+                phx-hook="NewRoomButton"
+                title="Create a new chat room"
+              >
+                <span class="menu-field-label" aria-hidden="true">+</span>
+              </button>
+
+              <div class="toolbar-spacer"></div>
+
+              <button
+                type="button"
+                class={["menu-field roster-toggle", @show_agents && "toggled"]}
+                phx-click="toggle_agents"
+                title="Show agent roster"
+              >
+                <img src="/assets/icon-agent.png" alt="" class="menu-field-icon" />
+                <span class="menu-field-label">
+                  {length(@agents)} {if length(@agents) == 1, do: "Agent", else: "Agents"}
+                </span>
+                <span class="menu-field-arrow">▾</span>
               </button>
             </div>
 
-            <%!-- Agent roster panel --%>
-            <div :if={@show_agents} class="agent-roster">
-              <div :for={agent <- @agents} class="agent-card-wrap">
-                <div class={["agent-card", agent.status == :handoff && "handoff"]}>
-                  <span class={[
-                    "agent-status-dot",
-                    agent.status == :active && "active",
-                    agent.status == :handoff && "handoff"
-                  ]}>
-                    <%= case agent.status do %>
-                      <% :active -> %>
-                        ●
-                      <% :handoff -> %>
-                        ↻
-                      <% _ -> %>
-                        ○
-                    <% end %>
-                  </span>
-                  <span class="agent-name">{agent.name}</span>
-                  <span :if={agent.status == :handoff} class="agent-status-label">
-                    summarising…
-                  </span>
-                  <span :if={agent.ctx_window > 0} class="agent-ctx">
-                    {format_tokens(agent.ctx_tokens)}/{format_tokens(agent.ctx_window)}
-                  </span>
-                </div>
-                <div :if={agent.ctx_window > 0} class="agent-bar">
-                  <div class="agent-bar-track">
-                    <div class="agent-bar-fill" style={"width: #{min(agent.ctx_pct, 100)}%"}></div>
-                  </div>
-                  <span class="agent-bar-label">
-                    {:erlang.float_to_binary(agent.ctx_pct, decimals: 1)}%
-                  </span>
+            <%!-- Agent roster — collapsible, IRC-style names list --%>
+            <div :if={@show_agents} class="chat-roster">
+              <div :if={@agents == []} class="roster-empty">No agents in room.</div>
+              <div :for={agent <- @agents} class="roster-row">
+                <span class={[
+                  "roster-dot",
+                  agent.status == :active && "active",
+                  agent.status == :handoff && "handoff"
+                ]}>
+                  <%= case agent.status do %>
+                    <% :active -> %>
+                      ●
+                    <% :handoff -> %>
+                      ↻
+                    <% _ -> %>
+                      ○
+                  <% end %>
+                </span>
+                <span class="roster-name" style={"color: #{agent_nick_color(agent.id)}"}>
+                  {agent.name}
+                </span>
+                <span :if={agent.ctx_window > 0} class="roster-ctx">
+                  {format_tokens(agent.ctx_tokens)}/{format_tokens(agent.ctx_window)}
+                </span>
+                <div :if={agent.ctx_window > 0} class="roster-bar" title={"#{agent.ctx_pct}% used"}>
+                  <div class="roster-bar-fill" style={"width: #{min(agent.ctx_pct, 100)}%"}></div>
                 </div>
               </div>
             </div>
 
+            <%!-- Transcript: nick-prefixed lines, IRC style --%>
             <div class="chat-transcript" id="chat-transcript" phx-hook="ScrollBottom">
               <%= for {entry, show_nick?} <- collapse_nicks(@transcript) do %>
                 <%= case entry.kind do %>
                   <% :agent -> %>
                     <div class="bubble-row agent-row">
                       <div class="bubble agent-bubble">
-                        <div class="bubble-header">
+                        <div :if={show_nick?} class="bubble-header">
                           <span
                             class="bubble-name"
                             style={"color: #{agent_nick_color(entry.sender_id)}"}
@@ -1866,7 +2216,7 @@ defmodule Egghead.Web.AppLive do
                   <% :user -> %>
                     <div class="bubble-row user-row">
                       <div class="bubble user-bubble">
-                        <div class="bubble-header">
+                        <div :if={show_nick?} class="bubble-header">
                           <span class="bubble-name user-name">{entry.sender_name}</span>
                           <span :if={entry.timestamp} class="bubble-time">
                             {Calendar.strftime(entry.timestamp, "%H:%M")}
@@ -1879,31 +2229,46 @@ defmodule Egghead.Web.AppLive do
                     </div>
                   <% :action -> %>
                     <div class="meta-line action">
-                      <span class="meta-text">{entry.sender_name} {entry.text}</span>
+                      <span class="meta-sym">*</span>
+                      <span class="meta-text">
+                        <span
+                          class="action-nick"
+                          style={"color: #{agent_nick_color(entry.sender_id)}"}
+                        >
+                          {entry.sender_name}
+                        </span>
+                        {entry.text}
+                      </span>
                     </div>
                   <% :denial -> %>
                     <div class="meta-line denial">
-                      <span class="meta-sym">&#9888;</span>
+                      <span class="meta-sym">⚠</span>
                       <span class="meta-text">
                         <strong>{entry.sender_name}</strong>
-                        <span :for={line <- String.split(entry.text, "\n")} class="denial-line">
-                          {line}
+                        <span :for={l <- String.split(entry.text, "\n")} class="denial-line">
+                          {l}
                         </span>
                       </span>
                     </div>
                   <% :system -> %>
                     <div class="meta-line">
-                      <span class="meta-sym">&mdash;</span>
-                      <span class="meta-text">{Phoenix.HTML.raw(render_entry_html(entry))}</span>
+                      <span class="meta-sym">—</span>
+                      <span class="meta-text">
+                        {Phoenix.HTML.raw(render_entry_html(entry))}
+                      </span>
                     </div>
                   <% :handoff -> %>
                     <div class="meta-line">
-                      <span class="meta-sym">&raquo;</span>
-                      <span class="meta-text">{Phoenix.HTML.raw(render_entry_html(entry))}</span>
+                      <span class="meta-sym">»</span>
+                      <span class="meta-text">
+                        {Phoenix.HTML.raw(render_entry_html(entry))}
+                      </span>
                     </div>
                   <% _ -> %>
                     <div class="meta-line">
-                      <span class="meta-text">{Phoenix.HTML.raw(render_entry_html(entry))}</span>
+                      <span class="meta-text">
+                        {Phoenix.HTML.raw(render_entry_html(entry))}
+                      </span>
                     </div>
                 <% end %>
               <% end %>
@@ -1924,34 +2289,6 @@ defmodule Egghead.Web.AppLive do
 
             <div :if={@chat_status} class="chat-status">{@chat_status}</div>
 
-            <%!-- Dropdown (commands / mentions) --%>
-            <div :if={@chat_dropdown && @chat_dropdown.candidates != []} class="chat-dropdown">
-              <div
-                :for={{cand, idx} <- Enum.with_index(@chat_dropdown.candidates)}
-                class={["dropdown-item", idx == @chat_dropdown.selected && "selected"]}
-                phx-click="select_dropdown"
-                phx-value-index={idx}
-              >
-                <%= case @chat_dropdown.kind do %>
-                  <% :command -> %>
-                    <span class="dd-name">/{cand.name}</span>
-                    <span class="dd-desc">{cand.description}</span>
-                  <% :agent -> %>
-                    <span class="dd-name">@{cand.id}</span>
-                    <span class="dd-desc">
-                      <%= if cand[:kind] == :broadcast do %>
-                        {cand.label}
-                      <% else %>
-                        {cand.name}
-                      <% end %>
-                    </span>
-                  <% :record -> %>
-                    <span class="dd-name">[[{cand.id}]]</span>
-                    <span class="dd-desc">{cand.title}</span>
-                <% end %>
-              </div>
-            </div>
-
             <%!-- Paste chip display --%>
             <div :if={@paste_chips != []} class="paste-chips">
               <div :for={chip <- @paste_chips} class="paste-chip">
@@ -1963,6 +2300,12 @@ defmodule Egghead.Web.AppLive do
               </div>
             </div>
 
+            <%!-- Completion popover is mounted/owned by the ChatInput JS
+                 hook. Mirrors TUI behavior: filtering, arrow nav, Tab,
+                 and Esc are entirely client-side; the server only sees
+                 the final message on send. --%>
+
+            <%!-- Input bar: ❯ prompt + textarea (single-row, grows to N) --%>
             <div class="chat-input-wrap">
               <div class="chat-drag-handle" id="chat-drag-handle" phx-hook="DragHandle"></div>
               <form
@@ -1971,13 +2314,16 @@ defmodule Egghead.Web.AppLive do
                 id="chat-input-form"
                 phx-update="ignore"
               >
+                <span class="chat-prompt" aria-hidden="true">❯</span>
                 <textarea
                   id="chat-textarea"
                   name="message"
-                  placeholder={if @room_id, do: "Type a message...", else: "No room"}
+                  placeholder={
+                    if @room_id, do: "Type a message — / for commands, @ to mention", else: "No room"
+                  }
                   autocomplete="off"
                   disabled={is_nil(@room_id)}
-                  rows="2"
+                  rows="1"
                   phx-hook="ChatInput"
                 ></textarea>
               </form>

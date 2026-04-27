@@ -467,16 +467,42 @@ body { min-height: 100vh; }
    matches Haiku's BTextControl/BMenuField visual language.
    ---------------------------------------------------------------- */
 
+.menu-field-wrap,
 .rooms-menu-wrap {
   position: relative;
   display: inline-flex;
 }
 
+/* Optional small count badge inside a menu-field button (e.g. "3" of 5
+   classes selected on the Filter button). */
+.menu-field-badge {
+  display: inline-block;
+  min-width: 14px;
+  padding: 0 4px;
+  background: var(--accent);
+  color: #FFFFFF;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 14px;
+  margin-left: 2px;
+}
+
+/* Two-state toggle pill (date format) — same chrome as menu-field but
+   without the dropdown arrow. */
+.date-toggle .menu-field-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
 .menu-field {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px 2px 8px;
+  gap: 5px;
+  padding: 4px 8px 4px 10px;
   background: linear-gradient(
     to bottom,
     #E7E7E7 0%,
@@ -489,7 +515,7 @@ body { min-height: 100vh; }
     inset 1px 1px 0 #F4F4F4,
     inset -1px -1px 0 #C1C1C1;
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg);
   cursor: pointer;
 }
@@ -510,6 +536,13 @@ body { min-height: 100vh; }
   box-shadow:
     inset 1px 1px 0 #C1C1C1,
     inset -1px -1px 0 #F4F4F4;
+}
+
+.menu-field-icon {
+  width: 20px;
+  height: 20px;
+  image-rendering: pixelated;
+  flex-shrink: 0;
 }
 
 .menu-field-label {
@@ -597,6 +630,28 @@ body { min-height: 100vh; }
   color: var(--muted);
 }
 
+/* Small icon shown next to a menu-field-text in a dropdown row.
+   Distinct from .menu-field-icon (which sits on the trigger button)
+   because the row icons are slightly inset and the trigger icon
+   anchors the chrome strip. */
+.menu-field-row-icon {
+  width: 17px;
+  height: 17px;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+}
+
+/* "+ new room" button — same chrome as a menu-field, square-ish to
+   read as an action affordance, with the + glyph centered. */
+.new-room-btn {
+  padding: 4px 10px;
+  font-weight: 700;
+}
+.new-room-btn .menu-field-label {
+  font-size: 16px;
+  line-height: 1;
+}
+
 .menu-field-item.is-active .menu-field-marker { color: var(--accent); }
 .menu-field-item.is-active:hover .menu-field-marker { color: #FFFFFF; }
 .menu-field-item.is-open .menu-field-text { font-weight: 600; }
@@ -635,24 +690,32 @@ body { min-height: 100vh; }
   user-select: none;
 }
 
-/* --- Leaf menu (the egghead identity + popup trigger) --- */
+/* --- Leaf — egghead identity, BeOS grey panel.
+   The gold tab gradient is reserved for actual window tabs;
+   the Deskbar's identity strip stays in panel chrome and lets
+   the wordmark do the heavy lifting (set in Bodoni Moda to match
+   egghead.computer). --- */
 
 .deskbar-leaf {
   display: flex;
   align-items: center;
-  height: 26px;
+  justify-content: center;
+  height: 30px;
   padding: 0 10px;
-  background: linear-gradient(to bottom, var(--titlebar-light) 0%, var(--titlebar) 100%);
-  border-bottom: 1px solid var(--frame-light);
-  font-family: var(--font-ui);
-  font-size: 13px;
-  font-weight: 700;
-  color: #000;
-  text-align: left;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-dk);
+  text-align: center;
+  box-shadow: inset 0 1px 0 var(--chrome-hi);
 }
 
-.deskbar-leaf-label { letter-spacing: 0.5px; }
+.deskbar-leaf-label {
+  font-family: 'Bodoni Moda', 'Bodoni 72', 'Didot', Georgia, serif;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--fg);
+  line-height: 1;
+}
 
 .deskbar-leaf-menu {
   position: absolute;
@@ -711,9 +774,22 @@ body { min-height: 100vh; }
   text-align: center;
   color: var(--fg);
   letter-spacing: 1px;
-  padding: 1px 0 3px;
-  border-bottom: 1px dotted var(--chrome-lo);
-  margin-bottom: 2px;
+  padding: 2px 0 0;
+}
+
+.tray-date {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  text-align: center;
+  color: var(--chrome-dk);
+  letter-spacing: 0.5px;
+  padding: 0 0 2px;
+}
+
+.tray-divider {
+  height: 1px;
+  background: var(--chrome-lo);
+  margin: 2px -8px 4px;
 }
 
 .tray-row {
@@ -777,8 +853,8 @@ body { min-height: 100vh; }
 .deskbar-entry:last-child { margin-bottom: 0; }
 
 .deskbar-entry-icon {
-  width: 14px;
-  height: 14px;
+  width: 17px;
+  height: 17px;
   flex-shrink: 0;
 }
 
@@ -976,30 +1052,11 @@ body { min-height: 100vh; }
 
 .toolbar-spacer { flex: 1; }
 
-/* Class filter dropdown */
-.class-filter-wrap { position: relative; }
-
+/* The class-filter dropdown shares menu-field-dropdown's chrome but
+   widens slightly and hosts checkbox rows + an All/None action bar. */
 .class-dropdown {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  z-index: 10;
-  width: 160px;
-  background: var(--chrome);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-hi),
-    inset -1px -1px 0 var(--chrome-dk),
-    2px 2px 0 rgba(0,0,0,0.2);
-  padding: 2px;
-}
-
-.class-dropdown-inner {
-  background: #FFFFFF;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi);
+  width: 200px;
+  padding: 0;
 }
 
 .dropdown-actions {
@@ -1163,38 +1220,50 @@ body { min-height: 100vh; }
   margin: 0 auto;
 }
 
-/* Properties block — collapsible groupbox */
+/* Properties block — collapsible groupbox.
+   Summary acts like a Haiku BButton-style disclosure header: a 16px
+   chevron in a sunken tag, the label in regular UI weight, and a
+   1px divider beneath that anchors it as a row of chrome. */
 .properties-block {
-  margin-bottom: 20px;
-  border-bottom: 1px solid var(--chrome);
+  margin-bottom: 12px;
 }
 
 .properties-summary {
   display: flex;
   align-items: center;
+  gap: 6px;
   cursor: pointer;
-  padding: 4px 0 8px;
+  padding: 4px 6px;
+  background: var(--chrome);
+  border: 1px solid var(--chrome-lo);
   font-family: var(--font-ui);
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 13px;
+  color: var(--fg);
   user-select: none;
   list-style: none;
 }
+
+.properties-summary:hover { background: var(--chrome-mid); }
 
 .properties-summary::-webkit-details-marker { display: none; }
 
 .properties-summary::before {
   content: "▸";
-  margin-right: 4px;
-  font-size: 11px;
-  transition: transform 0.1s ease;
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1;
 }
 
-details[open] > .properties-summary::before {
-  content: "▾";
-}
+details[open] > .properties-summary::before { content: "▾"; }
 
-.properties-summary-label { flex: 1; }
+.properties-summary-label {
+  flex: 1;
+  font-weight: 600;
+}
 
 .properties-summary .btn-copy {
   margin-left: auto;
@@ -1461,6 +1530,25 @@ details[open] > .properties-summary::before {
   font-weight: 600;
 }
 
+/* Inline markdown inside table cells — keep delimiters visible
+   (muted, mono) while applying the formatting. */
+.record-editor .cm-table .cm-md-syntax {
+  color: var(--syntax);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-style: normal;
+  font-size: 0.85em;
+}
+
+.record-editor .cm-table strong { font-weight: 700; }
+.record-editor .cm-table em { font-style: italic; }
+.record-editor .cm-table del { color: var(--muted); text-decoration: line-through; }
+.record-editor .cm-table .cm-code-inline {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  color: var(--fg);
+}
+
 /* Raw table editing — mono so pipe columns align */
 .record-editor .cm-line.cm-table-source {
   font-family: var(--font-mono);
@@ -1547,6 +1635,15 @@ details[open] > .properties-summary::before {
 
 .btn-chrome svg { display: inline-block; vertical-align: -2px; margin-right: 4px; }
 
+.btn-icon {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  vertical-align: -5px;
+  margin-right: 4px;
+  image-rendering: pixelated;
+}
+
 /* Win95 raised chrome button */
 .btn-chrome {
   background: var(--chrome);
@@ -1577,67 +1674,137 @@ details[open] > .properties-summary::before {
 }
 
 /* ================================================================
-   Chat sidebar
+   Chat — IRC-style nick-prefixed lines
+   Layout vertical:
+     [chat-header]      — Rooms ▾, #channel, agent toggle
+     [chat-roster]?     — collapsible agent list
+     [chat-transcript]  — flex:1 scrollable nick-line list
+     [chat-status]?     — inline notice
+     [paste-chips]?
+     [chat-completion]? — popover floating above the input
+     [chat-input-wrap]  — drag handle + ❯ prompt + textarea
    ================================================================ */
 
-.chat-sidebar {
-  width: 24%;
-  min-width: 200px;
-  max-width: 400px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition: width 0.15s ease, min-width 0.15s ease;
-  /* Sunken content well */
-  background: var(--chrome);
-}
-
-.chat-sidebar.collapsed {
-  width: 0;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.chat-inner {
+.chat-irc {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-width: 200px;
+  min-width: 240px;
+  position: relative;
 }
 
 .chat-header {
-  padding: 4px 8px;
-  background: transparent;
-  font-family: var(--font-ui);
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--chrome);
   border-bottom: 1px solid var(--chrome-lo);
+  font-family: var(--font-ui);
+  flex-shrink: 0;
 }
 
+.chat-channel {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+  padding: 0 4px;
+}
 
-.chat-title { font-weight: 700; font-size: 13px; color: var(--fg); }
-.chat-room-id {
+.roster-toggle .menu-field-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* --- Roster (collapsible agent list) ------------------------------- */
+
+.chat-roster {
+  background: #FAFAFA;
+  border-bottom: 1px solid var(--chrome-lo);
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  flex-shrink: 0;
+  max-height: 30%;
+  overflow-y: auto;
+}
+
+.roster-empty {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.roster-row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.roster-dot {
+  text-align: center;
   font-size: 11px;
   color: var(--muted);
-  font-family: var(--font-mono);
-  margin-left: auto;
-  margin-right: 8px;
-  user-select: text;
-  cursor: text;
 }
-.room-id { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
+
+.roster-dot.active { color: #008000; }
+.roster-dot.handoff {
+  color: #b8860b;
+  display: inline-block;
+  animation: roster-handoff-spin 1.4s linear infinite;
+}
+
+@keyframes roster-handoff-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.roster-name { font-weight: 600; }
+.roster-ctx {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.roster-bar {
+  grid-column: 2 / span 2;
+  height: 4px;
+  background: var(--chrome-mid);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi);
+}
+
+.roster-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+/* --- Transcript: chat bubbles ------------------------------------- */
 
 .chat-transcript {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 6px 8px;
+  padding: 8px 8px;
+  background: #FFFFFF;
   font-family: var(--font-ui);
   font-size: 13px;
-  background: #FFFFFF;
 }
 
-/* Chat bubbles */
 .bubble-row {
   display: flex;
   margin-bottom: 6px;
@@ -1694,7 +1861,9 @@ details[open] > .properties-summary::before {
 .bubble-body p { margin: 0 0 0.3em; }
 .bubble-body p:last-child { margin-bottom: 0; }
 
-/* Chat bubbles: NO isomorphic markdown. Sans font. Standard HTML rendering. */
+/* Chat bubbles render markdown without isomorphic syntax markers — chat
+   is readable prose, not source. Wikilinks keep [[…]] for the
+   addressability cue. */
 .bubble-body.markdown-body {
   font-family: var(--font-ui);
   font-size: 13px;
@@ -1712,7 +1881,6 @@ details[open] > .properties-summary::before {
   color: var(--fg);
 }
 
-/* Kill ALL isomorphic pseudo-elements inside bubbles */
 .bubble-body.markdown-body h1::before,
 .bubble-body.markdown-body h2::before,
 .bubble-body.markdown-body h3::before,
@@ -1732,41 +1900,46 @@ details[open] > .properties-summary::before {
   content: none;
 }
 
-/* Standard lists inside bubbles — no dash markers */
-.bubble-body.markdown-body ul { list-style-type: disc; }
+.bubble-body.markdown-body ul { list-style-type: disc; margin: 0 0 0.3em 1.3em; }
 
-/* Standard code inside bubbles */
 .bubble-body.markdown-body code {
   font-size: 12px;
-  background: rgba(0,0,0,0.06);
+  background: rgba(0, 0, 0, 0.06);
   padding: 1px 4px;
+  font-family: var(--font-mono);
 }
 
 .bubble-body.markdown-body pre {
   font-size: 12px;
   padding: 6px 8px;
-  background: rgba(0,0,0,0.04);
+  background: rgba(0, 0, 0, 0.04);
   box-shadow: none;
+  margin: 0.3em 0;
 }
 
-/* Keep wikilink and mention styling visible in chat */
-.bubble-body.markdown-body a.wikilink::before { content: "[["; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em; }
-.bubble-body.markdown-body a.wikilink::after { content: "]]"; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em; }
+.bubble-body.markdown-body a.wikilink::before {
+  content: "[["; color: var(--syntax);
+  font-family: var(--font-mono); font-size: 0.8em;
+}
+.bubble-body.markdown-body a.wikilink::after {
+  content: "]]"; color: var(--syntax);
+  font-family: var(--font-mono); font-size: 0.8em;
+}
 
-/* Action and system meta lines — not bubbles */
+/* Action and system meta lines — atmospheric italics, no bubble */
 .meta-line {
   display: flex;
   gap: 4px;
+  align-items: baseline;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: 12px;
   font-style: italic;
   padding: 2px 8px;
+  margin: 1px 0;
 }
 
-/* Action lines render as `/me`-style atmospheric italic — IRC convention.
-   Used by `/pass` flavor lines and other in-character actions. */
-.meta-line.action { font-style: italic; }
+.meta-line.action .action-nick { font-weight: 700; font-style: normal; margin-right: 4px; }
 
 /* Capability denial — amber guardrail, not red crash */
 .meta-line.denial {
@@ -1780,8 +1953,9 @@ details[open] > .properties-summary::before {
 .meta-line.denial .denial-line { display: block; margin-top: 2px; }
 .meta-line.denial .denial-line:first-of-type { margin-top: 4px; }
 
-.meta-sym { font-weight: 700; font-style: normal; flex-shrink: 0; }
+.meta-sym { font-weight: 700; font-style: normal; flex-shrink: 0; color: var(--muted); }
 .meta-text p { display: inline; margin: 0; }
+.meta-text { flex: 1; }
 
 /* Typing indicator bubble */
 .typing-bubble {
@@ -1797,124 +1971,26 @@ details[open] > .properties-summary::before {
   color: var(--muted);
 }
 
-/* Agent roster */
-.agent-roster {
+/* --- Status / paste chips ----------------------------------------- */
+
+.chat-status {
+  flex-shrink: 0;
   padding: 4px 8px;
   background: var(--chrome);
-  border-bottom: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 -1px 0 var(--chrome-hi);
-}
-
-.agent-card-wrap {
-  padding: 3px 0;
-  border-bottom: 1px solid var(--chrome-lo);
-}
-
-.agent-card-wrap:last-child { border-bottom: none; }
-
-.agent-card {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  border-top: 1px solid var(--chrome-lo);
   font-family: var(--font-ui);
   font-size: 12px;
+  color: var(--fg);
 }
 
-.agent-status-dot { font-size: 12px; color: var(--muted); flex-shrink: 0; }
-.agent-status-dot.active { color: #008000; }
-.agent-status-dot.handoff {
-  color: #b8860b;
-  display: inline-block;
-  animation: agent-handoff-spin 1.4s linear infinite;
-}
-.agent-card.handoff { opacity: 0.75; }
-.agent-status-label {
-  font-size: 10px;
-  color: #b8860b;
-  font-style: italic;
-  margin-left: 4px;
-}
-@keyframes agent-handoff-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-.agent-name { color: var(--fg); font-weight: 600; flex: 1; }
-.agent-ctx {
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-align: right;
-  white-space: nowrap;
-}
-
-.agent-bar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding-left: 18px;
-  padding-bottom: 2px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.agent-bar-track {
-  flex: 1;
-  height: 8px;
-  background: var(--chrome-mid);
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi);
-}
-
-.agent-bar-fill {
-  height: 100%;
-  background: #316AC5;
-}
-
-.agent-bar-label { flex-shrink: 0; }
-
-/* Chat dropdown (commands / mentions) */
-.chat-dropdown {
-  background: #FFFFFF;
-  margin: 0 4px;
-  max-height: 160px;
-  overflow-y: auto;
-  font-family: var(--font-ui);
-  font-size: 12px;
-  box-shadow:
-    inset 1px 1px 0 var(--chrome-lo),
-    inset -1px -1px 0 var(--chrome-hi),
-    inset 2px 2px 0 var(--chrome-dk),
-    inset -2px -2px 0 var(--chrome-mid);
-}
-
-.dropdown-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 3px 8px;
-  cursor: pointer;
-  gap: 8px;
-}
-
-.dropdown-item:hover, .dropdown-item.selected {
-  background: #316AC5;
-  color: #FFFFFF;
-}
-
-.dropdown-item.selected .dd-desc,
-.dropdown-item:hover .dd-desc { color: rgba(255,255,255,0.7); }
-
-.dd-name { font-weight: 600; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
-.dd-desc { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Paste chips */
 .paste-chips {
+  flex-shrink: 0;
   padding: 2px 4px;
   background: var(--chrome);
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  border-top: 1px solid var(--chrome-lo);
 }
 
 .paste-chip {
@@ -1931,18 +2007,67 @@ details[open] > .properties-summary::before {
 }
 
 .paste-icon { font-size: 14px; }
-.paste-head { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paste-head {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .paste-tail { color: var(--muted); font-style: italic; font-size: 11px; }
 
-.chat-status {
-  padding: 4px 8px;
-  color: var(--fg);
-  background: var(--chrome);
-  border-top: 1px solid var(--chrome-lo);
-  box-shadow: inset 0 1px 0 var(--chrome-hi);
-  font-size: 12px;
+/* --- Completion popover -------------------------------------------- */
+
+/* Floats above the input bar. Items use mousedown+preventDefault in
+   JS to avoid blurring the textarea. */
+.chat-completion {
+  flex-shrink: 0;
+  background: #FFFFFF;
+  margin: 0 4px;
+  max-height: 180px;
+  overflow-y: auto;
   font-family: var(--font-ui);
+  font-size: 12px;
+  border: 1px solid var(--chrome-dk);
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-hi),
+    inset -1px -1px 0 var(--chrome-lo),
+    0 -2px 6px rgba(0, 0, 0, 0.18);
 }
+
+.completion-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 8px;
+  cursor: pointer;
+  gap: 12px;
+}
+
+.completion-item:hover,
+.completion-item.selected {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+
+.completion-item:hover .completion-desc,
+.completion-item.selected .completion-desc { color: rgba(255, 255, 255, 0.75); }
+
+.completion-name {
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.completion-desc {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Input bar ---------------------------------------------------- */
 
 .chat-input-wrap {
   display: flex;
@@ -1957,7 +2082,8 @@ details[open] > .properties-summary::before {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #FFFFFF;
+  background: var(--chrome);
+  border-top: 1px solid var(--chrome-lo);
 }
 
 .chat-drag-handle::after {
@@ -1968,31 +2094,38 @@ details[open] > .properties-summary::before {
 }
 
 .chat-input {
+  display: flex;
+  align-items: stretch;
   padding: 0;
   background: #FFFFFF;
 }
 
+.chat-prompt {
+  flex-shrink: 0;
+  padding: 6px 4px 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--accent);
+  background: #FFFFFF;
+  user-select: none;
+  align-self: flex-start;
+  line-height: 1.4;
+}
+
 .chat-input textarea {
-  width: 100%;
-  padding: 6px 8px;
+  flex: 1;
+  padding: 6px 8px 6px 0;
   background: #FFFFFF;
   color: var(--fg);
-  /* Borderless — sits flush on the body. The window frame is the
-     only frame; the drag handle separator above and footer strip
-     below visually delimit this region. */
   border: none;
-  border-top: 1px solid var(--chrome-lo);
   font-family: var(--font-ui);
   font-size: 13px;
   outline: none;
   resize: none;
-  min-height: 36px;
+  min-height: 28px;
   overflow-y: auto;
   box-shadow: none;
-}
-
-.chat-input textarea:focus {
-  border-top-color: var(--accent);
+  line-height: 1.4;
 }
 
 .chat-input textarea:disabled { opacity: 0.4; }

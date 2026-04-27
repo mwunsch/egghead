@@ -137,6 +137,78 @@ function buildMdLinkDecos(state) {
 
 // --- Table widget ---
 
+// Inline markdown renderer for table cells. Mirrors the isomorphic
+// style of the rest of the editor / .markdown-body: the source
+// delimiters stay visible (muted, mono) and the inner text gets the
+// formatting. Patterns matched (in priority): wikilinks, inline code,
+// markdown links, strong (**), strike (~~), em (*).
+function renderInlineMd(text) {
+  const frag = document.createDocumentFragment();
+  if (!text) return frag;
+
+  const appendDelimited = (tag, klass, lDelim, inner, rDelim) => {
+    const el = document.createElement(tag);
+    if (klass) el.className = klass;
+    const left = document.createElement("span");
+    left.className = "cm-md-syntax";
+    left.textContent = lDelim;
+    const right = document.createElement("span");
+    right.className = "cm-md-syntax";
+    right.textContent = rDelim;
+    el.appendChild(left);
+    el.appendChild(document.createTextNode(inner));
+    el.appendChild(right);
+    frag.appendChild(el);
+  };
+
+  let pos = 0;
+  while (pos < text.length) {
+    const rest = text.slice(pos);
+    let m;
+
+    if ((m = rest.match(/^\[\[([^\]\n]+)\]\]/))) {
+      const a = document.createElement("a");
+      a.className = "cm-wikilink";
+      a.dataset.wikilink = m[1];
+      const left = document.createElement("span");
+      left.className = "cm-md-syntax";
+      left.textContent = "[[";
+      const right = document.createElement("span");
+      right.className = "cm-md-syntax";
+      right.textContent = "]]";
+      a.appendChild(left);
+      a.appendChild(document.createTextNode(m[1]));
+      a.appendChild(right);
+      frag.appendChild(a);
+      pos += m[0].length;
+      continue;
+    }
+    if ((m = rest.match(/^`([^`\n]+)`/))) {
+      appendDelimited("code", "cm-code-inline", "`", m[1], "`");
+      pos += m[0].length;
+      continue;
+    }
+    if ((m = rest.match(/^\*\*([^*\n]+)\*\*/))) {
+      appendDelimited("strong", null, "**", m[1], "**");
+      pos += m[0].length;
+      continue;
+    }
+    if ((m = rest.match(/^~~([^~\n]+)~~/))) {
+      appendDelimited("del", null, "~~", m[1], "~~");
+      pos += m[0].length;
+      continue;
+    }
+    if ((m = rest.match(/^\*([^*\n]+)\*/))) {
+      appendDelimited("em", null, "*", m[1], "*");
+      pos += m[0].length;
+      continue;
+    }
+    frag.appendChild(document.createTextNode(text[pos]));
+    pos += 1;
+  }
+  return frag;
+}
+
 function parseTable(text) {
   const lines = text.split("\n").filter((l) => l.trim());
   if (lines.length < 2) return null;
@@ -172,7 +244,7 @@ class TableWidget extends WidgetType {
     const headRow = document.createElement("tr");
     for (const cell of parsed.header) {
       const th = document.createElement("th");
-      th.textContent = cell;
+      th.appendChild(renderInlineMd(cell));
       headRow.appendChild(th);
     }
     thead.appendChild(headRow);
@@ -183,7 +255,7 @@ class TableWidget extends WidgetType {
       const tr = document.createElement("tr");
       for (const cell of row) {
         const td = document.createElement("td");
-        td.textContent = cell;
+        td.appendChild(renderInlineMd(cell));
         tr.appendChild(td);
       }
       tbody.appendChild(tr);

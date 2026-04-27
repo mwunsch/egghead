@@ -410,6 +410,63 @@ Hooks.Deskbar = {
   },
 };
 
+// New-chat-room button — prompts for a name and pushes through the
+// existing switch_chat_room handler, which validates + creates +
+// switches in one path.
+Hooks.NewRoomButton = {
+  mounted() {
+    this.el.addEventListener("click", () => {
+      const name = window.prompt("New room name (alphanumeric, dashes, underscores):");
+      if (name && name.trim()) {
+        this.pushEvent("switch_chat_room", { room: name.trim() });
+      }
+    });
+  },
+};
+
+// Live clock + date in the Deskbar tray. Mirrors BeOS's tray clock —
+// the one fixture that was always there and always trustworthy.
+//
+// morphdom rewrites the tray text on every LiveView re-render (any
+// button click triggers one), wiping the clock back to its template
+// placeholder. updated() re-ticks so the displayed time is always
+// current after a server round-trip.
+Hooks.Clock = {
+  mounted() {
+    this._tick = () => {
+      const now = new Date();
+      const clock = this.el.querySelector("[data-tray-clock]");
+      const date = this.el.querySelector("[data-tray-date]");
+      if (clock) {
+        const h = now.getHours();
+        const m = String(now.getMinutes()).padStart(2, "0");
+        const period = h >= 12 ? "PM" : "AM";
+        const h12 = h % 12 === 0 ? 12 : h % 12;
+        clock.textContent = `${h12}:${m} ${period}`;
+      }
+      if (date) {
+        const opts = { weekday: "short", month: "short", day: "numeric" };
+        date.textContent = now.toLocaleDateString(undefined, opts);
+      }
+    };
+    this._tick();
+    // Resync on the minute boundary so the displayed time matches the
+    // wall clock even if the user leaves the tab idle.
+    const msToNextMinute = 60000 - (Date.now() % 60000);
+    this._timeout = setTimeout(() => {
+      this._tick();
+      this._interval = setInterval(this._tick, 60000);
+    }, msToNextMinute);
+  },
+  updated() {
+    if (this._tick) this._tick();
+  },
+  destroyed() {
+    if (this._timeout) clearTimeout(this._timeout);
+    if (this._interval) clearInterval(this._interval);
+  },
+};
+
 // ============================================================
 
 // Auto-scroll transcript to bottom on new messages (unless user scrolled up)
@@ -438,65 +495,75 @@ Hooks.ScrollBottom = {
   },
 };
 
-// Chat textarea: keystroke handling
+// Slash commands that take a second argument from a known set.
+// Mirrors TUI's @action_triggers in lib/egghead/tui/chat/update.ex.
+const ACTION_COMMANDS = {
+  mute: "agent",
+  unmute: "agent",
+  handoff: "agent",
+  invite: "agent",
+  kick: "agent",
+  whois: "agent",
+  join: "room",
+};
+
+// ============================================================
+// Chat input — TUI-parity completion, fully client-side.
+//
+// Server pushes the candidate corpus once (and on changes):
+//   { commands, agents, broadcasts, records }
+//
+// Typing into the textarea triggers a local match against that
+// corpus. A floating popover element renders the candidates next
+// to the textarea. Arrow keys move the selection, Tab accepts,
+// Escape dismisses, Enter sends. Plain typing is NEVER touched —
+// no preventDefault on letters, digits, /, @, [[, spaces.
+//
+// Acceptance is also local: the textarea's value is mutated in
+// place; the server never sees intermediate state. Only the final
+// "send_chat" event ships the trimmed message to the room.
+// ============================================================
 Hooks.ChatInput = {
   mounted() {
-    // Server can push value changes (completions, clears)
-    this.handleEvent("update_input", ({ value }) => {
-      this.el.value = value;
+    this._corpus = { commands: [], agents: [], broadcasts: [], records: [], rooms: [] };
+    this._popover = null;       // {kind, candidates, selected, replaceFrom}
+    this._popoverEl = null;     // mounted DOM element
+    this._lastValue = "";
+
+    this.handleEvent("chat_corpus", (data) => {
+      if (data.commands) this._corpus.commands = data.commands;
+      if (data.agents) this._corpus.agents = data.agents;
+      if (data.broadcasts) this._corpus.broadcasts = data.broadcasts;
+      if (data.records) this._corpus.records = data.records;
+      if (data.rooms) this._corpus.rooms = data.rooms;
     });
 
-    this.el.addEventListener("keydown", (e) => {
-      const hasDropdown = !!document.querySelector(".chat-dropdown");
-
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        if (hasDropdown) {
-          this.pushEvent("chat_tab_complete", {});
-        } else {
-          const value = this.el.value.trim();
-          if (value) {
-            this.pushEvent("send_chat", { message: value });
-            this.el.value = "";
-          }
-        }
-        return;
-      }
-
-      if (e.key === "ArrowUp" && hasDropdown) {
-        e.preventDefault();
-        this.pushEvent("chat_dropdown_up", {});
-      } else if (e.key === "ArrowDown" && hasDropdown) {
-        e.preventDefault();
-        this.pushEvent("chat_dropdown_down", {});
-      }
-
-      if (e.key === "Tab") {
-        e.preventDefault();
-        this.pushEvent("chat_tab_complete", {});
-      }
-
-      if (e.key === "Escape") {
-        this.pushEvent("chat_escape", {});
-      }
+    // /copy — server pushes the formatted transcript; we put it on
+    // the system clipboard (TUI uses Egghead.OpenTUI.Clipboard.copy).
+    this.handleEvent("chat_copy", ({ text }) => {
+      if (typeof text !== "string" || !text) return;
+      try {
+        navigator.clipboard.writeText(text);
+      } catch (e) { /* clipboard unavailable — no-op */ }
     });
 
-    this.el.addEventListener("input", () => {
-
-      // Only push to server when a completion trigger is present.
-      const v = this.el.value;
-      if (
-        v.startsWith("/") ||
-        /(^|\s)@/.test(v) ||
-        v.includes("[[")
-      ) {
-        this.pushEvent("chat_input_change", { value: v });
-      } else if (this._hadDropdown) {
-        // Clear the dropdown if trigger chars were deleted
-        this.pushEvent("chat_input_change", { value: v });
-      }
-      this._hadDropdown = !!document.querySelector(".chat-dropdown");
+    this.el.addEventListener("keydown", (e) => this._onKeydown(e));
+    this.el.addEventListener("input", () => this._refresh());
+    this.el.addEventListener("blur", (e) => {
+      // Don't dismiss when focus moves to a popover item (handled by
+      // the document-level mousedown guard below).
+      if (e.relatedTarget && e.relatedTarget.closest(".completion-item")) return;
+      // Brief delay so a click on a popover item still fires.
+      setTimeout(() => this._dismiss(), 120);
     });
+
+    // Keep textarea focused when clicking a completion item.
+    if (!window._chatPopoverGuardInstalled) {
+      window._chatPopoverGuardInstalled = true;
+      document.addEventListener("mousedown", (e) => {
+        if (e.target.closest(".completion-item")) e.preventDefault();
+      });
+    }
 
     this.el.addEventListener("paste", (e) => {
       const text = e.clipboardData.getData("text/plain");
@@ -505,6 +572,291 @@ Hooks.ChatInput = {
         e.preventDefault();
         this.pushEvent("chat_paste", { text });
       }
+    });
+  },
+
+  destroyed() {
+    this._dismiss();
+  },
+
+  _onKeydown(e) {
+    // Enter (no shift) — ALWAYS sends. Never hijacked by completion.
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const value = this.el.value.trim();
+      if (value) {
+        this.pushEvent("send_chat", { message: value });
+        this.el.value = "";
+        this._dismiss();
+      }
+      return;
+    }
+
+    if (this._popover) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        this._move(-1);
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        this._move(1);
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        this._accept();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this._dismiss();
+        return;
+      }
+    } else if (e.key === "Tab") {
+      // No popover — swallow Tab so it doesn't move focus to the next
+      // window. Don't insert a literal tab character either.
+      e.preventDefault();
+      return;
+    }
+
+    // Everything else falls through to the textarea normally.
+  },
+
+  // Inspect text up to the cursor and decide whether to show a popover.
+  _refresh() {
+    const v = this.el.value;
+    this._lastValue = v;
+    const cursor = this.el.selectionStart;
+    const before = v.slice(0, cursor);
+
+    // /<action> <arg> — second-argument picker. Mirrors TUI behaviour:
+    // /mute, /unmute, /handoff, /invite, /kick, /whois → agent picker;
+    // /join → room picker. Trigger as soon as a space follows the
+    // command, so `/mute ` (trailing space) immediately opens an
+    // empty-prefix picker showing every candidate.
+    let m = before.match(/^\/([a-zA-Z]+) ([a-zA-Z0-9\/_\-]*)$/);
+    if (m) {
+      const action = m[1].toLowerCase();
+      const prefix = m[2].toLowerCase();
+      const argType = ACTION_COMMANDS[action];
+      if (argType === "agent") {
+        const candidates = this._corpus.agents
+          .filter((a) => {
+            const id = (a.id || "").toLowerCase();
+            const base = id.split("/").pop();
+            return id.startsWith(prefix) || base.startsWith(prefix);
+          })
+          .slice(0, 8);
+        if (candidates.length) {
+          this._show({
+            kind: "action_agent",
+            candidates,
+            selected: 0,
+            replaceFrom: cursor - m[2].length,
+            replaceTo: cursor,
+          });
+          return;
+        }
+      } else if (argType === "room") {
+        const candidates = this._corpus.rooms
+          .filter((r) => (r.id || "").toLowerCase().startsWith(prefix))
+          .slice(0, 8);
+        if (candidates.length) {
+          this._show({
+            kind: "action_room",
+            candidates,
+            selected: 0,
+            replaceFrom: cursor - m[2].length,
+            replaceTo: cursor,
+          });
+          return;
+        }
+      }
+    }
+
+    // /command — at the very start, no whitespace, no newline yet.
+    m = before.match(/^\/([a-zA-Z]*)$/);
+    if (m) {
+      const prefix = m[1].toLowerCase();
+      const candidates = this._corpus.commands.filter((c) =>
+        c.name.startsWith(prefix)
+      );
+      if (candidates.length) {
+        this._show({
+          kind: "command",
+          candidates,
+          selected: 0,
+          replaceFrom: 0,
+          replaceTo: cursor,
+        });
+        return;
+      }
+    }
+
+    // @mention — after start-of-input or whitespace.
+    m = before.match(/(^|\s)@([a-zA-Z0-9\/_\-]*)$/);
+    if (m) {
+      const prefix = m[2].toLowerCase();
+      const atIdx = cursor - m[2].length - 1;
+      const broadcasts = this._corpus.broadcasts.filter((b) =>
+        b.id.startsWith(prefix)
+      );
+      const agents = this._corpus.agents.filter((a) => {
+        const base = a.id.split("/").pop().toLowerCase();
+        return base.startsWith(prefix);
+      });
+      const candidates = broadcasts.concat(agents).slice(0, 8);
+      if (candidates.length) {
+        this._show({
+          kind: "agent",
+          candidates,
+          selected: 0,
+          replaceFrom: atIdx,
+          replaceTo: cursor,
+        });
+        return;
+      }
+    }
+
+    // [[wikilink — anywhere, looks back to the most recent unmatched [[.
+    m = before.match(/\[\[([a-zA-Z0-9\/_\-]*)$/);
+    if (m) {
+      const prefix = m[1].toLowerCase();
+      const startIdx = cursor - m[1].length - 2;
+      const candidates = this._corpus.records
+        .filter((r) => (r.id || "").toLowerCase().startsWith(prefix))
+        .slice(0, 8);
+      if (candidates.length) {
+        this._show({
+          kind: "record",
+          candidates,
+          selected: 0,
+          replaceFrom: startIdx,
+          replaceTo: cursor,
+        });
+        return;
+      }
+    }
+
+    this._dismiss();
+  },
+
+  _show(state) {
+    this._popover = state;
+    this._render();
+  },
+
+  _move(dir) {
+    if (!this._popover) return;
+    const n = this._popover.candidates.length;
+    this._popover.selected = (this._popover.selected + dir + n) % n;
+    this._render();
+  },
+
+  _accept() {
+    if (!this._popover) return;
+    const c = this._popover.candidates[this._popover.selected];
+    let replacement;
+    switch (this._popover.kind) {
+      case "command":
+        replacement = "/" + c.name + " ";
+        break;
+      case "agent":
+        replacement = "@" + (c.id || c.name) + " ";
+        break;
+      case "record":
+        replacement = "[[" + c.id + "]] ";
+        break;
+      case "action_agent":
+      case "action_room":
+        // Bare id (no @, no [[]]) — second-argument slot. Trailing
+        // space lets the user keep typing or hit Enter to dispatch.
+        replacement = c.id + " ";
+        break;
+    }
+    const v = this.el.value;
+    const head = v.slice(0, this._popover.replaceFrom);
+    const tail = v.slice(this._popover.replaceTo);
+    const next = head + replacement + tail;
+    this.el.value = next;
+    const caret = head.length + replacement.length;
+    this.el.setSelectionRange(caret, caret);
+    this.el.focus();
+    this._dismiss();
+    // Re-check in case the new caret position triggers another popover
+    // (rare — typically the trailing space dismisses).
+    this._refresh();
+  },
+
+  _dismiss() {
+    this._popover = null;
+    if (this._popoverEl) {
+      this._popoverEl.remove();
+      this._popoverEl = null;
+    }
+  },
+
+  _render() {
+    if (!this._popoverEl) {
+      const el = document.createElement("div");
+      el.className = "chat-completion";
+      el.id = "chat-completion-popover";
+      // Insert just before the input wrap so it lives directly above
+      // the textarea inside the chat window's vertical stack.
+      const wrap = this.el.closest(".chat-irc")?.querySelector(".chat-input-wrap");
+      if (wrap && wrap.parentNode) {
+        wrap.parentNode.insertBefore(el, wrap);
+      } else {
+        document.body.appendChild(el);
+      }
+      this._popoverEl = el;
+    }
+
+    const items = this._popover.candidates.map((c, idx) => {
+      let nameStr, descStr;
+      switch (this._popover.kind) {
+        case "command":
+          nameStr = "/" + c.name;
+          descStr = c.description || "";
+          break;
+        case "agent":
+          nameStr = "@" + (c.id || c.name);
+          descStr = c.broadcast ? c.label || "" : c.name || "";
+          break;
+        case "record":
+          nameStr = "[[" + c.id + "]]";
+          descStr = c.title || "";
+          break;
+        case "action_agent":
+          nameStr = c.id;
+          descStr = c.name || "";
+          break;
+        case "action_room":
+          nameStr = c.id;
+          descStr = "";
+          break;
+      }
+      return { idx, nameStr, descStr, selected: idx === this._popover.selected };
+    });
+
+    this._popoverEl.innerHTML = "";
+    items.forEach(({ idx, nameStr, descStr, selected }) => {
+      const item = document.createElement("div");
+      item.className = "completion-item" + (selected ? " selected" : "");
+      const name = document.createElement("span");
+      name.className = "completion-name";
+      name.textContent = nameStr;
+      const desc = document.createElement("span");
+      desc.className = "completion-desc";
+      desc.textContent = descStr;
+      item.appendChild(name);
+      item.appendChild(desc);
+      item.addEventListener("click", () => {
+        this._popover.selected = idx;
+        this._accept();
+      });
+      this._popoverEl.appendChild(item);
     });
   },
 };
@@ -562,6 +914,29 @@ Hooks.CopyMarkdown = {
         });
       }
     });
+  },
+};
+
+// Persists the open/closed state of a <details> across record selections.
+// Storage key: data-disclosure-key (or "default").
+Hooks.Disclosure = {
+  mounted() {
+    const key = "egghead.disclosure." + (this.el.dataset.disclosureKey || "default");
+    const saved = localStorage.getItem(key);
+    if (saved === "open") this.el.open = true;
+    else if (saved === "closed") this.el.open = false;
+    this.el.addEventListener("toggle", () => {
+      try { localStorage.setItem(key, this.el.open ? "open" : "closed"); } catch {}
+    });
+  },
+  updated() {
+    // Re-apply the persisted state after server re-renders (record switch
+    // remounts the inner content but the <details> attribute resets to
+    // its template default — which is `open`).
+    const key = "egghead.disclosure." + (this.el.dataset.disclosureKey || "default");
+    const saved = localStorage.getItem(key);
+    if (saved === "closed" && this.el.open) this.el.open = false;
+    if (saved === "open" && !this.el.open) this.el.open = true;
   },
 };
 

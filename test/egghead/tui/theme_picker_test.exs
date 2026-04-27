@@ -13,7 +13,12 @@ defmodule Egghead.TUI.ThemePickerTest do
     prior_env = System.get_env("EGGHEAD_CONFIG")
 
     # Isolate to a temp config dir
-    temp_dir = Path.join(System.tmp_dir!(), "egghead-theme-picker-test-#{System.unique_integer([:positive])}")
+    temp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "egghead-theme-picker-test-#{System.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(temp_dir)
     System.put_env("EGGHEAD_CONFIG", temp_dir)
 

@@ -22,10 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `file_system` shells out to inotifywait on Linux. The Ubuntu
-      # GH runner doesn't include it by default.
-      - name: Install inotify-tools
-        run: sudo apt-get update && sudo apt-get install -y inotify-tools
+      # Linux runtime deps:
+      #  - inotify-tools: file_system shells out to inotifywait
+      #  - bubblewrap:    Egghead.Sandbox uses bwrap to fence subprocesses
+      #                   (Sandbox + ProcEval/ProcExec negative tests assert
+      #                   the fence holds, which can't be validated when
+      #                   bwrap is missing — Sandbox falls through to
+      #                   "running unsandboxed" and the escapes succeed).
+      - name: Install runtime deps
+        run: sudo apt-get update && sudo apt-get install -y inotify-tools bubblewrap
 
       - uses: erlef/setup-beam@v1
         with:

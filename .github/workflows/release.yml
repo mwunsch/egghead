@@ -12,8 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install inotify-tools
-        run: sudo apt-get update && sudo apt-get install -y inotify-tools
+      - name: Install runtime deps
+        run: sudo apt-get update && sudo apt-get install -y inotify-tools bubblewrap
       # Pin OTP to an exact patch. The Burrito CDN
       # (beam-machine-universal.b-cdn.net) trails official OTP releases
       # by a few days/weeks, so floating "28" can land on a patch the

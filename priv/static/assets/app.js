@@ -199,9 +199,16 @@ Hooks.Window = {
     // default position before localStorage is read.
     this.el.dataset.windowReady = "true";
 
-    // The anchor focuses itself on mount if no other window is focused —
-    // so first load lands with the Record window in focus.
-    if (this._role === "anchor" && !WindowManager._focusedId) {
+    // Auto-raise on mount:
+    //   - anchor (load-bearing) when nothing else is focused, so first
+    //     load lands with the Record window in focus.
+    //   - ephemeral (transient modals like the paste preview) every
+    //     time, so they always pop above persisted-geom panels whose
+    //     z may have crept up past the modal's stored z.
+    if (
+      (this._role === "anchor" && !WindowManager._focusedId) ||
+      this._role === "ephemeral"
+    ) {
       this.raise();
     }
 
@@ -217,7 +224,14 @@ Hooks.Window = {
     const close = this.el.querySelector("[data-window-close]");
     if (close) {
       close.addEventListener("click", (e) => {
-        e.stopPropagation();
+        // For server-managed windows (data-server-close="1") the
+        // LiveView owns the lifecycle via phx-click — must let the
+        // event bubble to Phoenix's document-level delegation.
+        // For client-only windows we still suppress propagation so
+        // the desktop's mousedown-to-raise doesn't fire.
+        if (this.el.dataset.serverClose !== "1") {
+          e.stopPropagation();
+        }
         this.close();
       });
     }
@@ -581,10 +595,13 @@ Hooks.ChatInput = {
 
   _onKeydown(e) {
     // Enter (no shift) — ALWAYS sends. Never hijacked by completion.
+    // Also sends if the textarea is empty but paste chips are
+    // attached, so a paste-only message can ship.
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      const value = this.el.value.trim();
-      if (value) {
+      const value = this.el.value;
+      const hasChips = !!this.el.closest(".chat-irc")?.querySelector(".paste-chip");
+      if (value.trim() || hasChips) {
         this.pushEvent("send_chat", { message: value });
         this.el.value = "";
         this._dismiss();

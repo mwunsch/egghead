@@ -26,6 +26,7 @@
      do BeOS's tint_color() function inline. */
   --titlebar:        #FFCB00; /* B_WINDOW_TAB_COLOR */
   --titlebar-light:  #FFF5CE; /* tint(0.1925) — top of focused gradient */
+  --titlebar-hover:  #FFD326; /* tint(kHoverTintFactor=0.85) — close-btn hover */
   --titlebar-darken1: #DAAD00; /* tint(DARKEN_1=1.147) — pressed start */
   --titlebar-darken2: #B48F00; /* tint(DARKEN_2=1.295) — button outline */
 
@@ -333,7 +334,11 @@ body { min-height: 100vh; }
   box-sizing: border-box;
 }
 .window-close:hover {
-  background: linear-gradient(135deg, #FFFFFF 0%, var(--titlebar-light) 100%);
+  /* Haiku BControlLook applies kHoverTintFactor (0.85) to the
+     button color — a subtle ~15% lift, not a bleach to off-white.
+     Using --titlebar-light (tint 0.1925) was leaning on the tab
+     gradient stop, which made the button vanish on hover. */
+  background: linear-gradient(135deg, #FFFFFF 0%, var(--titlebar-hover) 100%);
 }
 .window-close:active {
   /* Pressed state — gradient inverts: DARKEN_1 → BUTTON_LIGHT */
@@ -1985,28 +1990,49 @@ details[open] > .properties-summary::before { content: "▾"; }
 
 .paste-chips {
   flex-shrink: 0;
-  padding: 2px 4px;
+  padding: 4px 6px;
   background: var(--chrome);
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
   border-top: 1px solid var(--chrome-lo);
 }
 
-.paste-chip {
+/* Wrapper holds the clickable chip and a small × delete button as
+   siblings, so the chip preview opens via the main button while the
+   ×  removes the paste outright. */
+.paste-chip-wrap {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  font-family: var(--font-ui);
-  font-size: 12px;
+  align-items: stretch;
   background: var(--chrome-mid);
   box-shadow:
     inset 1px 1px 0 var(--chrome-hi),
     inset -1px -1px 0 var(--chrome-lo);
 }
 
-.paste-icon { font-size: 14px; }
+.paste-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.paste-chip:hover { background: rgba(49, 106, 197, 0.10); }
+
+.paste-icon {
+  width: 18px;
+  height: 18px;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+}
+
 .paste-head {
   max-width: 200px;
   overflow: hidden;
@@ -2014,6 +2040,50 @@ details[open] > .properties-summary::before { content: "▾"; }
   white-space: nowrap;
 }
 .paste-tail { color: var(--muted); font-style: italic; font-size: 11px; }
+
+.paste-chip-close {
+  width: 20px;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--chrome-lo);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.paste-chip-close:hover {
+  background: var(--danger);
+  color: #FFFFFF;
+}
+
+/* Paste modal — full BeOS window chrome (provided by .window), the
+   body is a scrollable <pre> so long pastes don't blow the layout. */
+.paste-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  background: #FFFFFF;
+}
+
+.paste-content {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.paste-modal-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  font-size: 11px;
+  margin-left: 4px;
+}
 
 /* --- Completion popover -------------------------------------------- */
 

@@ -26,6 +26,15 @@ defmodule Egghead.Web.Components.Window do
   attr :default_z, :integer, default: 1
   attr :open, :boolean, default: true
   attr :class, :string, default: nil
+
+  attr :close_event, :string,
+    default: nil,
+    doc: """
+    Server-side phx-click event fired when the close button is clicked.
+    When set, the JS hook short-circuits its own close() (via
+    data-server-close) and lets the LiveView own the lifecycle.
+    """
+
   slot :inner_block, required: true
   slot :footer
 
@@ -43,6 +52,7 @@ defmodule Egghead.Web.Components.Window do
       data-default-h={@default_h}
       data-default-z={@default_z}
       data-default-open={to_string(@open)}
+      data-server-close={if @close_event, do: "1", else: nil}
       hidden={!@open}
     >
       <header class="window-tab" data-window-drag>
@@ -51,6 +61,7 @@ defmodule Egghead.Web.Components.Window do
           type="button"
           class="window-close"
           data-window-close
+          phx-click={@close_event}
           aria-label="Close window"
         >
           ×

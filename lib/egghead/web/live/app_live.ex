@@ -76,6 +76,7 @@ defmodule Egghead.Web.AppLive do
         chat_input: "",
         rooms_menu_open: false,
         paste_chips: [],
+        active_paste_chip: nil,
         agents: [],
         show_agents: false,
         anim_frame: 0
@@ -134,7 +135,8 @@ defmodule Egghead.Web.AppLive do
             active_streams: %{},
             chat_status: nil,
             chat_input: "",
-            paste_chips: []
+            paste_chips: [],
+            active_paste_chip: nil
           )
           |> hydrate_chat()
       end
@@ -239,24 +241,29 @@ defmodule Egghead.Web.AppLive do
   end
 
   def handle_event("send_chat", %{"message" => message}, socket) do
-    # Expand any paste chips back to full text
-    message =
-      Enum.reduce(socket.assigns.paste_chips, message, fn chip, msg ->
-        String.replace(msg, chip.placeholder, chip.full_text)
-      end)
+    # Reassemble: typed text first, then each pasted chip's full content
+    # in the order the user pasted them. The chip is the source of
+    # truth for the paste — there's no placeholder string to substitute.
+    chips = socket.assigns.paste_chips
+    typed = String.trim_trailing(message)
+
+    full_message =
+      [typed | Enum.map(chips, & &1.full_text)]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
       |> String.trim()
 
-    socket = assign(socket, chat_input: "", paste_chips: [])
+    socket = assign(socket, chat_input: "", paste_chips: [], active_paste_chip: nil)
 
     cond do
-      message == "" ->
+      full_message == "" ->
         {:noreply, socket}
 
-      String.starts_with?(message, "/") ->
-        {:noreply, dispatch_slash_command(message, socket)}
+      String.starts_with?(full_message, "/") ->
+        {:noreply, dispatch_slash_command(full_message, socket)}
 
       socket.assigns.room_id ->
-        Egghead.chat(socket.assigns.room_id, message)
+        Egghead.chat(socket.assigns.room_id, full_message)
         {:noreply, socket}
 
       true ->
@@ -267,9 +274,21 @@ defmodule Egghead.Web.AppLive do
   def handle_event("chat_paste", %{"text" => text}, socket) do
     chip = build_paste_chip(text, socket.assigns.paste_chips)
     chips = socket.assigns.paste_chips ++ [chip]
+    {:noreply, assign(socket, paste_chips: chips)}
+  end
 
-    {:noreply,
-     assign(socket, paste_chips: chips, chat_input: socket.assigns.chat_input <> chip.placeholder)}
+  def handle_event("open_paste_modal", %{"id" => id}, socket) do
+    {:noreply, assign(socket, active_paste_chip: String.to_integer(id))}
+  end
+
+  def handle_event("close_paste_modal", _, socket) do
+    {:noreply, assign(socket, active_paste_chip: nil)}
+  end
+
+  def handle_event("remove_paste_chip", %{"id" => id}, socket) do
+    chip_id = String.to_integer(id)
+    chips = Enum.reject(socket.assigns.paste_chips, &(&1.id == chip_id))
+    {:noreply, assign(socket, paste_chips: chips, active_paste_chip: nil)}
   end
 
   def handle_event("toggle_agents", _, socket) do
@@ -677,7 +696,8 @@ defmodule Egghead.Web.AppLive do
         active_streams: %{},
         chat_status: nil,
         chat_input: "",
-        paste_chips: []
+        paste_chips: [],
+        active_paste_chip: nil
       )
       |> hydrate_chat()
     end
@@ -1414,7 +1434,7 @@ defmodule Egghead.Web.AppLive do
   # --- Paste chips ---
 
   defp build_paste_chip(text, existing) do
-    id = length(existing) + 1
+    id = next_chip_id(existing)
     lines = text |> String.split("\n") |> length()
 
     first_line =
@@ -1427,16 +1447,19 @@ defmodule Egghead.Web.AppLive do
         first_line
       end
 
-    extra = lines - 1
-    placeholder = "\u{1F4CB}[paste-#{id}]"
-
     %{
       id: id,
       head: head,
-      extra_lines: extra,
-      full_text: text,
-      placeholder: placeholder
+      extra_lines: lines - 1,
+      char_count: String.length(text),
+      full_text: text
     }
+  end
+
+  defp next_chip_id([]), do: 1
+
+  defp next_chip_id(existing) do
+    existing |> Enum.map(& &1.id) |> Enum.max() |> Kernel.+(1)
   end
 
   # --- Transcript rendering helpers ---
@@ -2289,14 +2312,35 @@ defmodule Egghead.Web.AppLive do
 
             <div :if={@chat_status} class="chat-status">{@chat_status}</div>
 
-            <%!-- Paste chip display --%>
+            <%!-- Paste chips. Click the chip to open a BeOS-window
+                 preview with the full content. The × removes the chip
+                 outright. The chip's content is appended to the
+                 outgoing message on send (server-side reassembly). --%>
             <div :if={@paste_chips != []} class="paste-chips">
-              <div :for={chip <- @paste_chips} class="paste-chip">
-                <span class="paste-icon">📋</span>
-                <span class="paste-head">{chip.head}</span>
-                <span :if={chip.extra_lines > 0} class="paste-tail">
-                  +{chip.extra_lines} lines
-                </span>
+              <div :for={chip <- @paste_chips} class="paste-chip-wrap">
+                <button
+                  type="button"
+                  class="paste-chip"
+                  phx-click="open_paste_modal"
+                  phx-value-id={chip.id}
+                  title="Click to view paste contents"
+                >
+                  <img src="/assets/icon-clipboard.png" alt="" class="paste-icon" />
+                  <span class="paste-head">{chip.head}</span>
+                  <span :if={chip.extra_lines > 0} class="paste-tail">
+                    +{chip.extra_lines} lines
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="paste-chip-close"
+                  phx-click="remove_paste_chip"
+                  phx-value-id={chip.id}
+                  aria-label="Remove paste"
+                  title="Remove paste"
+                >
+                  ×
+                </button>
               </div>
             </div>
 
@@ -2329,6 +2373,44 @@ defmodule Egghead.Web.AppLive do
               </form>
             </div>
           </div>
+        </.window>
+
+        <%!-- Paste preview window — a real BeOS-flavored window that
+             floats over everything when a chip is clicked. Server
+             owns its lifecycle via close_event. --%>
+        <% active_chip =
+          if @active_paste_chip,
+            do: Enum.find(@paste_chips, &(&1.id == @active_paste_chip)),
+            else: nil %>
+        <.window
+          :if={active_chip}
+          id="paste-modal"
+          title={"Paste #{active_chip.id}"}
+          subtitle={"#{active_chip.char_count} chars · #{active_chip.extra_lines + 1} lines"}
+          role={:ephemeral}
+          default_x={300}
+          default_y={120}
+          default_w={560}
+          default_h={420}
+          default_z={50}
+          open={true}
+          class="window-paste-modal"
+          close_event="close_paste_modal"
+        >
+          <div class="paste-modal-body">
+            <pre class="paste-content">{active_chip.full_text}</pre>
+          </div>
+          <:footer>
+            <button
+              type="button"
+              class="btn-chrome paste-modal-remove"
+              phx-click="remove_paste_chip"
+              phx-value-id={active_chip.id}
+              title="Discard this paste"
+            >
+              Remove paste
+            </button>
+          </:footer>
         </.window>
       </div>
     </div>

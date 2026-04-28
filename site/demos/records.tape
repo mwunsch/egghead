@@ -1,10 +1,9 @@
 # §1 — Records mode: Notational Velocity for your second brain
 #
-# Renders to site/static/assets/demos/records.{mp4,gif}
+# Renders to site/static/assets/demos/records.mp4
 # Assumes a curated demo store — see site/demos/README.md
 
 Output ../static/assets/demos/records.mp4
-Output ../static/assets/demos/records.gif
 
 Set Shell "zsh"
 Set FontSize 16

@@ -33,7 +33,7 @@
       <video class="feature__image" loop muted playsinline preload="auto" aria-label="Demo: TUI records mode">
         <source src="{{ "assets/demos/records.mp4" | relURL }}" type="video/mp4">
       </video>
-      <figcaption class="feature__caption">Records mode &mdash; Notational Velocity for your second brain.</figcaption>
+      <figcaption class="feature__caption">Records &mdash; navigate your Second Brain in a familiar terminal interface.</figcaption>
     </figure>
 
     <div class="feature__body">
@@ -90,7 +90,7 @@
       <video class="feature__image" loop muted playsinline preload="auto" aria-label="Demo: TUI chat mode">
         <source src="{{ "assets/demos/chat.mp4" | relURL }}" type="video/mp4">
       </video>
-      <figcaption class="feature__caption">Chat mode &mdash; shared transcript, nick-prefixed, <code>/pass</code> on empty.</figcaption>
+      <figcaption class="feature__caption">Chat &mdash; your agents, together.</figcaption>
     </figure>
   </section>
 
@@ -134,8 +134,10 @@
   {{/* ───────────── § 4 — N BRAINS IS BETTER THAN N-1 ───────────── */}}
   <section class="feature" aria-labelledby="head-consult">
     <figure class="feature__figure">
-      <div class="feature__image feature__image--placeholder" role="img" aria-label="Screenshot forthcoming: web interface"></div>
-      <figcaption class="feature__caption">The web view &mdash; same records, same rooms, rendered in a browser.</figcaption>
+      <video class="feature__image" loop muted playsinline preload="auto" aria-label="Demo: web interface">
+        <source src="{{ "assets/demos/web.mp4" | relURL }}" type="video/mp4">
+      </video>
+      <figcaption class="feature__caption">Web &mdash; your records and rooms in a windowed interface.</figcaption>
     </figure>
 
     <div class="feature__body">
@@ -165,12 +167,41 @@
     </div>
   </section>
 
-  {{/* ───────────── § 5 — FURTHER READING ───────────── */}}
+  {{/* ───────────── § 5 — LETTERS OF MARQUE ───────────── */}}
+  <section class="feature feature--inverted" aria-labelledby="head-marque">
+    <div class="feature__body">
+      <h2 id="head-marque" class="section-head">
+        <span class="section-head__num">§ 5</span>
+        <span class="section-head__text">Letters of Marque</span>
+      </h2>
+
+      <p>
+        <img class="decoration decoration--tengu" src="{{ "assets/img/tengu-mask.png" | relURL }}" alt="Japanese tengu mask, red-faced with a long nose" width="912" height="1147" decoding="async" loading="lazy">
+        <span class="dropcap">A</span><span class="dropcap__follow">gents act on your behalf</span>.
+        Sometimes that means searching and updating the record store; sometimes it means surfing the Net, running a shell pipeline, or editing a file on your system. Typical agent harnesses make you choose: allow each action one at a time (<em>Allow Once</em>), allow them all (<em>Allow Everything</em>), or take the fashionable choice, <code>--dangerously-skip-permissions</code>. Egghead goes the other way, with a robust capability-based security model.
+      </p>
+
+      <p>
+        Authority is granted in writing, by a human, and never more than a human chose to give.
+        The grant lives in the agent&rsquo;s record where you can read it, diff it, audit it, revoke
+        it. You can grant agents the authority to grant other agents authority, but never more than they have, and never to themselves. And when an agent is allowed to take an action, an OS-level sandbox confines the action to a particular place &mdash; meaning you never have to worry about one agent going rogue and deleting your home directory. Trust is not the same as access.
+      </p>
+    </div>
+
+    <figure class="feature__figure">
+      <video class="feature__image" loop muted playsinline preload="auto" aria-label="Demo: capability CLI">
+        <source src="{{ "assets/demos/capability.mp4" | relURL }}" type="video/mp4">
+      </video>
+      <figcaption class="feature__caption">CLI &mdash; Read and revise an agent&rsquo;s capability grants from the command&nbsp;line.</figcaption>
+    </figure>
+  </section>
+
+  {{/* ───────────── § 6 — FURTHER READING ───────────── */}}
   <section class="bibliography" aria-labelledby="head-biblio">
     <img class="decoration decoration--artemis" src="{{ "assets/img/artemis-ii.png" | relURL }}" alt="NASA Artemis II rocket on the launchpad" width="582" height="1103" decoding="async" loading="lazy">
 
     <h2 id="head-biblio" class="section-head">
-      <span class="section-head__num">§ 5</span>
+      <span class="section-head__num">§ 6</span>
       <span class="section-head__text">Further Reading</span>
     </h2>
 

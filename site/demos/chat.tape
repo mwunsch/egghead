@@ -1,11 +1,10 @@
 # §2 — Chat mode: shared transcript, nick-prefixed, /pass on empty
 #
-# Renders to site/static/assets/demos/chat.{mp4,gif}
+# Renders to site/static/assets/demos/chat.mp4
 # Assumes a curated demo store with 2–3 agents, at least one likely to
 # /pass on a huddle. See site/demos/README.md
 
 Output ../static/assets/demos/chat.mp4
-Output ../static/assets/demos/chat.gif
 
 Set Shell "zsh"
 Set FontSize 16

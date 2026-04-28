@@ -220,6 +220,15 @@ main { display: block; }
   margin: 0.1em 1.25em 1em 0;
 }
 
+.decoration--tengu {
+  float: left;
+  width: clamp(9rem, 14vw, 12rem);
+  shape-outside: url("../img/tengu-mask.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 1.25em 1em 0;
+}
+
 .decoration--mercator {
   float: right;
   width: clamp(8rem, 13vw, 11rem);

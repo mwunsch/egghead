@@ -1,10 +1,8 @@
 # Egghead
 
 Record-store-first multi-agent system on Elixir/OTP. Plain markdown records
-under `records/` are the substrate; agents are participants in the graph,
-not owners of it. Design docs live in the store — start with
-[`records/design/egghead-overview.md`](records/design/egghead-overview.md)
-or browse via `egghead` (TUI).
+under are the substrate; agents are participants in the graph,
+not owners of it. Design docs live in the store — Use egghead's own MCP tools or  browse via `egghead` (TUI).
 
 ## Rules (read first)
 
@@ -16,11 +14,6 @@ or browse via `egghead` (TUI).
   `mix format --check-formatted` and will fail the release workflow
   (which then requires retagging). Format touched files, or
   `mix format` the whole tree if unsure, and stage the result.
-- **After every commit, update `records/meta/session-log.md`** with the
-  commit hash and a short description, then play back the remaining
-  "Next Areas" list to the user so we maintain continuity across sessions.
-- The session log is the canonical record of "what's been done and what's
-  next" — read it whenever you pick up work to understand context.
 
 ## Commands
 
@@ -412,7 +405,7 @@ Egghead.handoff("agents/scout")    # Manual context handoff
 
 ## Further reading
 
-In `records/design/`:
+In `$EGGHEAD_RECORDS/design/`:
 
 - `egghead-overview.md` — full design picture (read first)
 - `cli.md` — CLI design and architecture

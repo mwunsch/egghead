@@ -61,7 +61,8 @@ defmodule Egghead.CLI.Doctor do
         {"NIF binary", &check_nif/0},
         {"Web endpoint", &check_web_endpoint/0},
         {"Log file", &check_log_file/0},
-        {"Sandbox backend", &check_sandbox/0}
+        {"Sandbox backend", &check_sandbox/0},
+        {"BEAM cookie", &check_cookie/0}
       ] ++ linux_only([{"inotify-tools", &check_inotify/0}])
 
     results =
@@ -259,6 +260,53 @@ defmodule Egghead.CLI.Doctor do
          "unsupported platform #{inspect(other)} — proc.* tools run unsandboxed. " <>
            "Filesystem grants stay advisory (Elixir-level canonicalize + prefix check)."}
     end
+  end
+
+  # Cross-host distribution requires the same `~/.erlang.cookie` on both
+  # ends. We check it strictly only when the operator has signaled cross-host
+  # intent (`server.host` set, or `EGGHEAD_SERVER` exported); otherwise the
+  # cookie is informational — Erlang generates it on first named-node start.
+  defp check_cookie do
+    path = Path.join(System.user_home!(), ".erlang.cookie")
+    cross_host = cross_host_intent?()
+
+    case File.stat(path) do
+      {:ok, %{size: size, access: access}} ->
+        cond do
+          size == 0 ->
+            {:error, "#{path} is empty"}
+
+          access not in [:read, :read_write] ->
+            {:error, "#{path} is not readable"}
+
+          true ->
+            {:ok, "present (#{size} bytes)"}
+        end
+
+      {:error, :enoent} ->
+        if cross_host do
+          {:error,
+           "no #{path} — cross-host distribution requires it. " <>
+             "Run `egghead serve` once locally to generate, then copy to peer hosts."}
+        else
+          {:warn, "no #{path} yet (created on first named-node start)"}
+        end
+
+      {:error, reason} ->
+        {:error, "#{path}: #{inspect(reason)}"}
+    end
+  end
+
+  defp cross_host_intent? do
+    has_env = (System.get_env("EGGHEAD_SERVER") || "") != ""
+
+    has_host =
+      case Config.load() do
+        {:ok, %{server: %{host: host}}} when is_binary(host) and host != "" -> true
+        _ -> false
+      end
+
+    has_env or has_host
   end
 
   defp check_log_file do

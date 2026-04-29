@@ -60,7 +60,18 @@ web:
   port: 4000
   host: localhost
   bind: 127.0.0.1
+
+# Optional — only needed for cross-host BEAM distribution (LAN, tailnet).
+# Same-host attach (TUI ↔ serve on one box) requires no `server` block.
+server:
+  host: orca.tailnet.ts.net   # switches the server node to longnames
+  port_range: [9100, 9105]    # pins inet_dist_listen_min/max
 ```
+
+Cookie for cross-host distribution lives at `~/.erlang.cookie` (OTP
+default). `egghead config show-cookie` prints it; copy to peer hosts at
+the same path with mode `0400`. Clients attach with
+`EGGHEAD_SERVER=host` env var or `egghead --server host …`.
 
 Records default to `~/.egghead/`. Logs go to
 `~/.local/state/egghead/egghead.log` (respects `$XDG_STATE_HOME`).

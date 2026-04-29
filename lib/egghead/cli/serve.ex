@@ -63,6 +63,7 @@ defmodule Egghead.CLI.Serve do
 
     if node() != :nonode@nohost do
       IO.puts("Node: #{node()}")
+      print_lan_attach_hint()
     end
 
     IO.puts("")
@@ -76,5 +77,23 @@ defmodule Egghead.CLI.Serve do
     config = Application.get_env(:egghead, Egghead.Web.Endpoint, [])
     http = Keyword.get(config, :http, [])
     Keyword.get(http, :port, 4000)
+  end
+
+  # Show how a peer host should attach when this server is reachable
+  # off-box. We only print the hint when `server.host` is configured —
+  # that's the explicit signal that the operator wants cross-host
+  # distribution. Same-host attach is zero-config and doesn't need a hint.
+  defp print_lan_attach_hint do
+    case Application.get_env(:egghead, :server) do
+      %{host: host} when is_binary(host) and host != "" ->
+        IO.puts("")
+        IO.puts("To attach from another host on the same network:")
+        IO.puts("  EGGHEAD_SERVER=#{host} egghead          # TUI")
+        IO.puts("  EGGHEAD_SERVER=#{host} egghead mcp      # MCP stdio")
+        IO.puts("Both hosts must share ~/.erlang.cookie.")
+
+      _ ->
+        :ok
+    end
   end
 end

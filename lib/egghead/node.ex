@@ -8,8 +8,10 @@ defmodule Egghead.Node do
     named nodes automatically. `:net_adm.names()` discovers them.
     `~/.erlang.cookie` provides the shared secret. Zero config.
 
-  - **Remote (cross-network):** explicit `server:` section in config.yml
-    provides the node name and cookie. Standard OTP approach.
+  - **Remote (LAN, tailnet):** the server sets `server.host` in
+    `config.yml`; clients set `EGGHEAD_SERVER=host` (env var or `--server`
+    CLI flag). Both sides read the same `~/.erlang.cookie`. Distribution
+    travels over whatever network reaches that hostname.
 
   ## Routing
 
@@ -20,14 +22,27 @@ defmodule Egghead.Node do
   ## Lifecycle
 
   At startup, every egghead process that needs the app:
-  1. Checks explicit config for a known server (user intent wins).
-  2. Queries epmd for a local `egghead_server` node.
+  1. Checks explicit config (or `EGGHEAD_SERVER`) for a known server.
+  2. Otherwise queries epmd for a local `egghead_server` node.
   3. If found, verifies the remote version matches the local build; on
      mismatch, refuses to connect and falls back to standalone. This
      catches the case where a stale MCP server is still running from
      an earlier commit while a newer binary tries to become a client.
   4. If versions match, connects → becomes a client.
   5. If not found → starts as `egghead_server`, registers with epmd.
+
+  ## Names
+
+  Same-host (no `server.host` configured): the server uses **shortnames**
+  and registers as `egghead_server@localhost`. The hardcoded `localhost`
+  side-steps a macOS hazard where the machine's short hostname can resolve
+  to a stale IP after a Wi-Fi switch.
+
+  Cross-host (`server.host` set, or `EGGHEAD_SERVER` set on a client):
+  both sides switch to **longnames** and register as
+  `egghead_server@<fqdn>`. Longnames are required for cross-host
+  distribution; the client mints a unique name like
+  `egghead_<rand>@<fqdn>` so multiple clients can attach concurrently.
   """
 
   require Logger
@@ -89,13 +104,33 @@ defmodule Egghead.Node do
 
   Registers with epmd automatically — no files, no custom discovery.
   Cookie comes from `~/.erlang.cookie` (OTP default).
+
+  When `server.host` is configured, switches to longnames so other
+  hosts can resolve and connect. Optionally pins the distribution
+  port range via `server.port_range` so a single firewall rule
+  covers it.
   """
   @spec start_server() :: :ok | {:error, term()}
   def start_server do
-    hostname = node_hostname()
-    node_name = :"egghead_server@#{hostname}"
+    {node_name, name_type} = server_node_spec(Application.get_env(:egghead, :server))
 
-    case Node.start(node_name, :shortnames) do
+    if name_type == :longnames, do: configure_dist_port_range()
+    do_start_server(node_name, name_type)
+  end
+
+  @doc """
+  Compute the server's node name and `:longnames` / `:shortnames` mode
+  from the configured `:server` app env. Pure; exposed for testing.
+  """
+  @spec server_node_spec(map() | nil) :: {atom(), :longnames | :shortnames}
+  def server_node_spec(%{host: host}) when is_binary(host) and host != "" do
+    {:"egghead_server@#{host}", :longnames}
+  end
+
+  def server_node_spec(_), do: {:egghead_server@localhost, :shortnames}
+
+  defp do_start_server(node_name, name_type) do
+    case Node.start(node_name, name_type) do
       {:ok, _pid} ->
         Logger.info("Egghead server node started: #{node_name}")
         :ok
@@ -106,77 +141,134 @@ defmodule Egghead.Node do
     end
   end
 
+  defp configure_dist_port_range do
+    case Application.get_env(:egghead, :server) do
+      %{port_range: {min, max}} when is_integer(min) and is_integer(max) ->
+        Application.put_env(:kernel, :inet_dist_listen_min, min)
+        Application.put_env(:kernel, :inet_dist_listen_max, max)
+
+      _ ->
+        :ok
+    end
+  end
+
   # --- Client lifecycle ---
 
   @doc """
   Attempt to connect to a running Egghead server.
 
-  Checks explicit `server:` config first (user intent wins), then
-  queries epmd for a local `egghead_server` node. Returns `:connected`
-  or `:standalone`.
+  Resolution precedence (highest first):
+  1. `EGGHEAD_SERVER` env var (also set by `--server <host>` CLI flag)
+  2. `server: { node:, cookie: }` config block
+  3. epmd on localhost (same-host attach)
+
+  Returns `:connected` or `:standalone`.
   """
   @spec maybe_connect() :: :connected | :standalone
   def maybe_connect do
     case discover_server() do
-      {:ok, node_name} ->
-        connect_to_server(node_name)
+      {:ok, node_name, name_type} ->
+        connect_to_server(node_name, name_type, configured_cookie())
 
       :none ->
         :standalone
     end
   end
 
+  # Optional cookie override from explicit `server.cookie` config.
+  # Falls back to `~/.erlang.cookie` (OTP default) when not set.
+  defp configured_cookie do
+    case Application.get_env(:egghead, :server) do
+      %{cookie: cookie} when is_binary(cookie) and cookie != "" -> cookie
+      _ -> nil
+    end
+  end
+
   # --- Discovery ---
 
-  defp discover_server do
-    case discover_from_config() do
-      {:ok, _} = found -> found
-      :none -> discover_from_epmd()
+  @doc false
+  # Public for tests. Resolves the highest-precedence server target.
+  def discover_server do
+    with :none <- discover_from_env(),
+         :none <- discover_from_config(),
+         :none <- discover_from_epmd(~c"localhost", :shortnames) do
+      :none
+    end
+  end
+
+  defp discover_from_env do
+    case System.get_env("EGGHEAD_SERVER") do
+      nil ->
+        :none
+
+      "" ->
+        :none
+
+      host ->
+        # EGGHEAD_SERVER points at a remote host. Probe epmd there;
+        # if `egghead_server` is registered, return its longname.
+        # Falling through to :none lets the caller drop to standalone
+        # rather than hang indefinitely on an unreachable host.
+        host = String.trim(host)
+        discover_from_epmd(to_charlist(host), :longnames, host)
     end
   end
 
   defp discover_from_config do
     case Application.get_env(:egghead, :server) do
-      %{node: node_str, cookie: cookie_str}
-      when is_binary(node_str) and is_binary(cookie_str) ->
-        # Set cookie explicitly for remote connections
-        Node.set_cookie(String.to_atom(cookie_str))
-        {:ok, String.to_atom(node_str)}
-
       %{node: node_str} when is_binary(node_str) ->
-        {:ok, String.to_atom(node_str)}
+        {:ok, String.to_atom(node_str), name_type_for(node_str)}
 
       _ ->
         :none
     end
   end
 
-  defp discover_from_epmd do
-    # Query epmd via loopback explicitly. The no-arg `:net_adm.names/0`
-    # defaults to the machine's short hostname, which on macOS can resolve
-    # to a stale IP after a Wi-Fi change and block the TCP connect for
-    # tens of seconds. `localhost` always resolves from /etc/hosts.
-    case :net_adm.names(~c"localhost") do
-      {:ok, names} ->
+  # Probe epmd at `host` for `egghead_server`. Wrapped in a Task with a
+  # short timeout because `:net_adm.names/1` does a TCP connect that can
+  # hang for tens of seconds against an unreachable host.
+  defp discover_from_epmd(host, name_type, label \\ nil) do
+    task = Task.async(fn -> :net_adm.names(host) end)
+
+    case Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, names}} ->
         case Enum.find(names, fn {name, _port} -> name == @server_name end) do
           {_name, _port} ->
-            {:ok, :"egghead_server@#{node_hostname()}"}
+            host_str = label || to_string(host)
+            {:ok, :"egghead_server@#{host_str}", name_type}
 
           nil ->
             :none
         end
 
-      {:error, _} ->
+      _ ->
         :none
     end
   end
 
-  defp connect_to_server(node_name) do
-    hostname = node_hostname()
-    client_name = :"egghead_#{:erlang.unique_integer([:positive])}@#{hostname}"
+  @doc """
+  Pick `:longnames` vs `:shortnames` for an explicit `node@host` string.
+  A dotted host implies an FQDN and longnames; everything else
+  (bare names, `@localhost`) is shortnames. Pure; exposed for testing.
+  """
+  @spec name_type_for(String.t()) :: :longnames | :shortnames
+  def name_type_for(node_str) do
+    case String.split(node_str, "@", parts: 2) do
+      [_, host] -> if String.contains?(host, "."), do: :longnames, else: :shortnames
+      _ -> :shortnames
+    end
+  end
 
-    case Node.start(client_name, :shortnames) do
+  defp connect_to_server(node_name, name_type, cookie) do
+    client_name = client_node_name(name_type)
+
+    case Node.start(client_name, name_type) do
       {:ok, _pid} ->
+        # Setting the cookie must happen *after* the local node is alive.
+        # `Node.set_cookie/1` errors with "node name is not part of a
+        # distributed system" otherwise.
+        if cookie, do: Node.set_cookie(String.to_atom(cookie))
+
         if Node.connect(node_name) do
           case version_check(node_name) do
             :ok ->
@@ -211,6 +303,35 @@ defmodule Egghead.Node do
     end
   end
 
+  # Build a unique client node name. For shortnames (same-host), bind to
+  # `localhost` for the macOS Wi-Fi reasons described in the moduledoc.
+  # For longnames (cross-host), use a resolvable FQDN so the server can
+  # route messages back to us.
+  defp client_node_name(:shortnames) do
+    :"egghead_#{:erlang.unique_integer([:positive])}@localhost"
+  end
+
+  defp client_node_name(:longnames) do
+    :"egghead_#{:erlang.unique_integer([:positive])}@#{client_fqdn()}"
+  end
+
+  # Best-effort FQDN for the local host. Combines the short hostname
+  # with whatever resolver domain is configured; on a tailnet with
+  # MagicDNS this produces a name the server can route back to. Falls
+  # back to the short name alone if no domain is configured — distribution
+  # will then fail with a clear `:badhost` style error rather than hang.
+  defp client_fqdn do
+    {:ok, short} = :inet.gethostname()
+    short = to_string(short)
+
+    case :inet_db.res_option(:domain) do
+      [] -> short
+      domain when is_list(domain) and domain != [] -> "#{short}.#{domain}"
+      domain when is_binary(domain) and domain != "" -> "#{short}.#{domain}"
+      _ -> short
+    end
+  end
+
   # Compare our compiled `:egghead` app version against the remote's.
   # Uses `Application.spec/2` on both sides — an OTP primitive that
   # works regardless of whether the remote has any Egghead module we
@@ -237,11 +358,4 @@ defmodule Egghead.Node do
       vsn -> to_string(vsn)
     end
   end
-
-  # Always use "localhost" for the shortnames suffix so the node name
-  # is stable across network changes. `:inet.gethostname/0` returns the
-  # machine's short name (e.g. "MacBookPro"), which macOS may resolve
-  # to a stale IP after a Wi-Fi switch — any peer that tries to connect
-  # by that name will then stall on the TCP SYN.
-  defp node_hostname, do: "localhost"
 end

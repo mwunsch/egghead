@@ -26,6 +26,12 @@ defmodule Egghead.CLI do
       System.put_env("EGGHEAD_CONFIG", Path.expand(global_opts[:config]))
     end
 
+    # --server <host> is a CLI shortcut for EGGHEAD_SERVER. Set it before
+    # app start so distribution discovery sees it.
+    if global_opts[:server] do
+      System.put_env("EGGHEAD_SERVER", global_opts[:server])
+    end
+
     cond do
       global_opts[:help] == true and is_nil(command) and not has_non_flags?(rest) ->
         print_help()
@@ -147,11 +153,13 @@ defmodule Egghead.CLI do
     # flags, and we need them to pass through to subcommands intact.
 
     {config, argv} = extract_flag(argv, "--config", :string)
+    {server, argv} = extract_flag(argv, "--server", :string)
     version = "--version" in argv
     argv = if version, do: List.delete(argv, "--version"), else: argv
 
     opts = []
     opts = if config, do: Keyword.put(opts, :config, config), else: opts
+    opts = if server, do: Keyword.put(opts, :server, server), else: opts
     opts = if version, do: Keyword.put(opts, :version, true), else: opts
 
     # Top-level --help: only when no recognized command is present
@@ -295,12 +303,15 @@ defmodule Egghead.CLI do
       logs          Tail application logs
 
     FLAGS
-      --config PATH Override config file location
-      -h, --help    Show this help
-      --version     Show version
+      --config PATH   Override config file location
+      --server HOST   Attach to an Egghead serve running on HOST
+      -h, --help      Show this help
+      --version       Show version
 
     ENVIRONMENT
       EGGHEAD_CONFIG  Override the config file path
+      EGGHEAD_SERVER  Attach to an Egghead serve running on this host
+                      (LAN/tailnet); same as --server
 
     EXAMPLES
       $ egghead                       # launch the TUI

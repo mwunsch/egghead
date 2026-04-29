@@ -1,4 +1,4 @@
-ExUnit.start()
+ExUnit.start(exclude: [:integration])
 
 # Start PubSub globally for all web tests.
 # ConnCase needs it before starting the endpoint.

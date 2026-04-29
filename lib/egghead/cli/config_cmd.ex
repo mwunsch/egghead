@@ -18,6 +18,7 @@ defmodule Egghead.CLI.ConfigCmd do
         (default)         Show current configuration
         set <key> <val>   Set a config value using dot-path notation
         path              Print the config file path
+        show-cookie       Print the BEAM distribution cookie (~/.erlang.cookie)
 
       FLAGS
         -h, --help        Show this help
@@ -27,6 +28,7 @@ defmodule Egghead.CLI.ConfigCmd do
         $ egghead config path
         $ egghead config set web.port 8080
         $ egghead config set default_model anthropic/claude-opus-4-6
+        $ egghead config show-cookie
 
       SEE ALSO
         egghead init, egghead doctor
@@ -40,8 +42,49 @@ defmodule Egghead.CLI.ConfigCmd do
     case args do
       ["path" | _] -> IO.puts(Config.config_path())
       ["set", key, value | _] -> do_set(key, value)
+      ["show-cookie" | _] -> show_cookie()
       [] -> show_config()
-      _ -> IO.puts("Usage: egghead config [set <key> <val> | path]")
+      _ -> IO.puts("Usage: egghead config [set <key> <val> | path | show-cookie]")
+    end
+  end
+
+  defp show_cookie do
+    path = Path.join(System.user_home!(), ".erlang.cookie")
+
+    case File.read(path) do
+      {:ok, contents} ->
+        IO.puts(String.trim(contents))
+        IO.puts(:stderr, "")
+
+        IO.puts(
+          :stderr,
+          "# This is the BEAM distribution cookie at #{path}."
+        )
+
+        IO.puts(
+          :stderr,
+          "# Treat it like a password: any host with this cookie can join the cluster."
+        )
+
+        IO.puts(
+          :stderr,
+          "# Copy it to peer hosts at the same path with mode 0400 to enable cross-host attach."
+        )
+
+      {:error, :enoent} ->
+        Widgets.error("No cookie file at #{path}.")
+
+        IO.puts(
+          :stderr,
+          "Erlang creates ~/.erlang.cookie automatically the first time a named node starts."
+        )
+
+        IO.puts(:stderr, "Run `egghead serve` once locally to generate it.")
+        System.halt(1)
+
+      {:error, reason} ->
+        Widgets.error("Failed to read #{path}: #{inspect(reason)}")
+        System.halt(1)
     end
   end
 
@@ -79,6 +122,19 @@ defmodule Egghead.CLI.ConfigCmd do
         IO.puts("    port: #{config.web.port}")
         IO.puts("    host: #{config.web.host}")
         IO.puts("    bind: #{config.web.bind}")
+
+        if config.server do
+          IO.puts("")
+          IO.puts("  Server (BEAM distribution):")
+          if config.server[:host], do: IO.puts("    host: #{config.server[:host]}")
+
+          if config.server[:port_range] do
+            {min, max} = config.server[:port_range]
+            IO.puts("    port_range: [#{min}, #{max}]")
+          end
+
+          if config.server[:node], do: IO.puts("    node: #{config.server[:node]}")
+        end
 
       {:error, :not_found} ->
         IO.puts("No configuration file found at #{Config.config_path()}")

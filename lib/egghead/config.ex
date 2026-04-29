@@ -357,9 +357,37 @@ defmodule Egghead.Config do
 
   defp parse_server(nil), do: nil
 
-  defp parse_server(%{"node" => node, "cookie" => cookie})
-       when is_binary(node) and is_binary(cookie) do
-    %{node: node, cookie: cookie}
+  defp parse_server(map) when is_map(map) do
+    server = %{}
+
+    server =
+      case map["host"] do
+        host when is_binary(host) and host != "" -> Map.put(server, :host, host)
+        _ -> server
+      end
+
+    server =
+      case map["port_range"] do
+        [min, max] when is_integer(min) and is_integer(max) and min <= max ->
+          Map.put(server, :port_range, {min, max})
+
+        _ ->
+          server
+      end
+
+    server =
+      case map["node"] do
+        node when is_binary(node) and node != "" -> Map.put(server, :node, node)
+        _ -> server
+      end
+
+    server =
+      case map["cookie"] do
+        cookie when is_binary(cookie) and cookie != "" -> Map.put(server, :cookie, cookie)
+        _ -> server
+      end
+
+    if server == %{}, do: nil, else: server
   end
 
   defp parse_server(_), do: nil

@@ -129,6 +129,15 @@ defmodule Egghead.Application do
         if val = Enum.at(argv, idx + 1), do: System.put_env("EGGHEAD_CONFIG", Path.expand(val))
     end
 
+    # Handle --server before distribution starts
+    case Enum.find_index(argv, &(&1 == "--server")) do
+      nil ->
+        :ok
+
+      idx ->
+        if val = Enum.at(argv, idx + 1), do: System.put_env("EGGHEAD_SERVER", val)
+    end
+
     # Find the command (first non-flag arg)
     command =
       argv

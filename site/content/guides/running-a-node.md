@@ -98,6 +98,97 @@ write files, run shell commands, or hit external APIs on your
 behalf. Don't bind `0.0.0.0` to a public interface without
 authentication in front.
 
+## BEAM distribution and remote attach
+
+Every running egghead process is an Erlang node. When you launch a
+second egghead command from the same machine — `egghead`, `egghead mcp`,
+`egghead rooms` — it discovers the long-running `egghead serve` over
+the local Erlang Port Mapper Daemon (epmd, port 4369), connects, and
+becomes a client of that supervision tree. You see one set of agents,
+one set of rooms, one record store. Same-host attach is zero-config:
+no flag, no env var, no entry in `config.yml`. The cookie is whatever
+OTP wrote to `~/.erlang.cookie` the first time a named node started.
+
+The same mechanism extends to a LAN or a tailnet. The piece that
+changes is the hostname.
+
+### Same-host (default)
+
+Nothing to configure. `egghead serve` registers as
+`egghead_server@localhost` with epmd. Other commands on the same
+machine find it automatically.
+
+### Cross-host
+
+On the host that runs the server, set `server.host` in `config.yml`:
+
+```yaml
+server:
+  host: orca.tailnet.ts.net
+  port_range: [9100, 9105]    # optional; pins the dist port range
+```
+
+`server.host` switches the BEAM to longnames and registers as
+`egghead_server@orca.tailnet.ts.net`. `server.port_range` pins the
+distribution listener's port range so a single firewall rule (plus
+epmd on 4369) covers it.
+
+On any other host on the same network, point at the server with the
+`EGGHEAD_SERVER` environment variable or the `--server` flag:
+
+```bash
+EGGHEAD_SERVER=orca.tailnet.ts.net egghead         # TUI
+EGGHEAD_SERVER=orca.tailnet.ts.net egghead mcp     # MCP stdio
+egghead --server orca.tailnet.ts.net rooms list    # one-off
+```
+
+The client probes epmd on the named host, finds `egghead_server`,
+and joins the cluster. From then on, the TUI and MCP behave exactly
+as they would same-host — agents, rooms, transcripts, record
+mutations all flow over distribution.
+
+### Sharing the cookie
+
+Both hosts must read the same `~/.erlang.cookie`. Egghead does not
+manage the cookie file; OTP does. To copy it:
+
+```bash
+# on the server host
+egghead config show-cookie
+```
+
+Paste the output into `~/.erlang.cookie` on each peer host, then
+`chmod 0400 ~/.erlang.cookie`. `egghead doctor` flags a missing
+cookie when `server.host` or `EGGHEAD_SERVER` is set.
+
+### Firewall
+
+Distribution needs two things reachable on the chosen network
+interface:
+
+- **epmd**: TCP 4369 (the port mapper)
+- **dist range**: whatever you set as `port_range`, default 9100–9105
+  if you pinned one. Without `port_range`, the dist listener picks an
+  ephemeral port and you have to allow the full ephemeral range.
+
+Pin the range. It's a one-line change to the firewall.
+
+### Security
+
+BEAM distribution traffic is **unencrypted on the wire**, and the
+shared cookie is weak authentication. This is fine on a tailnet, a
+private VPC, or a LAN you trust. It is **not** safe on the public
+internet. Never expose epmd or the dist port range to a public
+interface.
+
+The clean cross-host story is: the network you're using is itself
+the security boundary. Tailscale, Nebula, WireGuard, ZeroTier, a
+private VPC subnet — any of these handle authentication and
+encryption for you, and Egghead's distribution layer rides on top.
+For deployments outside that envelope, expose only HTTP + MCP through
+a reverse proxy, the same way you would any other unauthenticated
+HTTP service.
+
 ## Secrets
 
 When you are binding beyond loopback, set `SECRET_KEY_BASE`

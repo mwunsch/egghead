@@ -138,6 +138,8 @@ syntax. Multiple grants of the same verb union additively.
 
 ## The sandbox
 
+<img class="decoration decoration--great-sphinx" src="/assets/img/great-sphinx.png" alt="The Great Sphinx of Giza, weathered limestone, in profile" width="1312" height="814" decoding="async" loading="lazy">
+
 `fs.*` and `proc.*` grants are scoped to a sandbox root, the
 `in:` key. Egghead's capability matcher rejects any call whose
 target path is outside that root. For `proc.*`, the actual

@@ -74,6 +74,8 @@ field.
 
 ## Wikilinks
 
+<img class="decoration decoration--mercator" src="/assets/img/mercator-celestial-globe.png" alt="Mercator celestial globe — a wood-and-brass globe of the heavens" width="923" height="1152" decoding="async" loading="lazy">
+
 A `[[target]]` token in a record body resolves to the record
 whose `id` is `target`. If no record matches, the link renders
 as an unresolved wikilink. That is a valid state, not an error;

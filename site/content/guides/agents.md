@@ -291,6 +291,8 @@ without spinning up a room. For multi-agent input, use
 
 ## Hot-reload, in practice
 
+<img class="decoration decoration--davinci" src="/assets/img/davinci-flying-machine.png" alt="Leonardo da Vinci's flying machine — sketched ornithopter with bat-like wings" width="1264" height="841" decoding="async" loading="lazy">
+
 It's worth stating plainly because it changes the development
 loop: editing an agent record's frontmatter or body and saving
 the file is the entire deployment step. The next message

@@ -238,6 +238,16 @@ main { display: block; }
   margin: 0 0 1em 1.25em;
 }
 
+.decoration--great-sphinx {
+  float: right;
+  width: clamp(11rem, 16vw, 14rem);
+  shape-outside: url("../img/great-sphinx.png");
+  shape-margin: 1.25rem;
+  shape-image-threshold: 0.5;
+  margin: 0 0 1em 1.25em;
+  opacity: 0.96;
+}
+
 /* ── Responsive: on narrow viewports (no shape-outside room),
    unfloat and centre-block the decorations so they become
    punctuation between paragraphs instead of crowded in-flow
@@ -247,6 +257,26 @@ main { display: block; }
    text wrap on phones instead of unfloating to centred blocks. The
    individual decorations use smaller clamp minimums so they scale
    down and text still has a readable column beside them. */
+
+/* Decorations inside guide prose. The docs column is narrower
+   than the landing's body text (max-width: 42rem), so cap the
+   floats tighter; the float side and shape rules above still
+   apply. */
+.docs-prose .decoration {
+  margin-bottom: 0.85em;
+}
+.docs-prose .decoration--davinci {
+  width: clamp(8rem, 32%, 12rem);
+  margin: 0.1em 1.25em 0.85em 0;
+}
+.docs-prose .decoration--mercator {
+  width: clamp(6.5rem, 22%, 9.5rem);
+  margin: 0 0 0.85em 1.25em;
+}
+.docs-prose .decoration--great-sphinx {
+  width: clamp(8rem, 28%, 11rem);
+  margin: 0 0 0.85em 1.25em;
+}
 
 
 

@@ -1,242 +1,144 @@
 ---
 title: Records
+section: Records
 weight: 10
+summary: A record is a Markdown file in a directory you choose. Optional YAML frontmatter, wikilinks for graph structure, FTS5 for search.
 ---
 
-A record is the atomic unit of the Egghead store — a plain Markdown
-file (or org-mode file) with optional frontmatter, sitting in a
-directory on your filesystem. Every knowledge artifact the system
-touches — notes, agent definitions, skills, saved transcripts,
-deliberation audit trails — is a record in the same shape.
+A record is a Markdown file (`.md`) or an org-mode file (`.org`)
+in your records directory. The default records directory is
+`~/.egghead`; you can change it by editing `records_dir` in
+`config.yml`. Every other thing Egghead knows about — agents,
+skills, saved chat transcripts, deliberation summaries — is also
+a record, distinguished by its `class:` frontmatter value. The
+full list of classes lives in
+[Record classes]({{< ref "record-classes" >}}).
 
-This guide covers what's in a record, how the parser reads one, and
-what the graph layer does with it.
+Most multi-agent frameworks store their state in an internal
+database. Egghead does not. Your store is a folder you can open
+in Obsidian, edit in `vim`, sync with iCloud, commit to Git, or
+back up by copying the directory. Egghead reads and writes those
+files; it does not own them.
 
-## A record on disk
+## File format
 
-The minimum viable record is one line of Markdown in a file:
+The smallest possible record is one line of Markdown:
 
 ```markdown
-This is a record. No frontmatter needed.
+This is a record.
 ```
 
-Drop it in your records directory (default `~/.egghead/`), and the
-file watcher will index it. The id is derived from the file path;
-the title, from the first heading; everything else stays empty.
+Egghead derives the record's id from its path relative to the
+records directory, with the extension stripped. The title comes
+from the first heading; if there is no heading, the title falls
+back to the id. Everything else is empty.
 
-The fully-decorated form adds YAML frontmatter at the top:
+A fully-decorated record adds YAML frontmatter at the top:
 
 ```markdown
 ---
 id: notes/postgres-vacuum
 title: Postgres autovacuum, in one page
-tags: [postgres, operations, reference]
+tags: [postgres, operations]
 links: [notes/postgres-mvcc]
 class: durable
 ---
 
 # Postgres autovacuum
 
-Background worker that removes dead tuples from tables, making space
-reusable. See [[notes/postgres-mvcc]] for why dead tuples exist in
-the first place.
+Background worker that removes dead tuples from tables. See
+[[notes/postgres-mvcc]] for context.
 ```
 
-The fence is three dashes, alone on a line, at both ends of the YAML
-block. org-mode files use a `:PROPERTIES:` ... `:END:` drawer with the
-same semantics — pick whichever format you prefer; both live in the
-same store.
+The YAML block is fenced by three dashes alone on a line, both
+at the top and the bottom. Org-mode files use a `:PROPERTIES:`
+... `:END:` drawer with the same field semantics; pick whichever
+format you prefer, since both can live in the same store.
 
 ## Frontmatter keys
 
-Seven keys have structural meaning. Everything else in the frontmatter
-is preserved verbatim as arbitrary metadata.
+| Key       | Type           | Purpose |
+|-----------|----------------|---------|
+| `id`      | string         | Stable identifier. Defaults to the file path. |
+| `title`   | string         | Display name. Defaults to the first heading or the id. |
+| `class`   | string         | Class. See [Record classes]({{< ref "record-classes" >}}). Defaults to `durable`. |
+| `tags`    | list of string | Free-form. Used by the agent activation gate, by capability scoping, and by search filters. |
+| `links`   | list of string | Outgoing links by id. Wikilinks parsed from the body are added at index time. |
+| `created` | ISO-8601 date  | Optional creation date that you control. |
+| `author`  | string         | Free-form. |
 
-| Key       | Type            | Purpose                                     |
-|-----------|-----------------|---------------------------------------------|
-| `id`      | string          | Globally unique identifier                  |
-| `title`   | string          | Display name; falls back to first heading   |
-| `tags`    | list of strings | Free-form labels for filtering and search   |
-| `links`   | list of strings | Authored references to other record ids     |
-| `class`   | enum            | `durable`, `inbox`, `deliberation`, `transcript`, `agent`, `skill` |
-| `created` | ISO 8601 string | Authored creation time (optional)           |
-| `author`  | string          | Author name; falls back to file owner       |
+There is no `updated` key. Egghead reads `mtime` from the
+filesystem and never writes it back, so an agent editing
+frontmatter never has to worry about stomping a "last modified"
+field.
 
-Omit any of them and the parser fills in sensible defaults or leaves
-the field empty. The only truly required field is a usable `id`, and
-even that is derived from the filename if absent.
+## Wikilinks
 
-## ID derivation
+A `[[target]]` token in a record body resolves to the record
+whose `id` is `target`. If no record matches, the link renders
+as an unresolved wikilink. That is a valid state, not an error;
+it lets you write a link to a record you intend to create later.
 
-If you don't write an `id:` line yourself, the parser takes the file
-path relative to your records directory and strips the extension.
+The pipe form gives you a different display text:
+`[[agents/scout|the research agent]]`.
 
-- `~/.egghead/projects/rewrite-auth.md` → `projects/rewrite-auth`
-- `~/.egghead/inbox.md` → `inbox`
-- `~/.egghead/skills/pr-review/SKILL.md` → `skills/pr-review/SKILL`
+At index time, wikilinks in the body are extracted and appended
+to the record's `links` field, separately from any `links:` you
+declared explicitly. Both are queryable.
 
-If you do write an `id:` line, that wins. Move the file to a new
-directory and the id doesn't change — the record's identity is in
-the frontmatter, not the path.
+## Indexing
 
-Ids are strings, not URLs. Slashes are for organization and read
-cleanly in `[[wikilinks]]`. Nothing enforces a naming scheme.
+Egghead keeps a SQLite index at `<records_dir>/.egghead/index.db`
+with one row per record (class, tags, mtime, content size,
+links) plus an FTS5 full-text table over title and body. The
+index is derived state and is rebuilt on demand: deleting it and
+restarting Egghead is safe, just slow on the first start.
 
-## Timestamps: `updated` is the filesystem's
+A file watcher — FSEvents on macOS, `inotify` on Linux — picks
+up external edits. If you change a record in `vim` or Obsidian
+while Egghead is running, the change appears in search within a
+few hundred milliseconds. You do not need to restart anything.
 
-Two timestamp fields exist and they behave differently:
+## Public API
 
-- **`updated`** — always derived from the file's modification time.
-  Never authored, never written back to frontmatter. If you paste an
-  `updated:` line into a record, it's stripped on the next write.
-- **`created`** — authorable with filesystem fallback. If you write
-  `created: 2024-11-03` in the frontmatter, that value sticks. If you
-  don't, the filesystem's birthtime (macOS) or ctime (Linux) fills it
-  in at read time, but the derived value is not written back — so a
-  record you never meant to give a creation date stays ungarnished in
-  the yaml.
+The `Egghead` module is the supported entry point for `iex` and
+for embedding Egghead into other code:
 
-The point: your editor's save time is always authoritative for
-"when was this touched," and you never have to chase a stale
-`updated:` line you forgot to bump.
+| Function | Purpose |
+|----------|---------|
+| `get_record/1` | Fetch by id. Returns `{:ok, record}` or `{:error, :not_found}`. |
+| `list_records/0` | List every record in the store. |
+| `search/2` | FTS5 query, with optional `class:` and `tags:` filters. |
+| `find_links/2` | Outgoing links from a record. Pass `recursive: true` to traverse transitively. |
+| `find_backlinks/1` | Records that link to this one. |
+| `recent/1` | Recently updated records. |
+| `create_record/1` | Validate, write, and index. |
+| `update_record/2` | Update frontmatter or body. |
 
-## Links and wikilinks
+A short example:
 
-Egghead has two ways to point at another record, and the distinction
-matters.
-
-**Authored links** live in frontmatter:
-
-```yaml
-links: [notes/postgres-mvcc, references/pg-docs-autovacuum]
+```elixir
+{:ok, results} = Egghead.search("postgres", class: "durable")
+{:ok, record}  = Egghead.get_record("notes/postgres-vacuum")
+backlinks      = Egghead.find_backlinks("notes/postgres-mvcc")
 ```
 
-These are stable, deliberate references. They show up in the
-backlink index, in `egghead_find_links`, and anywhere the graph is
-queried.
+The same operations are available over MCP as `egghead_search`,
+`egghead_get`, `egghead_list`, `egghead_find_links`,
+`egghead_backlinks`, `egghead_recent`, `egghead_create`, and
+`egghead_update`. See [MCP server]({{< ref "mcp" >}}).
 
-**Wikilinks** live in the body:
+## Editing records outside Egghead
 
-```markdown
-See [[notes/postgres-mvcc]] for background, or
-[[notes/postgres-vacuum#tuning|the tuning section]] for the practical
-bits.
-```
+Anything that reads Markdown reads your records: Obsidian,
+`vim`, `cat`, `grep`, Git. Egghead's index will pick up changes
+on the next file event.
 
-These are demonstrative — prose references that happen in-situ. The
-parser extracts them into a separate `wikilinks` field on the record,
-complete with fragment and display text. They *also* feed the backlink
-index (so traversal sees both), but they never leak back into the
-authored `links:` list. If you paste `[[notes/postgres-mvcc]]` in a
-sentence, it doesn't quietly become a permanent metadata attachment.
-
-Wikilink syntax:
-
-- `[[target]]` — plain reference
-- `[[target|custom display text]]` — render `custom display text`
-- `[[target#section]]` — fragment
-- `[[target#section|display]]` — both
-
-The graph layer exposes either view: `Egghead.find_links/2` returns
-authored forward references; `Egghead.find_backlinks/1` returns the
-union of authored and body-derived inbound references.
-
-## Tags
-
-Tags are flat strings. They filter search results, gate agent
-activation (an agent's tags are matched against incoming messages
-during relevance scoring — see the [Chat rooms
-guide]({{< ref "chat-rooms" >}})), and group related records visually
-in the TUI.
-
-Two conventions worth knowing:
-
-- Use **lowercase** and **hyphens** (`operations`, `post-incident`,
-  `half-baked`). The parser doesn't care, but search behaves more
-  predictably when you're consistent.
-- Use tags for kinds of thing, not for topics of thing. A tag like
-  `research` says "this is ongoing investigation"; a tag like
-  `postgres` says "this is about Postgres." Both are fine; mixing
-  them in the same record is fine too. There's no taxonomy.
-
-## Class
-
-One key deserves its own section because it changes how a record is
-treated by the rest of the system. Six classes exist — `durable`,
-`inbox`, `deliberation`, `transcript`, `agent`, `skill`. See the
-[Record classes guide]({{< ref "record-classes" >}}) for when to
-reach for each.
-
-If you don't write a `class:` line, the default is `durable` — a
-permanent note in the store. That's the right choice most of the
-time.
-
-## Body
-
-Everything after the frontmatter is the record's body. The parser
-understands:
-
-- **GitHub-flavored Markdown** — headings, lists, tables, fenced code
-  blocks, task lists (`- [ ]` / `- [x]`), strikethrough.
-- **org-mode** — headings, lists, property drawers, links, source
-  blocks, as rendered by the built-in org parser.
-- **Wikilinks** — as above, on both sides of the format divide.
-
-The AST is cached on the record so downstream consumers (TUI preview,
-web renderer, search snippetting) don't re-parse. Files that exceed
-the "too big to parse" threshold fall back to a plain-text view; the
-search index still covers them.
-
-## Search and traversal
-
-The SQLite index (derived, rebuildable, at
-`<records_dir>/.egghead/index.db`) provides three things:
-
-- **Full-text search** via FTS5 with porter stemming — fast, cheap,
-  ranked. `Egghead.search/2` or the `egghead_search` MCP tool.
-- **Link traversal** — forward references from a record, reverse
-  references into it. `Egghead.find_links/2` and
-  `Egghead.find_backlinks/1`.
-- **Recency** — records sorted by updated time.
-  `Egghead.recent/1`.
-
-Nothing in the index is authoritative — delete `index.db` and the
-store rebuilds it from the file tree at startup. The source of truth
-is always the Markdown on disk.
-
-## Creating and updating
-
-Three paths:
-
-1. **Your editor.** Drop a file in the records directory, the file
-   watcher picks it up, the index updates. On Linux this needs
-   `inotify-tools` installed — `egghead doctor` flags that if it's
-   missing. macOS uses FSEvents natively.
-2. **The TUI.** Type a title that doesn't match any existing record
-   and hit Enter — Egghead scaffolds a new file and opens it in
-   `$EDITOR`.
-3. **The API or MCP tool.** `Egghead.create_record/1`,
-   `Egghead.update_record/2`, or their MCP equivalents
-   (`egghead_create`, `egghead_update`). These go through the same
-   parser and write barrier as editor edits, so no matter how a
-   record lands, it lands the same way.
-
-Agents with the appropriate capabilities (see the
-[Capabilities guide]({{< ref "capabilities" >}})) can create and
-update records through tools. Whether to grant that is a deliberate
-choice — reads are safe, writes deserve a thought.
-
-## A record is a file
-
-The design closes the loop: the file on disk is the record. There is
-no separate "database of records" that the files synchronize to. The
-index is a cache; the [agents]({{< ref "agents" >}}) are processes;
-the [chat rooms]({{< ref "chat-rooms" >}}) are conversations.
-Everything else can be rebuilt from the directory.
-
-That's the practical consequence: `cp -r ~/.egghead/ /backup/`
-preserves your store. `git init ~/.egghead/` gives you version
-control. `grep -r "postgres" ~/.egghead/` answers questions when the
-server is down. Whatever tooling you already have for Markdown on a
-filesystem — ripgrep, fzf, your favorite editor — works here
-unchanged.
+Two practical consequences worth calling out. First, backups are
+just `cp -r` or `rsync` against the records directory, with no
+database to dump and no migrations to run. Second, version
+control works exactly the way you would expect: `git init`
+inside your records directory turns every note, every agent
+definition, and every saved transcript into a diffable artifact
+with history. Widening an agent's capabilities becomes a
+reviewable Git change instead of a runtime side effect.

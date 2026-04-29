@@ -1,0 +1,77 @@
+{{ define "main" }}
+<div class="docs-shell">
+  {{ partial "guides-rail.html" . }}
+
+  <article class="docs-content">
+    <header class="docs-header">
+      <p class="docs-eyebrow">
+        <a href="{{ "guides/" | relURL }}">Guides</a>
+        {{ with .Params.section }}<span aria-hidden="true"> · </span>{{ . }}{{ end }}
+      </p>
+      <h1 class="docs-title">{{ .Title }}</h1>
+      {{ with .Params.summary }}<p class="docs-lede">{{ . }}</p>{{ end }}
+    </header>
+
+    <div class="docs-prose">
+      {{ .Content }}
+    </div>
+
+    <footer class="docs-pager">
+      {{ $current := . }}
+      {{ $sections := slice
+        "Getting started"
+        "Records"
+        "Agents"
+        "Capabilities"
+        "Integrations"
+        "Operations"
+        "Evaluation"
+        "Background"
+      }}
+      {{ $ordered := slice }}
+      {{ range $sections }}
+        {{ $s := . }}
+        {{ $pages := where (where $current.Site.RegularPages "Section" "guides") "Params.section" $s }}
+        {{ range (sort $pages "Weight") }}
+          {{ $ordered = $ordered | append . }}
+        {{ end }}
+      {{ end }}
+
+      {{ $idx := -1 }}
+      {{ range $i, $p := $ordered }}
+        {{ if eq $p.Permalink $current.Permalink }}{{ $idx = $i }}{{ end }}
+      {{ end }}
+
+      {{ if ge $idx 0 }}
+        {{ $prev := false }}
+        {{ if gt $idx 0 }}{{ $prev = index $ordered (sub $idx 1) }}{{ end }}
+        {{ $next := false }}
+        {{ if lt (add $idx 1) (len $ordered) }}{{ $next = index $ordered (add $idx 1) }}{{ end }}
+
+        {{ if $prev }}
+          <a class="docs-pager__prev" href="{{ $prev.RelPermalink }}">
+            <span class="docs-pager__label">Previous</span>
+            <span class="docs-pager__title">{{ $prev.Title }}</span>
+          </a>
+        {{ else }}<span></span>{{ end }}
+
+        {{ if $next }}
+          <a class="docs-pager__next" href="{{ $next.RelPermalink }}">
+            <span class="docs-pager__label">Next</span>
+            <span class="docs-pager__title">{{ $next.Title }}</span>
+          </a>
+        {{ else }}<span></span>{{ end }}
+      {{ end }}
+    </footer>
+  </article>
+
+  {{ if and .TableOfContents (gt (len .TableOfContents) 50) }}
+    <aside class="docs-toc-rail" aria-label="On this page">
+      <p class="docs-toc-rail__label">On this page</p>
+      {{ .TableOfContents }}
+    </aside>
+  {{ else }}
+    <aside></aside>
+  {{ end }}
+</div>
+{{ end }}

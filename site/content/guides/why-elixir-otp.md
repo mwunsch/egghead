@@ -1,274 +1,210 @@
 ---
 title: Why Elixir/OTP
+section: Background
 weight: 50
+summary: What the BEAM and OTP buy when the system is many long-lived stateful processes that need to fail and restart in parts.
 ---
 
-Egghead is built on [Elixir](https://elixir-lang.org), which runs
-on the [BEAM](https://en.wikipedia.org/wiki/BEAM_(Erlang_virtual_machine))
-— the runtime Ericsson created in the 1980s for telecom switching.
-That choice wasn't made for performance. LLM API latency dominates
-every hot path in this system; no programming language is going to
-move that number. The choice was made because the shape of the
-problem — long-lived stateful agents, graceful failure, hot-reload,
-shared event streams — is exactly the shape
-[OTP](https://en.wikipedia.org/wiki/Open_Telecom_Platform) was
-designed around.
+Almost every other agent framework you have looked at is
+written in Python or TypeScript: CrewAI, AutoGen, LangChain,
+Mastra, the rest. There are good reasons for that — the LLM
+SDKs landed in those ecosystems first and the docs followed —
+and Egghead pays a real cost for picking a different language,
+in the form of clients and helpers we have had to write
+ourselves rather than `pip install` away. So it is worth being
+explicit about what we got in exchange.
 
-This guide explains what the runtime buys Egghead, where it
-doesn't help, and what the honest costs are.
+Egghead is built on Elixir, which runs on the
+[BEAM](https://en.wikipedia.org/wiki/BEAM_(Erlang_virtual_machine))
+— the runtime Ericsson built in the 1980s for telecom
+switching. Performance is not the reason. LLM API latency
+dominates every hot path in the system, and no programming
+language is going to move that number. The reason is OTP, the
+set of conventions and libraries that ship with the BEAM, and
+the shape of the problem Egghead is trying to solve.
 
-## The problem shape
+## The shape of the problem
 
 Strip away the LLM specifics and Egghead looks like:
 
-- Many long-lived stateful processes (agents) with independent
-  identities, each accumulating per-session context.
-- A shared substrate (the record store) that must survive any
-  single process's failure.
-- Multiple coordinated event streams (chat rooms, PubSub
-  broadcasts) where every participant sees every message.
-- Graceful degradation under context pressure — when a process
-  outgrows itself, its state needs to be serialized and a fresh
-  copy brought up.
-- An operator running the whole thing on one machine, expecting it
-  to keep working through crashes, edits, and network blips.
+- Many long-lived stateful processes (one per agent), each
+  with independent identity and accumulating per-room session
+  state.
+- A shared store of records on disk that has to survive any
+  individual process crashing.
+- Several coordinated event streams (chat rooms, broadcast
+  notifications) where every participant subscribes
+  independently and the publisher does not know who is
+  listening.
+- Recovery from per-process failure without restarting the
+  whole node.
+- Hot reload of configuration: an edit to a record file should
+  update the running agent without a deploy, a restart, or a
+  message-queue dance.
 
-These are the same constraints telecom equipment runs under. OTP
-is a direct fit.
+Those constraints are a near-perfect match for the constraints
+telephone switches operate under, which is to say a near-
+perfect match for what OTP was built around.
 
-## What OTP gives you
+## What the runtime gives Egghead
 
-The pieces of OTP Egghead leans on, each mapped to what it does
-for the system:
+### Lightweight processes
 
-### Processes as units of concurrency
+A BEAM process is not an OS thread. It is a scheduled unit of
+tens of kilobytes of heap, with millions per node and
+microsecond spawn time. Each agent is one of these processes.
+Each chat room is one. The records store, the LLM registry,
+each MCP client connection — all processes.
 
-A [BEAM process](https://hexdocs.pm/elixir/processes.html) isn't an
-OS thread. It's a lightweight scheduled unit — tens of kilobytes of
-heap, microseconds to spawn, millions per node. Each agent is a
-[`GenServer`](https://hexdocs.pm/elixir/GenServer.html) (a BEAM
-process with a defined message-handling contract). Each chat room
-is a GenServer. The record store, the LLM registry, each MCP client
-connection — all GenServers.
-
-Why that matters here: agents have independent state and
-independent failure modes. When one agent's tool call throws, that
-process crashes. The others are unaffected — they're different
-processes with different heaps. No shared mutable state to
-corrupt, no exception to propagate across contexts.
+The practical consequence is that every agent has its own
+state, its own heap, and its own failure mode. When one
+agent's tool call throws an exception, that process crashes;
+the others are unaffected because they are different
+processes. There is no shared mutable state to corrupt and no
+exception to propagate.
 
 ### Supervision trees
 
-A [supervisor](https://hexdocs.pm/elixir/Supervisor.html) is a
-process whose only job is to start, watch, and restart other
-processes according to a declared policy. Egghead's supervision
-tree is a few dozen lines of code that describes the whole system's
-failure behavior:
+Failure policy in OTP is not scattered through `try` blocks.
+It is a declarative tree describing how processes start, what
+they depend on, and what to do when they crash. Egghead's
+supervision tree:
 
-- If the `Index` process crashes, restart it and the `RecordStore`
-  (because `RecordStore` depends on it) — `rest_for_one`.
-- If the whole agent layer collapses, restart it without touching
-  the record store — isolated sub-tree.
-- If an individual agent crashes, restart just that agent with
-  fresh state —
-  [`DynamicSupervisor`](https://hexdocs.pm/elixir/DynamicSupervisor.html).
+```
+Egghead.Supervisor (one_for_one)
+├── Phoenix.PubSub
+├── RecordSupervisor (rest_for_one)
+│   ├── Index
+│   └── RecordStore
+└── Agent.LayerSupervisor (rest_for_one)
+    ├── LLM.Registry
+    ├── Chat.Coordinator
+    └── Agent.Supervisor (DynamicSupervisor)
+        ├── index (built-in)
+        └── agents/* (one per record)
+```
 
-The failure policies aren't ad-hoc error handling scattered
-through the code. They're a declarative tree. Crash recovery is a
-structural primitive.
+If the records `Index` crashes, the `RecordStore` restarts
+with it, because it depends on the index (`rest_for_one`). If
+the agent layer collapses entirely, the records store is
+unaffected (separate sub-tree). If an individual agent
+crashes, the dynamic supervisor restarts just that one agent
+with fresh state.
 
-### "Let it crash"
+A few dozen lines of declarative configuration describe the
+entire failure behavior of the system. That is the shape OTP
+was designed for, and writing it in any runtime that does not
+have these primitives means inventing them yourself.
 
-The [OTP culture](https://erlang.org/download/armstrong_thesis_2003.pdf)
-treats crashes as the normal path for unrecoverable errors. Instead
-of wrapping every call in defensive `try` blocks, you let the
-process die, let the supervisor restart it cleanly, and log the
-crash for later review. The state is gone, but it's almost always
-state the process was better off without.
+### Crash and restart for context overflow
 
-This maps directly onto a failure mode specific to LLM agents:
-**context degradation**. When an agent's context window fills up
-with stale tool output and half-remembered instructions, the
-well-trodden fix is to compact — summarize old turns, keep the
-summary, drop the originals. But compaction destroys the provenance
-of what the agent knew.
+There is a specific failure mode in LLM agents that this
+matters for: context degradation. When an agent's context
+window fills up with stale tool output and old turns, the
+common fix is to compact — summarize old turns, keep the
+summary, drop the originals. Compaction destroys the
+provenance of what the agent knew, though, and the summary
+itself is a lossy artifact you can't audit easily.
 
-Egghead does handoff instead. When context usage crosses a
-threshold, the agent serializes itself into a `class: deliberation`
-record (its own audit trail) and dies. The supervisor spawns a
-fresh copy, which rehydrates from the room's recent transcript and
-reads its own prior deliberation as an injected preview.
+Egghead handles this with crash-and-restart instead. When
+context usage crosses a threshold, the agent serializes its
+session into a `class: deliberation` record (its own
+audit trail) and exits. The supervisor restarts a fresh
+process; the new process rehydrates from the room's recent
+transcript and reads its own prior deliberation as a hand-off
+note from the previous incarnation.
 
-This isn't a clever innovation. It's literally "let it crash"
-applied to context windows. The deliberation record is the OTP
-equivalent of a crash dump — except it's a first-class record,
-searchable, linkable, readable by the agent's next incarnation.
+This is "let it crash" applied to context windows. The
+deliberation record is a durable artifact the next process can
+read; the next process is the recovery. Nothing about that
+loop is magic — but it is hard to write in a runtime where
+crashing is something you avoid rather than something the
+supervisor handles for you.
 
-### Hot code reloading
+### Hot reload
 
-You can edit an agent record in your editor — change the
-disposition, widen capabilities, swap the model — save, and the
-next time that agent is addressed, it's running your new code.
-No restart. No deploy step. No registration incantation.
+You edit an agent record in your editor — change the
+disposition, widen capabilities, swap the model — save the
+file, and the next message addressed to the agent uses the
+updated configuration. There is no restart, no deploy, no
+re-registration step.
 
-The mechanism: the file watcher notices the record change, the
-agent supervisor stops the old process, and a new one starts with
-the updated record as initialization state. From the user's
-perspective, it's instantaneous.
+The mechanism is straightforward: the file watcher notices the
+change, the agent supervisor stops the old process, and a new
+one starts with the updated record as initialization state.
+From your perspective it is instantaneous.
 
-Hot reload is a language feature on most runtimes. On the BEAM it's
-a [first-class operational primitive](https://www.erlang.org/doc/system/release_handling.html)
-— Ericsson built it because telephone switches can't be taken down
-to ship a bugfix. Egghead inherits the consequence: iterating on
-an agent feels like editing a document, because that's what it is.
+Hot reload is a language feature in many runtimes, but on the
+BEAM it is a first-class operational primitive. Ericsson built
+the capability in because telephone switches cannot be taken
+down to ship a bug fix. Egghead inherits the consequence:
+iterating on an agent feels like editing a document, because
+that is what it is.
 
-### Distribution, built-in
+### Distribution
 
-[Two BEAM nodes on the same network](https://www.erlang.org/doc/system/distributed.html)
-can call each other's processes as if they were local.
-`GenServer.call({name, node}, msg)` is the same API whether `node`
-is the current machine or a machine in a different datacenter.
-[Phoenix](https://www.phoenixframework.org)'s
-[PubSub](https://hexdocs.pm/phoenix_pubsub/Phoenix.PubSub.html) is
-cluster-aware by default — broadcast an event on one node, every
-subscribed process on every connected node receives it.
+Two BEAM nodes on the same network can call each other's
+processes as if the processes were local. `Phoenix.PubSub`
+broadcasts across the cluster automatically.
 
-Egghead uses this for the TUI/server split: `egghead serve` runs
-the full supervision tree; `egghead` (the TUI) launched elsewhere
-discovers that server and connects as a thin client. Same rooms,
-same agents, same coordinator — no sync layer, no custom protocol.
-The TUI is an attachable frontend, like `tmux attach` for an agent
-system.
+Egghead uses this for the TUI/server split: `egghead serve`
+runs the full supervision tree, and `egghead` (the TUI)
+launched against the same cluster discovers the server and
+connects as a thin client. Same rooms, same agents, same
+coordinator — no separate sync layer, no custom protocol.
+The work to make that real was a week of `Node.connect`
+plumbing, not a quarter-long product effort, because the
+runtime was built for it.
 
-The work to get there was shockingly small. Distribution wasn't a
-product feature that took a quarter; it was a week of
-`Node.connect` plumbing plus some routing helpers. The BEAM was
-built for this.
+## What the runtime is not good for
 
-## What the runtime is *not* good for
+There are honest tradeoffs. None of them changed Egghead's
+direction, but it is worth naming them.
 
-Honest tradeoffs worth naming.
+The BEAM is not a security boundary. Process isolation prevents
+state corruption from crashes, but it does not prevent a
+malicious NIF (native code loaded into the BEAM) or a
+compromised library from reading another process's memory.
+That is why Egghead's [capability model]({{< ref "capabilities" >}})
+relies on `sandbox-exec` and `bwrap` for filesystem and
+process verbs rather than treating BEAM isolation as the line
+of defense.
 
-### It's not a security boundary
+The BEAM is not a numerical runtime. There is no CUDA, no
+fast vector math, no competitive ML framework. None of that
+matters for Egghead, because the LLMs are remote and any
+heavy local work would be shelled out to a NIF or a sidecar.
 
-BEAM process isolation is excellent for fault tolerance: a crash
-in one process can't corrupt another. But it was never designed as
-a security boundary. A malicious
-[NIF](https://www.erlang.org/doc/system/nif.html) (native code
-loaded into the BEAM) or a compromised library can read any
-process's memory.
+The BEAM is not fast at CPU-bound work. A single BEAM process
+is slower than a single goroutine for tight arithmetic. None
+of Egghead's hot paths are CPU-bound, so this does not matter
+either.
 
-Egghead's security model accounts for this explicitly — the
-capability system enforces *what* an agent can ask the runtime to
-do, and OS-level isolation (hardened containers, microVM-per-tool
-for future tool execution) enforces what the resulting code can
-reach. BEAM is the first layer; it is not the last.
+The Elixir AI ecosystem is thin compared to Python or
+TypeScript. Egghead implements its own multi-provider LLM
+registry, streaming clients for each provider, tool-call
+normalization across the provider differences, and an MCP
+client. These are a few hundred lines each, not impossibly
+hard, but in a Python project most of them would have been a
+single dependency install.
 
-See the [Capabilities guide]({{< ref "capabilities" >}}) for the
-authority model and its explicit limits.
-
-### It's not a numerical runtime
-
-There is no numpy, no CUDA bindings, no competitive ML framework on
-the BEAM. This matters for a narrow set of things — local model
-hosting, on-device inference, heavy vector math — but for Egghead
-it doesn't. The LLMs are remote. The vector work (if we ever do
-it) would be shelled out to a NIF or a sidecar.
-
-### It's not fast at CPU-bound work
-
-A single BEAM process is slower than a single Go or Rust goroutine
-for tight arithmetic loops. This matters for neither the hot paths
-(LLM API latency dominates) nor the warm paths (SQLite queries are
-fast enough). Where it would matter — the file parser, the
-markdown renderer — we use Erlang primitives that are already
-C-optimized under the hood, and it's fine.
-
-### The ecosystem is thin on AI specifics
-
-In 2026, the Python and TypeScript AI library ecosystems are
-larger and evolve faster than Elixir's. Egghead built its own
-multi-provider LLM registry, streaming clients for Anthropic /
-OpenAI / Google APIs, tool-calling normalization across providers,
-and an MCP client. None of these were prohibitively hard — they're
-a few hundred lines each — but on a Python project they'd have
-been a dependency install.
-
-This is a real cost. It's the one worth acknowledging up front: if
-your project is LLM-plumbing-first and everything else is
-secondary, Python is a lower-friction start. If your project needs
-durable stateful processes as a first-class concern, the
-dependency-install savings don't pay for the shape you'd have to
-invent yourself.
-
-## Why not Go, Rust, Python, or Node
-
-For completeness, the alternatives considered and what each would
-have cost.
-
-**Go.** Goroutines give you cheap concurrency, but no supervision
-abstractions, no hot reload, no distribution primitives. You'd
-build those yourself, probably landing at something that looks
-vaguely OTP-shaped with a decade of bugs on the way. Excellent for
-stateless services; middling for stateful agent topologies.
-
-**Rust.** Best-in-class fault isolation at the *type* level — the
-borrow checker is its own kind of supervisor. But no runtime-level
-restart semantics, no hot reload, and [Tokio](https://tokio.rs)
-async is great for network-bound work but doesn't give you the
-"each agent is a process with its own heap" primitive. A Rust
-Egghead would be a different system — arguably tighter but
-definitely more code.
-
-**Python.** Fine for LLM clients, which is why most LLM tooling is
-in Python today. Async Python
-([`asyncio`](https://docs.python.org/3/library/asyncio.html)) can
-do concurrency. But the gap between `asyncio` coroutines and BEAM
-processes is large: no cheap process spawn, no true isolation, no
-supervisor trees, no hot reload in any production-serious form.
-Building Egghead in Python would mean either a thick service mesh
-([Kubernetes](https://kubernetes.io),
-[Celery](https://docs.celeryq.dev), separate process pools) or
-accepting that one bug crashes the interpreter.
-
-**Node.** Same concurrency story as Python, plus a runtime that
-wasn't designed for long-lived stateful processes. A Node Egghead
-would be fighting the grain constantly.
-
-None of these are wrong choices for *other* systems. They're wrong
-choices for *this* system because the problem is shaped like the
-things BEAM solved forty years ago.
-
-## Design pressure, not raw throughput
-
-The most important thing the BEAM did for Egghead is the least
-visible: it applied design pressure. Writing OTP code forces you
-to think about process boundaries, failure modes, and topology up
-front. "Where does this state live?" isn't a question you can
-defer — it's the first question of every module.
-
-For a system where agents are long-lived stateful peers, that
-pressure happens to be exactly the pressure the design needs. The
-graph topology of chat rooms came out of this pressure. The
-handoff-over-compaction pattern came out of it. The distribution
-story came out of it. Each of these would have been possible in
-another runtime; none would have been as structurally natural.
-
-The counterfactual is worth sitting with: a Python version of
-Egghead would likely have landed at dispatcher-based multi-agent
-(star topology), bolted-on "memory" as a subordinate subsystem,
-and workers that restart via Kubernetes probes. That's a different
-system. It would work; it would miss most of the things this
-version is trying to demonstrate.
+That last point is the real cost, and it's worth being honest
+about it. If a project is LLM-plumbing-first and stateful
+coordination is incidental, Python or TypeScript is a
+lower-friction start. The trade is worthwhile for Egghead
+because the stateful coordination is the system, not the
+plumbing — but on a different system with different
+priorities, the answer would be different.
 
 ## See also
 
-- [Running a node]({{< ref "running-a-node" >}}) — the operational
-  surface the supervision tree exposes
-- [Chat rooms]({{< ref "chat-rooms" >}}) — where the graph topology
-  and shared transcript patterns live, enabled by Phoenix PubSub
-- [Agents]({{< ref "agents" >}}) — the hot-reload, handoff, and
-  per-room session shape in concrete terms
-- [Research influences]({{< ref "research-influences" >}}) — where
-  the "let it crash" philosophy meets the MAST finding that
-  multi-agent systems fail architecturally, not at the model level
+- [Running a node]({{< ref "running-a-node" >}}) describes
+  the operational shape the supervision tree exposes.
+- [Chat rooms]({{< ref "chat-rooms" >}}) describes what
+  `Phoenix.PubSub` and per-room processes actually do.
+- [Agents]({{< ref "agents" >}}) describes hot reload,
+  handoff, and per-room sessions in concrete terms.
+- [Research influences]({{< ref "research-influences" >}})
+  cites the multi-agent failure literature whose finding
+  ("most failures are architectural, not model-level")
+  motivates the supervision-tree investment.

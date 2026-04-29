@@ -1,72 +1,70 @@
 ---
 title: Configuration
-weight: 14
+section: Operations
+weight: 36
+summary: config.yml schema, XDG paths, environment-variable substitution, provider setup.
 ---
 
-Egghead tries to work with no configuration. Set an
-`ANTHROPIC_API_KEY` in your shell, run `egghead`, and you have a
-working system — records indexed, the built-in Index agent
-responding, the TUI ready. Everything else has a sensible default.
+Egghead reads its configuration from a single YAML file. With no
+configuration file and no environment variables set, the system
+still comes up: record reading, search, the TUI records
+browser, and the eight record-related MCP tools all work.
+Anything that needs an LLM returns an error in that mode, but
+the store and its index keep functioning.
 
-When you do want to configure something, the surface is small and it
-all lives in one YAML file. This guide covers what's in that file,
-where to find it, how the precedence rules work, and what the CLI
-does for you around it.
+## Where the file lives
 
-## Where the config lives
+Egghead resolves the configuration path in this order, taking
+the first match:
 
-The config file is `~/.config/egghead/config.yml` by default,
-respecting the XDG Base Directory spec:
+1. `$EGGHEAD_CONFIG`, if set. The variable can point at a
+   directory (Egghead reads `config.yml` inside) or directly at
+   a `.yml` file.
+2. `$XDG_CONFIG_HOME/egghead/config.yml`, when the variable is
+   set.
+3. `~/.config/egghead/config.yml` otherwise.
 
-- `$EGGHEAD_CONFIG` — if set, overrides everything. Point it at a
-  directory (uses `config.yml` inside) or directly at a `.yml` file.
-- `$XDG_CONFIG_HOME` — respected when set; e.g.,
-  `$XDG_CONFIG_HOME/egghead/config.yml`.
-- Otherwise: `~/.config/egghead/config.yml`.
-
-`egghead config path` prints the resolved path. The file gets
-`0600` permissions when Egghead writes it, on the assumption that
-API keys might land inside.
+`egghead config path` prints the resolved path. When Egghead
+writes the file (during `egghead init` or
+`egghead config set`), it sets the file mode to `0600`, on the
+assumption that API keys may end up inside.
 
 ## Precedence
 
-Three layers, highest wins:
+Three layers determine an effective setting; the highest layer
+that has a value wins:
 
-1. **Environment variables** — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-   etc. At startup, the LLM registry checks for each known env var
-   and auto-registers the provider if set. Overrides anything in the
-   config file.
-2. **Config file** — `config.yml`.
-3. **Defaults** — baked in. `records_dir` is `~/.egghead`,
-   `web.port` is `4000`, `web.bind` is `127.0.0.1`.
+1. Environment variables. Provider API keys
+   (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and so on) are
+   detected at startup and override anything in the config
+   file.
+2. The configuration file.
+3. Built-in defaults.
 
-The upshot: you can run Egghead with no config file at all, and if
-your environment has an API key set, it Just Works. The config file
-is for persistent, considered choices; the environment is for
+The practical implication is that you can run Egghead with no
+configuration file at all, and as long as your shell exports an
+API key, the agent layer comes up. The configuration file is
+for persistent, considered choices; the environment is for
 credentials and per-session overrides.
 
-## First-run setup
+## Schema
 
-`egghead init` walks a first-run wizard — see
-[Getting started]({{< ref "getting-started" >}}) for the walkthrough.
-The short version: pick a records directory,
-pick a provider, paste an API key (or confirm use of the env var),
-set a default model. Writes `config.yml` at the end. Skip it if you
-prefer to hand-edit.
-
-## Fully annotated config
+Every key is optional. A configuration file containing only
+`default_model: anthropic/claude-sonnet-4-6` is a legal file.
 
 ```yaml
-# Where records live. Defaults to ~/.egghead. The SQLite index
-# lands at <records_dir>/.egghead/index.db — derived, rebuildable.
+# Where records live. Default: ~/.egghead.
 records_dir: ~/.egghead
 
-# Drop-zone for portable skills outside the record store.
-# Defaults to ~/.agents/skills.
+# Drop-zone for portable skills outside the records directory.
+# Default: ~/.agents/skills.
 skills_dir: ~/.agents/skills
 
-# LLM providers. One entry per provider. Multiple entries of the
-# same provider are allowed (useful for custom base_urls).
+# Workspace ceiling for fs.* and proc.* grants.
+# Optional; can be declared per-agent instead.
+sandbox: ~/Work
+
+# LLM providers. Multiple entries permitted (custom base URLs).
 llm:
   - provider: anthropic
     api_key: "{env:ANTHROPIC_API_KEY}"
@@ -74,116 +72,26 @@ llm:
   - provider: openai
     api_key: "{env:OPENAI_API_KEY}"
 
-  # Custom OpenAI-compatible endpoint — name distinguishes it
-  # from the default openai entry.
+  # Custom OpenAI-compatible endpoint. The `name:` field
+  # distinguishes it from the default openai entry.
   - provider: openai
     name: together
     base_url: https://api.together.xyz/v1
     api_key: "{env:TOGETHER_API_KEY}"
 
-# Default model for new agents and 1:1 prompts. Provider/model form.
+# Default model for new agents and 1:1 prompts.
 default_model: anthropic/claude-sonnet-4-6
 
-# Default chat room — created automatically if missing.
+# Default chat-room id. Created on demand.
 default_room: default
 
-# Web server + MCP HTTP endpoint.
+# Web server and MCP HTTP endpoint.
 web:
-  port: 4000        # HTTP listen port
-  host: localhost   # hostname in generated links
-  bind: 127.0.0.1   # listen address (loopback by default)
+  port: 4000
+  host: localhost
+  bind: 127.0.0.1
 
-# External MCP servers your agents can reach. Each requires a
-# capability set that agents must hold to use the server.
-mcp_servers:
-  - name: playwright
-    transport: stdio
-    command: npx @playwright/mcp@latest
-    requires:
-      - net.get:
-          hosts: ["*"]
-```
-
-Every section is optional. A config file of just
-`default_model: anthropic/claude-sonnet-4-6` is a legal config.
-
-## The `{env:VAR}` pattern
-
-Anywhere a string value could be sensitive (`api_key`, `command`,
-`headers`), you can write `{env:VAR_NAME}` and Egghead resolves it
-from the environment at load time. The literal string stays in the
-file; the secret does not.
-
-```yaml
-llm:
-  - provider: anthropic
-    api_key: "{env:ANTHROPIC_API_KEY}"
-```
-
-This keeps the config file safe to commit if you want version control
-on your setup — secrets stay in the environment, structure stays in
-git.
-
-## LLM providers and env-var auto-detection
-
-If your `llm:` section is empty (or you have no config file at all),
-Egghead detects these env vars at startup and registers the
-corresponding providers automatically:
-
-| Provider    | Env var(s)                          |
-|-------------|-------------------------------------|
-| `anthropic` | `ANTHROPIC_API_KEY`                 |
-| `openai`    | `OPENAI_API_KEY`                    |
-| `google`    | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
-| `xai`       | `XAI_API_KEY`                       |
-| `groq`      | `GROQ_API_KEY`                      |
-| `deepseek`  | `DEEPSEEK_API_KEY`                  |
-| `mistral`   | `MISTRAL_API_KEY`                   |
-| `openrouter`| `OPENROUTER_API_KEY`                |
-
-For providers that speak OpenAI-compatible APIs (`xai`, `groq`,
-`deepseek`, `mistral`, `openrouter`, plus local `ollama` and
-`lmstudio`), Egghead ships presets with the right `base_url` so you
-can just drop the provider name in.
-
-`egghead llm list` shows what's configured. `egghead llm add` walks
-an interactive setup.
-
-## Model resolution
-
-Models use `provider/model` form: `anthropic/claude-sonnet-4-6`,
-`openai/gpt-4o`, `google/gemini-2.0-flash`.
-
-Bare model names also work — `claude-sonnet-4-6` is inferred to
-`anthropic`, `gpt-4o` to `openai`, `gemini-*` to `google`, and so on.
-The prefix has to match a known family.
-
-`egghead llm models` lists what each configured provider reports.
-
-## Web + MCP
-
-The web server binds to `127.0.0.1` (loopback) by default. You get
-the LiveView UI, the MCP HTTP endpoint at `/mcp`, and that's it — on
-the same port. No separate service for MCP.
-
-| Key        | Default      | What it does                                 |
-|------------|--------------|----------------------------------------------|
-| `web.port` | `4000`       | HTTP port the server listens on              |
-| `web.host` | `localhost`  | Hostname used in generated links             |
-| `web.bind` | `127.0.0.1`  | Bind address. Set to `0.0.0.0` to expose externally |
-
-See the [Running a node guide]({{< ref "running-a-node" >}}) for
-what to do before you bind outside loopback — there are things to
-think about, and none of them are surprising.
-
-## External MCP servers
-
-`mcp_servers:` lets your agents reach out to other MCP servers.
-Playwright, a Linear MCP, a custom stdio server you wrote in any
-language — Egghead connects as a client, enumerates the tools, and
-exposes them to agents that hold the right capabilities.
-
-```yaml
+# External MCP servers your agents can reach.
 mcp_servers:
   - name: playwright
     transport: stdio
@@ -191,53 +99,149 @@ mcp_servers:
     env:
       PLAYWRIGHT_HEADLESS: "1"
     requires:
-      - net.get:
-          hosts: ["*"]
-      - net.post:
-          hosts: ["*"]
+      - net.get: { hosts: ["*"] }
+      - net.post: { hosts: ["*"] }
 ```
 
-The `requires:` list is declared in the same capability grammar as
-an agent's own grants. When an agent tries to invoke a tool from an
-external MCP server, Egghead checks the agent's grants against
-`requires:` — if the agent lacks what the server needs, the tool is
-filtered out. The MCP server itself is never asked to enforce
-anything; scope ends at Egghead.
+## `{env:VAR}` substitution
 
-## Config from the CLI
+Anywhere a string value could be sensitive, you can write
+`{env:VAR_NAME}` and Egghead resolves it from the environment
+at load time. The literal string sits in the file; the secret
+itself stays in the environment. This pattern lets you commit
+your configuration to version control without committing your
+API keys with it.
+
+```yaml
+llm:
+  - provider: anthropic
+    api_key: "{env:ANTHROPIC_API_KEY}"
+```
+
+## Auto-detected providers
+
+If the `llm:` section is empty (or the configuration file does
+not exist at all), Egghead checks for these environment
+variables at startup and registers the corresponding providers
+automatically:
+
+| Provider     | Environment variable(s)                |
+|--------------|----------------------------------------|
+| `anthropic`  | `ANTHROPIC_API_KEY`                    |
+| `openai`     | `OPENAI_API_KEY`                       |
+| `google`     | `GOOGLE_API_KEY` or `GEMINI_API_KEY`   |
+| `xai`        | `XAI_API_KEY`                          |
+| `groq`       | `GROQ_API_KEY`                         |
+| `deepseek`   | `DEEPSEEK_API_KEY`                     |
+| `mistral`    | `MISTRAL_API_KEY`                      |
+| `openrouter` | `OPENROUTER_API_KEY`                   |
+
+Several of these speak OpenAI-compatible APIs (`xai`, `groq`,
+`deepseek`, `mistral`, `openrouter`, plus local runners
+`ollama` and `lmstudio`). Egghead ships presets covering the
+right `base_url` for each, so you can drop the provider name
+into `llm:` without spelling out the URL.
+
+## Model resolution
+
+Models are written in `provider/model` form:
+
+- `anthropic/claude-sonnet-4-6`
+- `openai/gpt-4o`
+- `google/gemini-2.0-flash`
+
+A bare model name resolves where the prefix is unambiguous —
+`claude-*` infers `anthropic`, `gpt-*` infers `openai`,
+`gemini-*` infers `google`. For the ambiguous cases, prefix
+the provider explicitly.
+
+`egghead llm models` prints what each configured provider
+reports.
+
+## The web section
+
+The web server hosts the records browser, the chat-room UI,
+and the MCP HTTP endpoint at `/mcp` — all on the same port.
+
+| Key        | Default     | Effect |
+|------------|-------------|--------|
+| `web.port` | `4000`      | TCP port the server listens on. |
+| `web.host` | `localhost` | Host used in generated absolute URLs. |
+| `web.bind` | `127.0.0.1` | Listen address. Set to `0.0.0.0` to bind every interface. |
+
+The default bind is loopback because Egghead does no
+authentication of its own and a network-reachable endpoint
+without authentication exposes the entire records store. See
+[Running a node]({{< ref "running-a-node" >}}) before binding
+beyond loopback.
+
+## External MCP servers
+
+`mcp_servers:` connects Egghead, as an MCP client, to other
+servers. Their tools become available to agents that hold the
+declared `requires:` capabilities.
+
+```yaml
+mcp_servers:
+  - name: playwright
+    transport: stdio
+    command: npx @playwright/mcp@latest
+    requires:
+      - net.get: { hosts: ["*"] }
+```
+
+The `requires:` block uses the same capability grammar as an
+agent's own grants (see
+[Capabilities]({{< ref "capabilities" >}})). At invocation
+time, Egghead checks the asking agent's capabilities against
+`requires:` and filters out any tool the agent cannot use.
+The remote MCP server itself is never asked to enforce
+anything; the scope ends inside Egghead.
+
+## CLI shortcuts
 
 A few commands handle common edits without opening the file:
 
 ```bash
-egghead config path                     # print resolved config path
+egghead config path                     # print the resolved path
 egghead config set default_model anthropic/claude-sonnet-4-6
 egghead config set web.port 4001
-egghead config set web.bind 0.0.0.0     # expose externally
+egghead config set web.bind 0.0.0.0
+egghead llm list                        # configured providers
+egghead llm add                         # interactive provider setup
+egghead llm test <provider>             # round-trip a small request
+egghead llm models                      # list available models
 ```
 
-`set` edits the YAML in place, preserving comments and whitespace
-where possible.
+`egghead config set` edits the YAML in place, preserving
+comments and whitespace where it can.
 
-## Logs and state
+## State and logs
 
-Not in `config.yml` — these follow XDG conventions:
+These do not live in `config.yml`:
 
-- **Logs:** `$XDG_STATE_HOME/egghead/egghead.log`, typically
-  `~/.local/state/egghead/egghead.log`. `egghead logs` tails it.
-- **Runtime state** (default room, etc.): same directory.
-- **Index:** under your `records_dir` at `.egghead/index.db` —
-  derived, safe to delete.
+- The application log is at
+  `$XDG_STATE_HOME/egghead/egghead.log`, which is typically
+  `~/.local/state/egghead/egghead.log`. `egghead logs` tails
+  it.
+- The search index is at
+  `<records_dir>/.egghead/index.db`. The index is derived
+  from your records and is rebuilt automatically on start if
+  it is missing.
 
-## Degraded mode
+## Running without an LLM
 
-Start Egghead with no providers configured and no env vars set, and
-the system still comes up. The record store, search, MCP record
-tools, and the TUI records browser all work. The things that need
-an actual LLM — `Egghead.chat`, `Egghead.prompt`, `Egghead.consult`,
-agent activation in rooms — return a clean error telling you what's
-missing.
+With no provider configured and no API key in the environment,
+the agent layer returns errors and the rest of the system
+operates normally. Specifically:
+`Egghead.search/2`, `Egghead.get_record/1`,
+`Egghead.list_records/0` and the corresponding MCP tools
+(eight of the fifteen) work; the TUI's records mode works;
+`Egghead.chat/2`, `Egghead.prompt/3`, `Egghead.consult/2`,
+and any agent activation in a room return
+`{:error, :no_providers}`.
 
-This is deliberate. A node without credentials is still a useful
-node: a searchable graph of your notes, a Markdown editor with
-backlinks, an MCP server with eight record-manipulation tools. Add
-an API key and the collaboration layer wakes up.
+This is deliberate. Egghead is useful as a searchable,
+linkable Markdown notebook on its own, even before any agent
+is involved. Add an API key to the environment or to the
+configuration file, restart, and the agent layer wakes up.

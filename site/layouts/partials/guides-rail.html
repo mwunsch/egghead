@@ -1,0 +1,39 @@
+{{/*
+  Left-rail TOC for the Guides section. Groups guide pages by their
+  `section:` frontmatter param, ordered by `weight`. The active page is
+  marked with .docs-link--active.
+*/}}
+{{ $current := . }}
+{{ $guides := where (where .Site.RegularPages "Section" "guides") "Params.section" "ne" nil }}
+{{ $sections := slice
+  "Getting started"
+  "Records"
+  "Agents"
+  "Capabilities"
+  "Integrations"
+  "Operations"
+  "Evaluation"
+  "Background"
+}}
+<nav class="docs-rail" aria-label="Guides">
+  <a class="docs-rail__home {{ if $current.IsSection }}docs-link--active{{ end }}"
+     href="{{ "guides/" | relURL }}">All Guides</a>
+
+  {{ range $sections }}
+    {{ $section := . }}
+    {{ $pages := where $guides "Params.section" $section }}
+    {{ with $pages }}
+      <div class="docs-section">
+        <p class="docs-section__label">{{ $section }}</p>
+        <ul class="docs-section__list">
+          {{ range (sort . "Weight") }}
+            <li>
+              <a class="docs-link {{ if eq .Permalink $current.Permalink }}docs-link--active{{ end }}"
+                 href="{{ .RelPermalink }}">{{ .Title }}</a>
+            </li>
+          {{ end }}
+        </ul>
+      </div>
+    {{ end }}
+  {{ end }}
+</nav>

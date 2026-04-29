@@ -1,74 +1,49 @@
 ---
 title: Consultation
+section: Integrations
 weight: 32
+summary: One-shot multi-agent question. Spins an ephemeral room, collects responses, saves the transcript, stops the room.
 ---
 
-Consultation is the one-shot shape: ask your agents a question, get
-each of their takes back as a structured result, let the system save
-the transcript for you. No room management, no `/continue`, no
-`/drop` — spin up, collect, tear down.
+`Egghead.consult/2` and the `egghead_consult` MCP tool give you
+a single-call shape for multi-agent input: you ask one
+question, Egghead creates a temporary chat room, sends the
+question as an open message, collects responses up to a
+timeout, saves the transcript, and stops the room. The result
+is a list of `{agent, text}` pairs and a record id you can
+link to.
 
-This guide covers when to reach for consultation versus a live chat
-room, how the API is shaped, and what the MCP tool does for external
-clients.
+Use consultation when you want parallel takes on a single
+question without managing a room yourself. The room is gone by
+the time the call returns; what's left is the transcript on
+disk.
 
-## The shape
+## When to use a consult versus a chat room
 
-```elixir
-{:ok, result} = Egghead.consult("What's the failure mode if we drop autovacuum?")
+Consultation is the right shape when each agent reads the
+question, the relevant ones respond, and the result is a set
+of independent perspectives.
 
-result.responses
-# => [
-#   %{agent: "agents/postgres", text: "You'll accumulate dead tuples..."},
-#   %{agent: "agents/skeptic", text: "The bigger problem is transaction ID wraparound..."},
-#   %{agent: "agents/pragmatist", text: "In practice, most teams don't notice for..."}
-# ]
+A live chat room is the right shape when the conversation is
+going to have follow-ups, when agents need to reference each
+other's work across multiple turns, or when the session might
+run long enough to need handoffs.
 
-result.transcript_id
-# => "chat/consult-4973528"
-```
+Consult is one call; a chat room is a session. Under the hood,
+consult is a chat room with the lifecycle hidden.
 
-One call, aggregated answers from everyone who felt qualified to
-respond, a saved transcript you can link to later. The room that
-hosted the consultation is stopped on the way out.
-
-## When to consult vs. chat
-
-Different shapes for different situations:
-
-**Consult** when you want parallel perspectives on a single
-question. No ongoing dialogue — each agent reads the question, each
-responds, you read the set. Good for:
-
-- "What's the failure mode if I do X?"
-- "How would each of you approach Y?"
-- "Sanity check this plan — anyone see a gap?"
-
-**Chat (live room)** when the conversation is going to have back and
-forth. You'll ask follow-ups, agents will reference each other,
-someone might need to hand off at context limit. Good for:
-
-- Design discussions
-- Code review sessions
-- Anything where "let me think out loud" is part of the work
-
-Consult is a single call; chat is a session. The underlying
-machinery is the same — consult is chat with the session hidden.
-
-## API
+## Elixir API
 
 ```elixir
 Egghead.consult(question, opts \\ [])
 ```
 
-Options:
+| Option          | Default   | Purpose |
+|-----------------|-----------|---------|
+| `:timeout`      | `120_000` | Milliseconds to wait before the room is force-stopped. |
+| `:round_budget` | `10`      | Maximum agent turns. |
 
-| Option          | Default    | What it does                              |
-|-----------------|------------|-------------------------------------------|
-| `:timeout`      | `120_000`  | Milliseconds to wait before giving up     |
-| `:round_budget` | `10`       | Max agent turns; the room's turn budget   |
-
-Return shape:
+Returns:
 
 ```elixir
 {:ok, %{
@@ -78,129 +53,116 @@ Return shape:
 }}
 ```
 
-Or `{:error, reason}` if the ephemeral room couldn't be created.
+`transcript_id` is `nil` only if the save step itself failed;
+the responses are still returned, so you do not lose them
+because the filesystem had a bad moment.
 
-`transcript_id` is `nil` only if the save step failed — the
-responses are still returned; you don't lose them because the
-filesystem had a bad moment.
+If no LLM provider is configured, the call returns
+`{:error, :no_providers}`.
 
-## The MCP tool
+A short example:
 
-The same capability over MCP:
+```elixir
+{:ok, result} = Egghead.consult(
+  "What's the failure mode if we disable autovacuum?")
+
+for %{agent: id, text: text} <- result.responses do
+  IO.puts("#{id}: #{text}")
+end
+```
+
+## MCP tool
+
+The same shape over MCP:
 
 ```json
 {
   "name": "egghead_consult",
   "arguments": {
-    "question": "What's the failure mode if we drop autovacuum?",
+    "question": "What's the failure mode if we disable autovacuum?",
     "timeout": 120
   }
 }
 ```
 
-Timeout is in **seconds** here (the MCP surface rounds to human
-units, not milliseconds). Returns markdown-formatted aggregated
-responses with a footer naming the saved transcript:
+The MCP tool's `timeout` is in seconds rather than
+milliseconds. The response comes back as a Markdown-formatted
+block with each agent's reply separated by a horizontal rule
+and the saved transcript id at the bottom:
 
 ```markdown
 **agents/postgres**
 
-You'll accumulate dead tuples and the table will slowly grow
-in size without actually holding more data...
+You'll accumulate dead tuples...
 
 ---
 
 **agents/skeptic**
 
-The bigger problem is transaction ID wraparound. Without vacuum,
-eventually...
+The bigger issue is transaction ID wraparound...
 
 ---
 
 _Transcript saved: chat/consult-4973528_
 ```
 
-This is the single most useful MCP tool for external clients that
-want multi-agent input without thinking about rooms. Editor
-integrations, CLI scripts, "ask the team" hotkeys — consult is
-what they want.
+This is the most useful tool for an external client that wants
+multi-agent input but does not want to think about rooms,
+budgets, or transcripts. Editor integrations, CLI scripts, and
+"ask the team" hotkeys all tend to land here.
 
-## What happens under the hood
+## What happens internally
 
-Consultation is a three-step dance:
+Each consultation runs through four steps. Egghead creates a
+chat room with a unique id (`consult-<N>`), the requested
+round budget, and an idle timeout that protects against a
+hang. It sends the question as an open message, which means
+the activation gate runs the same TF-IDF relevance scoring it
+runs in any other open message; agents whose tags or
+disposition score above threshold respond. It collects
+responses until the budget runs out or the timeout expires.
+Then it saves the transcript as a `class: transcript` record
+with id `chat/consult-<N>` and stops the room.
 
-1. **An ephemeral room is created** with a unique id
-   (`consult-<N>`), the requested round budget, and an idle
-   timeout so it doesn't linger if something goes wrong.
-2. **Your question is sent as an open message.** Every eligible
-   agent in the roster gets the same relevance gate they'd get in a
-   normal room. Agents that match speak; agents that don't, don't.
-3. **Responses are collected** for the requested timeout, the
-   transcript is saved as a `class: transcript` record, and the
-   room is stopped.
+`/pass` is honored. Agents that have nothing useful to add
+stay silent rather than fabricate a reply, and silent agents
+do not appear in `responses`.
 
-The invisible parts are that the room is real (for those 120
-seconds), the addressing logic is the same as any other open
-message, and `/pass` is honored (agents who have nothing to add
-stay silent rather than fabricate something).
+`@everyone` and `@jam` modes are not exposed by consultation.
+Use a live chat room if you need them.
 
-See the [Chat rooms guide]({{< ref "chat-rooms" >}}) for the
-addressing model consultation inherits, and the
-[Record classes guide]({{< ref "record-classes" >}}) for what the
-saved transcript record looks like.
-[`egghead eval`]({{< ref "eval" >}}) uses the same
-ephemeral-room pattern with a grader attached — consult plus a
-judge plus a task definition.
+## Round budget
 
-## Turn budget in consult
+The default round budget of 10 is more than most consultations
+need. Most produce one response per relevant agent and stop.
+The budget exists to allow short follow-up chains: an agent
+that responds by `@`-mentioning another ("defer to @postgres
+on that") triggers the mentioned agent's reply, which costs a
+turn from the budget.
 
-The default round budget is 10, which is more than you usually
-need. Most consultations get one response per agent and stop — but
-if an agent responds by @-mentioning another agent ("I'd defer to
-@postgres on the wraparound question"), the mentioned agent can
-chain in, and that's what the budget allows.
+Set `round_budget: 1` if you want a strict one-round-each
+behavior. Set it higher if you want the agents to discuss
+amongst themselves a bit before the room shuts down.
 
-If you want strict one-round-each behavior, set `round_budget: 1`.
-If you want a longer back-and-forth among the agents without your
-involvement, bump it to 20. The budget trades off latency for
-depth.
+## Linking to a saved consultation
 
-## What you get back
+The `transcript_id` points at a record in your store, so
+referencing the consult from a durable note is just a wikilink:
 
-`responses` is a list of `%{agent: id, text: text}` tuples in the
-order the agents replied. Agents that `/pass`-ed don't appear —
-you only get substantive contributions.
+```markdown
+See [[chat/consult-4973528]] for the team's take on autovacuum.
+```
 
-The `transcript_id` points to a record in your store — persistent,
-searchable, linkable. Reference it in a durable note ("See [[chat/
-consult-4973528]] for the team's take on autovacuum") and you've
-captured the deliberation without having to transcribe anything.
+If you decide later that the consultation should keep going,
+`/join chat/consult-<N>` rehydrates the transcript into a live
+room — but at that point a chat room from the start would have
+been the simpler choice.
 
-## Degraded mode
+## See also
 
-If no LLM provider is configured, `Egghead.consult/2` returns
-`{:error, :no_providers}`. The `egghead_consult` MCP tool returns a
-similar error with a hint about setting an API key. This is the one
-feature that *can't* fall back gracefully — there's no such thing as
-a one-shot multi-agent answer without agents, and there are no
-agents without at least one configured LLM.
-
-See the [Configuration guide]({{< ref "configuration" >}}) for
-setting up providers.
-
-## When not to consult
-
-Two anti-patterns worth flagging:
-
-- **As a replacement for a single agent prompt.** If you only want
-  one agent's answer, use `Egghead.prompt/3`. Consult spins up a
-  room and waits for the whole roster to decide whether to chime in;
-  `prompt` goes straight to the named agent. Latency and cost
-  difference is real.
-- **For tasks that need iteration.** If the question will have
-  follow-ups, create a room. Consult saves a transcript, but
-  resuming it means `/join chat/consult-<N>` — at which point you
-  probably wanted a room from the start.
-
-Otherwise: consult is a good default. Ask, receive, file it away,
-move on.
+- [Chat rooms]({{< ref "chat-rooms" >}}) covers the addressing
+  model and the activation gate that consultation inherits.
+- [MCP server]({{< ref "mcp" >}}) covers the
+  `egghead_consult` tool surface for external clients.
+- [Evals]({{< ref "eval" >}}) is the same ephemeral-room shape
+  with a Judge attached and a milestone-based scoring step.

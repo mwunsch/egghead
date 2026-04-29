@@ -1,52 +1,88 @@
 ---
 title: Capabilities
+section: Capabilities
 weight: 20
+summary: Per-agent grants of resource.verb pairs, optionally scoped, enforced at the call site and (for filesystem and process verbs) by an OS sandbox.
 ---
 
-Egghead [agents]({{< ref "agents" >}}) are participants in your
-record store, not owners of it. What any particular agent is
-*allowed* to do — read records, create them, hit the network, run
-shell commands — is controlled by its **capabilities**: a
-per-agent, record-declared, parameter-scoped list of grants.
+Egghead is a [capability-based security
+system](https://en.wikipedia.org/wiki/Capability-based_security).
+A capability is a `resource.verb` string, optionally with a
+scope, that names exactly one thing an agent is allowed to do.
+Each agent record declares the capabilities its process holds in
+the frontmatter, and Egghead checks every tool call against that
+list. Filesystem and subprocess verbs are additionally enforced
+by an operating-system sandbox —
+[`sandbox-exec`](https://manp.gs/mac/1/sandbox-exec) on
+macOS,
+[`bwrap`](https://github.com/containers/bubblewrap) (bubblewrap)
+on Linux — so a compromised binary running under a permitted
+`proc.exec` cannot escape the fence even if it tries.
 
-Capabilities do three jobs at once. The obvious one is security:
-least privilege prevents a compromised or confused agent from
-doing damage it shouldn't be able to. The second is separation of
-duties: no single agent can both propose a modification and approve
-it, because the capability to do each is held by different roles
-(standard guidance from the
-[CERT guide to insider threat](https://resources.sei.cmu.edu/library/asset-view.cfm?assetid=540644),
-ported down from human systems to agent systems). The third is
-less obvious but load-bearing for a multi-agent design:
-**capabilities make roles structural rather than prompt-level**.
-If one role is "read-only" and another is "write-with-peer-review,"
-those roles can't flip to match each other under majority pressure
-— the grants are enforced by the runtime, not by the system
-prompt. The [conformity literature]({{< ref "research-influences" >}})
-shows that persona differentiation in prompts is a weak lever;
-capability-scoped authority is a stronger one because an agent
-literally cannot perform a peer's role even if it wanted to agree
-with them.
+The shape is most directly inspired by OpenBSD's
+[`pledge(2)`](https://man.openbsd.org/pledge.2) and
+[`unveil(2)`](https://man.openbsd.org/unveil.2). `pledge` is a
+list of allowed verbs a process declares about itself; `unveil`
+is the list of paths those verbs are allowed to touch. Egghead's
+`capabilities:` field plays the role of `pledge` (what the agent
+can do) and the `sandbox:` and `in:` fields play the role of
+`unveil` (where the agent can do it). The same rule applies to
+both halves: each list can only narrow over the agent's
+lifetime, never widen, and any expansion is an explicit edit to
+the agent's record. The fuller bibliography for this lineage —
+Capsicum, Macaroons — is in
+[Research influences]({{< ref "research-influences" >}}).
 
-Enforcement is kernel-backed: `fs.*` and `proc.*` grants run inside
-an OS sandbox (`sandbox-exec` on macOS, `bwrap` on Linux) derived
-from the agent's `sandbox:` declaration, so a compromised tool cannot
-escape the fence. Capabilities are the **pledge** — what verbs an
-agent holds — and the sandbox is the **unveil** — where those verbs
-can have effect. The two halves are kept separate by design, and
-authored separately in the frontmatter.
+Most agent harnesses you have probably used take a different
+approach to authority. They show you a runtime prompt — *Allow
+once*, *Allow always*, or the popular escape hatch
+`--dangerously-skip-permissions` — and they ask you to make a
+decision in the middle of the agent's turn. That works for
+single-agent systems where you are watching the output as it
+happens. It scales poorly to a roster of agents acting in
+parallel, and it puts the security decision exactly where you
+have the least time to think about it. Egghead does the
+opposite: capabilities are written into the agent's record
+*ahead of time*, where you can read them, diff them, audit them
+in Git, and revoke them between sessions. There is no runtime
+prompt at the tool-call site. Widening an agent's authority is
+an edit to a Markdown file.
 
-This guide is for anyone running an Egghead node. It covers what to
-write in an agent's frontmatter, how grants compose, where the sandbox
-fence comes from, what the CLI and `egghead doctor` will catch, and
-how agents delegate authority to each other.
+## Resource families and verbs
 
-## The shape of a grant
+| Resource  | Verbs                                          |
+|-----------|------------------------------------------------|
+| `records` | `read`, `create`, `update`, `delete`           |
+| `agent`   | `create`, `update`, `delete`, `grant`          |
+| `fs`      | `read`, `write`, `delete`                      |
+| `net`     | `get`, `post`, `put`, `delete`                 |
+| `proc`    | `exec` (argv-style), `eval` (shell pipelines)  |
 
-Every capability is a `resource.verb` pair, optionally with a scope.
+The `records` and `agent` resources are split deliberately. A
+call that targets an agent record always requires an
+`agent.*` grant, regardless of any `records.*` scope. An agent
+holding only `records.update` cannot edit another agent's
+frontmatter — by design.
+
+## Risk tiers
+
+Every capability in the catalog carries a risk level. The CLI,
+the agent wizard, and `egghead doctor` sort and color their
+output by risk so you see the consequential grants first.
+
+| Risk    | Capabilities                                                         |
+|---------|----------------------------------------------------------------------|
+| Low     | `records.read`, `records.create`                                     |
+| Medium  | `records.update`, `fs.read`, `net.get`, `agent.update`               |
+| High    | `records.delete`, `fs.write`, `fs.delete`, `net.post`/`put`/`delete`, `proc.exec`, `proc.eval`, `agent.delete`, `agent.grant` |
+
+Low-risk capabilities are reasonable defaults for most agents.
+Medium- and high-risk capabilities should be scoped narrowly to
+the smallest surface that lets the agent do its job.
+
+## Grant syntax
 
 ```yaml
-sandbox: ~/projects/foo
 capabilities:
   - records.read
   - records.update:
@@ -58,84 +94,76 @@ capabilities:
       cmds: [rg, jq, git]
 ```
 
-Five resource families cover the whole surface:
+The bare form (no scope) means different things by family.
+Internal verbs — `records.*` and `agent.*` — default to the
+universe in the bare form, so `records.read` on its own means
+"read any record." External verbs — `net.*`, `fs.*`,
+`proc.*` — default to *empty* in the bare form, so `net.get` on
+its own grants nothing until you scope it. The explicit
+"any host" form is `net.get: { hosts: ["*"] }`.
 
-| Resource  | What it governs                              |
-|-----------|----------------------------------------------|
-| `records` | Content records — read, create, update, delete |
-| `agent`   | Agent records specifically — create, update, delete, **grant** |
-| `fs`      | Files *outside* the record store             |
-| `net`     | Outbound HTTP — `get`, `post`, `put`, `delete` |
-| `proc`    | Spawning subprocesses — `exec` (argv-style), `eval` (bash pipelines) |
+This rule exists so that a typo or an omitted scope cannot
+silently grant unrestricted external access. Wide grants are
+allowed; they just have to be written down.
 
-The split between `records` and `agent` is load-bearing: a call
-targeting an agent record always requires an `agent.*` grant, never a
-`records.*` grant, regardless of scope. An agent holding only
-`records.update` cannot edit another agent's configuration — by
-design.
+## Scope keys
 
-## Risk tiers
+| Verb               | Scope keys                          |
+|--------------------|-------------------------------------|
+| `records.create`   | `classes` (string list)             |
+| `records.update`   | `classes`, `paths`                  |
+| `records.delete`   | `classes`                           |
+| `agent.create`     | `id`                                |
+| `agent.update`     | `id`, `ids`, `paths`                |
+| `agent.delete`     | `id`, `ids`                         |
+| `agent.grant`      | `id`                                |
+| `fs.read`          | `in`, `paths`                       |
+| `fs.write`         | `in`, `paths`                       |
+| `fs.delete`        | `in`, `paths`                       |
+| `net.get`/`post`/`put`/`delete` | `hosts`                |
+| `proc.exec`        | `in`, `cmds`, `patterns`            |
+| `proc.eval`        | `in`                                |
 
-Every capability in the catalog carries a risk level. The CLI, the
-agent wizard, and `egghead doctor` all sort and color output by risk.
+Entries in `paths:` resolve relative to `in:`. Any `..` segment
+that would escape `in:`, or any absolute path outside `in:`, is
+rejected at parse time rather than silently trimmed at runtime.
+Scopes are allow-lists only; there is no "everything except"
+syntax. Multiple grants of the same verb union additively.
 
-| Risk    | Examples                                             |
-|---------|------------------------------------------------------|
-| **Low**    | `records.read`, `records.create`                   |
-| **Medium** | `records.update`, `fs.read`, `net.get`, `agent.update` |
-| **High**   | `records.delete`, `fs.write`, `fs.delete`, `net.post`/`put`/`delete`, `proc.exec`, `proc.eval`, `agent.delete`, `agent.grant` |
+## The sandbox
 
-Low-risk capabilities are the ergonomic default. Medium- and high-risk
-capabilities should be scoped.
+`fs.*` and `proc.*` grants are scoped to a sandbox root, the
+`in:` key. Egghead's capability matcher rejects any call whose
+target path is outside that root. For `proc.*`, the actual
+subprocess additionally executes inside an OS-level sandbox
+(`sandbox-exec` on macOS, `bwrap` on Linux), which means the
+kernel itself prevents the subprocess from reaching anything
+outside the root, even if the program tried. For `fs.*`, the
+in-process matcher is currently the only line of defense; see
+the [Known limitations](#known-limitations) section for what
+that implies in practice.
 
-## Where agents can go — the sandbox
+The sandbox root is resolved through a hoist chain:
 
-A capability tells you *what verb* an agent holds. A **sandbox** tells
-you *where* that verb can have effect. It's the second coordinate in
-the authority system, and it's enforced by the kernel — not the LLM,
-not the Elixir matcher, not the tool implementation. A compromised
-binary running under an allowed `proc.exec` can't escape the fence
-even if it tries. On macOS the fence is `sandbox-exec`; on Linux it's
-`bwrap` (bubblewrap). `egghead doctor` checks that the backend for
-your platform is available.
+1. Per-grant: the grant's own `in:` value.
+2. Per-agent: a top-level `sandbox:` key in the agent record's
+   frontmatter.
+3. Config-level: a top-level `sandbox:` key in
+   `~/.config/egghead/config.yml`.
 
-The sandbox root can be declared at three levels, and all three
-compose through a hoist chain:
+Deeper levels narrow the root; missing levels inherit. If an
+agent declares `sandbox: /etc` under a config that says
+`sandbox: ~/Work`, the agent is clamped to `~/Work` at load
+time with a warning. Sandboxes only narrow.
 
-1. **Config level** — `sandbox:` in `~/.config/egghead/config.yml`.
-   The global ceiling. No agent, no skill, no MCP tool can escape
-   this path.
-2. **Agent level** — `sandbox:` in an agent record's frontmatter.
-   Narrower than config; must resolve inside it.
-3. **Grant level** — `in:` on a specific capability scope. Narrower
-   still; must resolve inside agent.
+If an `fs.*` or `proc.*` grant has no hoistable `in:` at any
+of the three levels, the grant stays inert — every tool call
+denies. `egghead doctor` flags this with a fix.
 
-Deeper declarations win, missing ones inherit from above, and **each
-level can only narrow**. An agent declaring `sandbox: /etc` under a
-config with `sandbox: ~/Work` gets clamped to the config ceiling at
-load time with a loud warning — the DSL rule is "sandboxes only
-narrow," and widening attempts don't succeed silently.
+`net.*` uses `hosts:` instead of `in:`, so it is not affected
+by the hoist chain.
 
-### The one-line config change
-
-If you set `sandbox: ~/Work` in config, every existing agent's
-external grants become functional inside `~/Work` without touching
-any agent record:
-
-```yaml
-# ~/.config/egghead/config.yml
-records_dir: ~/.egghead
-sandbox: ~/Work
-```
-
-A bare `fs.read` or `proc.exec` grant anywhere hoists the config root
-into its effective `in:` and starts working. This is the intended
-ergonomic payoff of the hoist model — one line, machine-wide fence.
-
-### Top-level `sandbox:` as sugar
-
-In an agent record, `sandbox:` is a shortcut that expands into three
-grants, all rooted at the declared path:
+### `sandbox:` as agent shorthand
 
 ```yaml
 ---
@@ -146,7 +174,7 @@ capabilities: [records.read]
 ---
 ```
 
-Expands at load time to:
+That record expands at load time to:
 
 ```yaml
 capabilities:
@@ -156,259 +184,77 @@ capabilities:
   - proc.exec: { in: ~/projects/foo }
 ```
 
-`proc.eval` is **not** in the sugar — its risk profile requires
-explicit opt-in. `net.*` is likewise excluded — network is an
-orthogonal axis the user declares separately via `net.get`/`net.post`.
+`proc.eval` and `net.*` are deliberately not in the shorthand;
+both have to be declared explicitly because their risk profile
+is higher than the three the shorthand covers.
 
-The sugar works the same way `access:` does: a load-time expansion
-that joins the union of `access:` + `sandbox:` + explicit
-`capabilities:` and dedupes. Nothing downstream sees the shortcut.
-When you `grant` or `revoke` on an agent that uses `sandbox:`, the
-CLI dissolves it: the record rewrites with the explicit expanded
-capabilities and removes the `sandbox:` key, so the frontmatter on
-disk always reflects the agent's real authority.
+### Backend availability
 
-### Per-grant `in:` + relative `paths:`
+`egghead doctor` verifies that the sandbox backend is present
+on your platform. On macOS it checks for `/usr/bin/sandbox-exec`,
+which ships with the OS. On Linux it checks for `bwrap` and
+prints the per-distro install command if it is missing. On
+other platforms — Windows, the BSDs — `proc.*` runs without a
+sandbox, with a warning at startup.
 
-For cases where the three-grant sugar is too broad, write the
-capabilities explicitly and use `in:` on each:
+## Defaults and the `access:` shorthand
 
-```yaml
-sandbox: ~/Work/egghead
-capabilities:
-  - records.read
-  - fs.read:   { in: ~/Work/egghead, paths: [./lib, ./test] }
-  - fs.write:  { in: ~/Work/egghead, paths: [./lib] }
-  - proc.exec: { in: ~/Work/egghead, cmds: [mix, git, rg] }
-  - proc.eval: { in: ~/Work/egghead }
-```
+An agent record with no `capabilities:` and no `access:` loads
+with `[records.read]` as its only grant. To declare an
+explicitly authority-free agent, write `capabilities: []` —
+useful occasionally (a persona whose only job is to react in
+prose), but it's the deliberate case rather than the default.
 
-Rules to know:
+For the common record-family bundles, `access:` is a
+chmod-flavored shorthand:
 
-- **`in:`** — a single absolute-or-`~`-prefixed path. The ceiling for
-  this grant.
-- **`paths:`** — optional list of refinements. Bare names (`lib`) and
-  `./`-prefixed (`./lib`) resolve relative to `in:`. Absolute paths
-  in `paths:` are allowed only if they're already inside `in:`.
-- **No escape** — `..` entries that would escape `in:`, or absolute
-  paths outside `in:`, are rejected at parse time with a clear error.
-  Never a silent trim, never a runtime surprise.
-- **`proc.eval` takes only `in:`** — no `cmds:` / `patterns:`. A
-  free-form shell string can't be meaningfully argv-matched; the
-  sandbox fence is the whole enforcement, and that's only tenable
-  because the fence is kernel-level.
+| `access:` | Expands to                                          |
+|-----------|-----------------------------------------------------|
+| `r`       | `records.read`                                      |
+| `w`       | `records.create`, `records.update`                  |
+| `rw`      | `records.read`, `records.create`, `records.update`  |
 
-### When a sandbox is required
+Deletion is deliberately excluded; the catalog flags
+`records.delete` as high risk, and the shorthand never bundles
+risky verbs.
 
-External grants (`fs.*`, `proc.*`) must have a hoistable `in:` by the
-time they're checked. If all three levels are empty, the grant stays
-inert — `egghead doctor` flags this with an actionable message
-naming the dangling grants and the fix ("add `sandbox:` to the agent
-record, or to `~/.config/egghead/config.yml`"). Network grants use
-`hosts:`, not `in:`, so they're not affected by this rule.
+`access:` unions with `capabilities:` (deduped at load time).
+Write both, and the merged set is what the agent runs with.
+The first time an agent is widened by `egghead agents grant`,
+the shorthand is dissolved into explicit `capabilities:`
+entries on disk so the frontmatter always reflects the agent's
+real authority.
 
-## Bare vs scoped — know the difference
+## Attenuation
 
-The bare form (`- net.get` on its own line) and the scoped form
-(`- net.get: { hosts: [...] }`) mean different things depending on the
-resource family.
+`agent.grant` lets an agent write the `capabilities:` (or
+`access:`, `sandbox:`) field of another agent's record. Two
+rules keep this from turning into a capability escape.
 
-**Internal resources** (`records.*`, `agent.*`) default bare-to-universe:
+First: an agent cannot use `agent.grant` to widen itself.
+Self-modification is denied, regardless of which grants the
+agent holds.
 
-```yaml
-- records.read        # read any record — fine
-- records.update      # update any record — probably too wide
-```
+Second: a granter can only pass on capabilities that are a
+subset of its own, including scope. If the granter holds
+`net.get{hosts: ["*.github.com"]}`, it can grant
+`net.get{hosts: ["github.com"]}` to another agent, but it
+cannot grant `net.get{hosts: ["*"]}` — that would exceed the
+granter's authority.
 
-**External resources** (`net.*`, `fs.*`, `proc.*`) default
-bare-to-empty — a bare grant is inert until scoped:
+Violations surface in three places: the tool result the
+granting agent sees (so the model can course-correct), the
+room transcript (rendered as a guardrail event), and the log.
 
-```yaml
-- net.get             # inert: no hosts, no fetches allowed
-- net.get:            # useful: explicitly allow any host
-    hosts: ["*"]
-```
-
-For `fs.*` and `proc.*`, the scope that activates the grant is the
-`in:` key — the sandbox root. A bare `fs.read` is inert until it has
-an `in:`, either written on the grant itself or inherited from the
-agent's `sandbox:` (see the [sandbox section](#where-agents-can-go-the-sandbox)).
-Explicit `paths:` / `cmds:` / `patterns:` narrow further within `in:`.
-
-The `"*"` entry on `net.get` hosts is a valid, auditable declaration
-of "any host." It is different from the bare form and different from
-omitting the grant entirely. The rule is there so no agent silently
-ends up with unrestricted net or filesystem access.
-
-## Allow-lists only, no wildcards by default
-
-A few rules worth internalizing:
-
-- **No NOT-syntax.** You cannot say "any host except these." The list
-  is the review.
-- **Allow-lists union when duplicated.** Two `net.get:` entries with
-  different hosts merge additively.
-- **Unknown capability names** are logged and ignored (forward-compat
-  for skills referencing future capabilities). Typos *will* bite you
-  silently — see the `egghead doctor` section below.
-
-## Declaring grants in an agent record
-
-An agent is just a record with `class: agent`. The body is its system
-prompt; the frontmatter is its identity and authority.
-
-```yaml
----
-id: agents/scout
-class: agent
-model: anthropic/claude-sonnet-4-6
-sandbox: ~/Work/egghead
-capabilities:
-  - records.read
-  - records.create
-  - records.update
-  - net.get:
-      hosts: ["*"]
-  - net.post:
-      hosts: ["*.parallel.ai"]
----
-
-# Scout
-
-You are Scout. You find connections across domains...
-```
-
-Scout holds the records verbs, the two network verbs, and — via the
-`sandbox:` sugar — `fs.read`, `fs.write`, and `proc.exec` all rooted
-at `~/Work/egghead`. The three external verbs the sandbox implies
-are enough to read and edit files in the workspace and run commands
-against them. To add shell pipelines, Scout would append `- proc.eval:
-{ in: ~/Work/egghead }` explicitly; the sugar doesn't include it.
-
-Capabilities are inert until the record is loaded. Widening them is a
-**frontmatter edit** — a human act, auditable via git if your records
-directory is version-controlled. There is no "always allow" prompt at
-call time. This is intentional: the ratchet is the review.
-
-### Useful by default
-
-An agent record with no `capabilities:` key at all — and no `access:`
-either, introduced below — loads with `records.read` as its only
-grant. The principle: a fresh agent can inspect the store (find other
-records, cite prior work), but nothing else. That's enough to be
-useful in a room without being dangerous.
-
-A zero-authority agent takes an explicit declaration — `capabilities: []`
-and the load-time default is suppressed. The agent loads, shows up
-in rosters, and can't do anything but talk. Useful occasionally (a
-persona whose only job is to react in prose), but it's the deliberate
-case, not the default.
-
-### The `access:` shortcut
-
-For the common `records.*` bundles, `access:` is a chmod-flavored
-shorthand. Three values, nothing else:
-
-| `access:` | Expands to                                              |
-|-----------|---------------------------------------------------------|
-| `r`       | `records.read`                                          |
-| `w`       | `records.create`, `records.update`                      |
-| `rw`      | `records.read`, `records.create`, `records.update`      |
-
-```yaml
----
-id: agents/scribe
-class: agent
-model: anthropic/claude-haiku-4-5
-access: rw
----
-
-# Scribe
-
-You are Scribe. You write down what gets said...
-```
-
-Three things to know about it:
-
-**It's sugar, not a new primitive.** At load time, `access:` is
-expanded into real capability grants before anything else sees it.
-The catalog, the attenuation check, the denial renderer — all of
-them work with the expanded form. Nothing downstream knows the
-shortcut exists.
-
-**It unions with explicit `capabilities:`.** Write both, they combine
-(deduped). The shortcut covers the records family; everything else —
-scoped grants, external resources, agent verbs — still goes through
-the full `capabilities:` list.
-
-```yaml
-access: r
-capabilities:
-  - net.get:
-      hosts: ["api.github.com"]
-```
-
-**`records.delete` is deliberately excluded.** The catalog flags
-deletion `:high` risk; shortcuts should never bundle risky verbs.
-If you want a destructive agent, write `capabilities: [records.delete]`
-explicitly — the extra keystrokes are the review.
-
-A `w` without `r` is not a mistake. Write-blind agents — drop-boxes,
-ingestion workers, crash reporters, producer-only pipelines — are a
-real pattern, not a typo. Unix `w` on a directory has meant "can add
-entries without reading the listing" since the 1970s. An agent that
-can file reports but can't see other agents' reports is a
-compartmentalization boundary, not a broken configuration.
-
-`access:` and `sandbox:` are siblings — same shape, same dissolve
-behavior on mutation. `access:` is sugar for the records-family
-verbs; `sandbox:` is sugar for the workspace-bound external verbs.
-You can use both in the same record; they union at load time:
-
-```yaml
-access: r               # records.read
-sandbox: ~/projects/foo # fs.read + fs.write + proc.exec, all in: ~/projects/foo
-capabilities:
-  - net.get:
-      hosts: ["api.github.com"]
-```
-
-## Attenuation — how agents grant other agents
-
-The heaviest capability in the catalog is `agent.grant`. An agent that
-holds it can write the `capabilities:` or `access:` field on other
-agent records (through `create_record` or `update_record`). Both keys
-route through the same check: `access:` is expanded into its
-capability set first, unioned with any explicit `capabilities:` list,
-and the *union* is what attenuation validates. The shortcut cannot be
-used to slip a grant past the granter's authority.
-
-Two rules keep this from turning into a capability escape:
-
-**Self-modification is always denied.** An agent cannot use
-`agent.grant` to widen itself, regardless of which grants it holds.
-Full stop.
-
-**Grants must be subsets.** The proposed capabilities must be ⊆ the
-granter's own. Scope narrows, too: if the granter holds
-`net.get{hosts: ["*.github.com"]}`, it can only pass on `net.get`
-scoped to `github.com` or narrower.
-
-If either rule is violated, the denial surfaces in three places: the
-tool result the LLM sees (so it can course-correct), the room
-transcript (rendered as an amber guardrail event), and the log.
-
-## The CLI
-
-Three commands cover day-to-day capability management:
+## CLI
 
 ```bash
-egghead agents capabilities <agent-id>     # show held grants, sorted by risk
-egghead agents grant <agent-id> <spec>     # widen — confirmation + audit log
-egghead agents revoke <agent-id> <spec>    # narrow — no confirmation
+egghead agents capabilities <agent-id>     # held grants, sorted by risk
+egghead agents grant <agent-id> <spec>     # widen, with confirmation
+egghead agents revoke <agent-id> <spec>    # narrow
 ```
 
-The spec grammar matches the yaml shape in compact form:
+The spec grammar matches the YAML shape in compact form:
 
 ```bash
 egghead agents grant scout 'net.get{hosts=[*.github.com,api.anthropic.com]}'
@@ -416,268 +262,126 @@ egghead agents grant scout 'proc.exec{in=~/Work,cmds=[rg,jq]}'
 egghead agents revoke scout records.update
 ```
 
-`egghead agents grant <agent-id>` with no spec opens an interactive
-picker over the catalog, sorted low-risk first.
+`egghead agents grant <agent-id>` with no spec opens an
+interactive picker over the catalog, sorted from low risk to
+high.
 
-### Grant, revoke, and the shortcuts
-
-When you `grant` or `revoke` on an agent declared with `access:` or
-`sandbox:`, the CLI **dissolves the shortcut**: the record is
-rewritten with an explicit `capabilities:` list covering the unified
-set (shortcuts expanded, plus whatever was already there, plus or
-minus your change) and both `access:` and `sandbox:` keys are
-removed. The contract is that the frontmatter on disk always
-reflects the agent's real authority — you never see `access: rw` or
-`sandbox: ~/foo` sitting next to an out-of-sync `capabilities:` list.
-
-Shortcut-only agents that you don't touch with tooling keep their
-shorthand indefinitely. The dissolution fires only when you mutate.
-Agents with no declared capabilities at all (relying on the default
-`records.read`) also get the default materialized into their
-explicit list on first grant, so the grant can't silently drop the
-default authority.
-
-The same dissolution applies when agents grant each other via
-`create_record` / `update_record` — a write that touches
-`capabilities:`, `access:`, or `sandbox:` on an agent record always
-lands as explicit `capabilities:` with neither shortcut key. This
-also closes the escalation hole where an agent with `agent.update`
-(but not `agent.grant`) might otherwise write `access: rw` or a
-broader `sandbox:` to widen another agent silently.
-
-## The built-in Index agent
-
-Every Egghead install ships with a built-in **Index** agent so a fresh
-install always has someone to talk to. Its defaults are narrow on
-purpose (`records.read`, `records.create`) — enough to be useful,
-nowhere near enough to reshape the record store on its own.
-
-You widen Index the same way you widen any agent: by dropping a
-record with `id: index` into your store.
-
-```yaml
----
-id: index
-class: agent
-model: anthropic/claude-sonnet-4-6
-capabilities:
-  - records.read
-  - records.create
-  - agent.create
-  - agent.grant
----
-
-You are Index, the record store agent...
-```
-
-The moment that record exists, the built-in default steps aside and
-yours runs instead. Attenuation still applies: whatever grants this
-record declares, it can only re-grant subsets to agents it spawns.
+When you `grant` or `revoke` against an agent that uses
+`access:` or `sandbox:`, the CLI dissolves the shorthand into
+explicit `capabilities:` entries and rewrites the record. This
+is a deliberate contract: the frontmatter on disk always
+reflects the agent's effective authority, with no ambiguity
+between a shorthand and an out-of-sync explicit list.
 
 ## What `egghead doctor` checks
 
-`egghead doctor` iterates every record with `class: agent` and flags:
+For each `class: agent` record, `egghead doctor` runs the
+following validations.
 
-- **Unknown capability names.** `records.reed` → "did you mean
-  `records.read`?" Uses string-distance matching, so close typos are
-  caught.
-- **Unknown scope keys.** `fs.write: { pathz: ["*"] }` → "did you mean
-  `paths`?"
-- **Wrong scope value types.** Scope keys expect either a string or a
-  list of strings; anything else is flagged.
-- **Escalation risks.** An `fs.write` or `fs.delete` whose `paths`
-  scope covers your `records_dir` gets a warning — the capability
-  model can be bypassed by writing records directly. Same for
-  `proc.exec` / `proc.eval` granted with no `in:`, no `cmds:`, and no
-  `patterns:` — a truly unbounded process spawn.
-- **Dangling external grants.** An agent holding `fs.*` or `proc.*`
-  with no hoistable sandbox (no grant `in:`, no agent `sandbox:`, no
-  config `sandbox:`) has inert grants: every tool call denies with a
-  scope violation. Doctor flags this with the fix: *"add `sandbox:`
-  to the agent record, or set `sandbox:` in `~/.config/egghead/config.yml`
-  for a machine-wide root."*
-- **Sandbox backend availability.** On macOS, verifies
-  `/usr/bin/sandbox-exec` is on PATH. On Linux, verifies `bwrap` is
-  installed and prints the per-distro install command if missing
-  (`apt install bubblewrap`, `dnf install bubblewrap`, etc.). On
-  unsupported platforms, warns that `proc.*` tools will run
-  unsandboxed.
+It flags unknown capability names and suggests close matches
+for likely typos. It flags unknown scope keys, such as `pathz`
+where `paths` was meant. It flags scope values whose types do
+not match what the key expects. It flags escalation risks,
+such as an `fs.write` grant whose `paths` scope covers your
+records directory or a `proc.exec` grant with no `in:`,
+`cmds:`, or `patterns:`. It flags external grants that have
+no hoistable sandbox root and would therefore be inert. And
+it checks that the sandbox backend is available for the
+current platform.
 
-Doctor warns; it does not block. Records always load. But the warnings
-point at exactly the thing a typo or missing dependency in frontmatter
-would corrupt silently.
+`doctor` warns; it does not block. Records always load even
+when warnings fire, but the warnings name the exact thing a
+typo or missing dependency in frontmatter would corrupt
+silently otherwise.
 
-## What happens when a grant doesn't cover a tool call
+## Denial codes
 
-When an agent asks for something its capabilities don't cover, the
-denial is visible in three places:
+When a tool call falls outside an agent's grants, the runtime
+emits one of these codes:
 
-**To the LLM.** The tool result comes back with `is_error: true` and a
-structured body naming the missing capability in plain English, so
-the model can course-correct or escalate.
+| Code                         | Meaning |
+|------------------------------|---------|
+| `:capability_absent`         | No grant for the requested `resource.verb`. |
+| `:scope_violation`           | A grant exists, but the request is outside its scope. |
+| `:self_modification`         | `agent.grant` was called with the granting agent as its own target. |
+| `:exceeds_grantor_authority` | `agent.grant` proposed capabilities that are not a subset of the granter's. |
+| `:unknown_tool`              | The tool name is not registered. |
 
-**To the transcript.** PubSub broadcasts an `{:agent_tool_denied, ...}`
-event. The TUI and web chat render it as a distinct amber guardrail
-entry — not a red crash, not a silent failure. You see exactly what
-was asked for and what was missing.
+The denial is delivered to the model as a tool result with
+`is_error: true` and a structured body, to the room transcript
+as a guardrail event, and to `Logger.warning` with the
+relevant metadata. The agent's next turn can read its own
+denial and adjust.
 
-**To the log.** `Logger.warning` with structured metadata (`agent_id`,
-`tool`, `resource`, `verb`, `scope`). Useful for audit trails if you
-keep your records directory under version control.
+## Skills and capabilities
 
-Five denial codes cover the taxonomy:
+A skill declares the tools it depends on in its `allowed-tools`
+field. At discovery time, Egghead checks the asking agent's
+capabilities against the skill's derived requirements; skills
+the agent cannot satisfy are filtered out silently. A skill
+that requires `WebFetch(domain:github.com)` will only appear
+to agents that hold `net.get{hosts: ["github.com"]}` or
+broader.
 
-| Code                         | Meaning                                                |
-|------------------------------|--------------------------------------------------------|
-| `:capability_absent`         | No grant for the requested `resource.verb`             |
-| `:scope_violation`           | Grant exists but the request falls outside scope       |
-| `:self_modification`         | `agent.grant` with target == caller                    |
-| `:exceeds_grantor_authority` | `agent.grant` proposing capabilities not ⊆ granter's   |
-| `:unknown_tool`              | Tool name not registered                               |
+Skills never widen capabilities. The full skill format and
+the CLI for inspecting skill-vs-agent gaps are documented in
+[Skills]({{< ref "skills" >}}).
 
-## Skills — capabilities you don't have to write yourself
+## Provider tools
 
-A **skill** is a `SKILL.md` record that describes a capability — an
-instruction set plus the tools it leans on. Skills live either in the
-record store (`class: skill`) or in a drop-zone directory (by default
-`~/.agents/skills/`). Both sources are treated as first-class.
+Some tools execute on the LLM provider's side rather than
+locally — Anthropic's `web_search`, OpenAI's `code_execution`,
+and so on. Capability checks for those run at
+request-construction time. The tool is omitted from the
+request entirely if the agent does not hold the matching
+grant. Where the provider supports allow-listing, the agent's
+scope is translated to the provider's native form (a
+`net.get{hosts: ["github.com"]}` grant becomes a
+`web_search` request configured with
+`allowed_domains: ["github.com"]`, enforced server-side).
+Provider tools that do not support scoping require an
+explicit, never-default capability.
 
-Skills never widen capabilities. `Egghead.Skill.inspect/1` parses a
-`SKILL.md`, extracts the tools it references, and derives the
-capability requirements (`WebFetch → net.get/post`, `Bash(rg) →
-proc.exec{cmds: [rg]}`, and so on). At dispatch time the agent's
-existing grants are checked against those derived requirements. A
-skill that references tools the agent doesn't have capabilities for
-just doesn't run — the grant is the gate.
+One honest limitation: provider tool results land back in the
+model's context the same turn they are called, so the content
+they return cannot be scanned for prompt injection before it
+arrives. When a tool can be implemented locally, the local
+path is safer.
 
-Sandbox hoisting applies to skills at check time: a skill's `Bash(...)`
-translation maps to `proc.exec`, and the effective `in:` for that
-grant resolves through the agent's sandbox chain like any other
-capability. `egghead skills check <skill> --agent <id>` surfaces
-sandbox violations alongside the usual capability delta.
+## Known limitations
 
-Inspect before you curate:
+A few honest gaps in the current implementation, worth knowing
+about.
 
-```bash
-egghead skill list
-egghead skill inspect <id-or-path>
-egghead skill check <id> --agent <agent-id>
-```
+`fs.*` has one layer of enforcement; `proc.*` has two. Both
+go through the in-process capability matcher, which rejects
+any call whose target falls outside the agent's sandbox root
+before the operation runs — so a path-traversal attempt or a
+typo'd absolute path is denied at the matcher and never
+reaches the file system. The difference is what happens *if*
+the matcher ever lets something through: `proc.exec` and
+`proc.eval` execute their subprocess under the OS sandbox, so
+the kernel still contains the process; `fs.*` operations run
+inside the Egghead BEAM with the BEAM's own credentials, with
+no second line of defense. A future release could route
+filesystem operations through a sandboxed helper process to
+close that gap.
 
-## Provider tools and server-side scoping
+Linux network scoping is coarser than macOS's. `bwrap`'s
+`--unshare-net` is all-or-nothing per subprocess; macOS
+`sandbox-exec` supports hostname-scoped network rules. Cross-
+platform hostname scoping for processes would require a proxy
+layer.
 
-Some tools live locally (`get_record`, `fs_read`, `web_fetch`); others
-are provided by the LLM vendor and execute server-side (Anthropic's
-`web_search`, `code_execution`). The capability check happens at a
-different point for each:
+`sandbox-exec` on macOS is officially deprecated by Apple.
+It still ships on every macOS version through Sequoia, but
+Apple has not documented a supported replacement. If Apple
+ever removes it, the macOS backend will need to be rebuilt
+against a different primitive.
 
-- **Local tools.** Checked at dispatch time, with full parameter
-  awareness. A call to `web_fetch` against `evil.example.com` is
-  denied before the request leaves the node.
-- **Provider tools with scoping.** The tool is only included in the
-  request to the LLM at all if the agent holds the relevant grant;
-  its scope is translated into the provider's native allow-list. An
-  agent with `net.get{hosts: ["*.github.com"]}` gets a `web_search`
-  tool configured with `allowed_domains: ["github.com"]`, enforced
-  server-side.
-- **Provider tools without scoping.** All-or-nothing. They require a
-  coarse, explicit capability that is never granted by default.
-
-One honest limitation: provider tool results land back in the model's
-context in the same turn, so content passing through them can't be
-scanned for prompt injection before it arrives. When a tool can be
-implemented locally, that's the safer path.
-
-## Inspirations
-
-Egghead's capability model didn't invent anything. It stitches
-together ergonomics and enforcement ideas from three lineages:
-
-**OpenBSD pledge/unveil.** The *declaration style* and the
-*split between verbs and filesystem view*. `pledge(2)` is a process's
-list of allowed verbs; `unveil(2)` restricts which parts of the
-filesystem those verbs can touch. Egghead's `capabilities:` is the
-pledge — what an agent can do. Egghead's `sandbox:` / `in:` is the
-unveil — where it can be done. The two halves compose the same way:
-both lists can only narrow, never widen, and both are enforced by the
-kernel once declared. 33 of OpenBSD's 36 boot processes use `pledge`;
-3 of 47 use Capsicum. Simplicity drove adoption, and egghead follows
-the same posture: one declaration per record, widening is a human
-edit, never a runtime "allow once" prompt. We take the enforcement
-from `sandbox-exec` (macOS) and `bwrap` (Linux) rather than pledge
-itself because egghead runs on developer laptops where those are the
-native primitives; OpenBSD pledge would be a future-work natural fit.
-Man pages: [pledge(2)](https://man.openbsd.org/pledge.2),
-[unveil(2)](https://man.openbsd.org/unveil.2).
-
-**FreeBSD Capsicum.** The *granularity*: rights attach to scoped
-resources, not just verbs. Capsicum capabilities can be restricted
-further but never expanded, and restrictions are irreversible. This
-is the shape of Egghead's scope vocabulary — `net.get{hosts}`,
-`fs.read{in, paths}`, `proc.exec{in, cmds, patterns}`. A grant
-narrows the verb to specific parameters; there is no syntax to
-expand at runtime.
-Original paper: [Watson et al., *Capsicum: Practical Capabilities for
-UNIX*,
-USENIX Security 2010](https://www.usenix.org/conference/usenixsecurity10/capsicum-practical-capabilities-unix).
-
-**Google Macaroons.** The *delegation model*: authorization tokens
-with chained caveats, where a holder can add restrictions without
-contacting the issuer. Subset-only delegation, provable without
-coordination. This is where Egghead's `agent.grant` attenuation
-check comes from: when one agent grants capabilities to another,
-the proposed grants must be ⊆ the granter's own, including scope.
-No agent can hand out authority it doesn't hold.
-Original paper: [Birgisson et al., *Macaroons: Cookies with Contextual
-Caveats for Decentralized Authorization in the Cloud*,
-NDSS 2014](https://research.google/pubs/pub41892/).
-
-## What the capability model doesn't solve
-
-Worth naming explicitly, so you know what you're trusting:
-
-- **Content laundering through provider tools.** Web search results
-  re-enter the model's context in the same turn. We can't scan them
-  before they land.
-- **Sibling collusion.** An agent with `agent.grant` can spawn peers
-  with identical authority. Each operates within its scope (no
-  widening), but coordination across processes isn't controlled. This
-  is fundamental to capability systems, not specific to Egghead.
-- **Cross-node delegation.** The attenuation check runs in-process.
-  If a capability ever needs to cross a network or process boundary
-  intact, a serialized-token scheme (along macaroon lines) is what
-  would make that sound. Not needed yet.
-- **FS tools run in-BEAM.** `fs.read` and `fs.write` are implemented
-  in Elixir inside the BEAM, so the sandbox fence is advisory for
-  them (path-prefix checked by the matcher against the hoisted root).
-  `proc.*` is kernel-fenced; everything an allowed command does is
-  contained. A future pass could route FS ops through a per-session
-  sandboxed helper process, closing this gap, but the attack surface
-  today is small — only our own audited code runs there, not
-  arbitrary third-party binaries.
-- **Unsupported platforms.** The kernel sandbox works on macOS
-  (`sandbox-exec`) and Linux (`bwrap`). Windows, the BSDs, and
-  illumos fall through to unsandboxed `Port.open` with a startup
-  warning. `proc.*` grants work there, but without the kernel fence;
-  the Elixir matcher's advisory checks are the only line. OpenBSD
-  has native `pledge`/`unveil` that'd be a natural fit and is a
-  candidate for a later pass.
-- **`sandbox-exec` is Apple-deprecated.** It still ships on every
-  macOS (including Sequoia) and is used heavily by Apple's own
-  internals, but Apple has marked both it and `sandbox_init_with_parameters`
-  deprecated without documenting a supported replacement. If Apple
-  ever actually removes it, this pass will need a follow-up — likely
-  routing through Endpoint Security Framework or a different
-  approach entirely.
-- **Linux network hostname scoping is coarse.** `bwrap`'s
-  `--unshare-net` is all-or-nothing per subprocess. macOS
-  `sandbox-exec` supports hostname-scoped network rules; Linux
-  doesn't without a separate proxy layer. Today we expose all-or-nothing
-  on Linux and defer hostname scoping to a later pass.
-
-These are honest limits of the current implementation. The one
-limitation the earlier version of this guide named — *"a compromised
-tool can exfiltrate data if the tool code itself is hostile"* — is no
-longer in the list. The kernel sandbox closes that gap: a hostile
-binary under a `proc.exec` grant hits EPERM trying to read outside
-the fence, regardless of what the argv allowlist did or didn't check.
+Sibling collusion is not prevented. An agent holding
+`agent.grant` can spawn peer agents with the same authority.
+Each peer operates within scope (no widening), but
+coordination between them is not constrained. This is
+inherent to capability systems generally, not specific to
+Egghead.

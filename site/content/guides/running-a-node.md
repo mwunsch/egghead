@@ -1,146 +1,179 @@
 ---
 title: Running a node
-weight: 40
+section: Operations
+weight: 38
+summary: egghead serve as a long-lived process. Binding, exposure, secrets, logs, backup, process supervision.
 ---
 
-Egghead is designed to run as a single process on a single machine
-— your laptop, a VPS, a home server. No distributed dance, no
-Kubernetes manifest. A node is a `egghead serve` process (or the
-TUI), a records directory, a config file, and whatever process
-manager you choose to keep the thing alive.
+A running Egghead node is a single operating-system process,
+either `egghead serve` or the TUI. That one process houses the
+records index, every running agent, every live chat room, the
+web UI, and the MCP HTTP endpoint, all listening on a single
+port. There is no cluster story, no separate database service,
+and no message queue in the way. If you stop the process,
+nothing keeps running; if you start it, everything comes back.
 
-This guide covers the operational shape: starting the server,
-exposing it safely, tailing logs, backing up the store, and what to
-check when something looks off.
+This guide walks through the operational shape of that process:
+starting and stopping the server, exposing it safely to
+something other than your own laptop, where logs go, what to
+back up, and what to put in front of it for production use.
 
-## `egghead serve`
+## Starting the server
 
 ```bash
 egghead serve
 ```
 
-Starts the web UI, the MCP HTTP endpoint, the record store watcher,
-the agent layer, and Phoenix's HTTP listener — all in one process,
-on one port. Blocks in the foreground. Logs to stdout by default.
+The command starts the web UI, the file watcher, the agent
+layer, and the HTTP listener, all in one process. It runs in
+the foreground and logs to standard output, so you can see what
+is happening; it blocks until you terminate it. When you are
+ready to run Egghead under a process manager, the command stays
+the same.
 
-Optional flags:
+A couple of optional flags are worth knowing:
 
-- `--port <n>` — override the HTTP port from the command line.
-- `--config <path>` — point at a different config file for this
-  invocation.
+- `--port <n>` overrides `web.port` from the configuration
+  file for this invocation.
+- `--config <path>` points at a different configuration file
+  for this invocation, leaving the default file untouched.
 
-The TUI (`egghead`) runs the same supervision tree but with a
-terminal interface instead of the web frontend. Logs go to file
-when the TUI is running — the alt-screen renderer would corrupt
-stdout otherwise.
+The TUI (`egghead` with no subcommand) runs the same supervision
+tree, but renders to the terminal instead of serving HTTP. The
+TUI redirects logs to a file, because its terminal output is
+the alt-screen renderer and any stray log line would corrupt
+the display.
 
-## Binding and exposure
+## Bind and exposure
 
-Configuration lives in the `web:` section of `config.yml` (see the
-[Configuration guide]({{< ref "configuration" >}})):
+The relevant configuration is in the `web:` section:
 
 ```yaml
 web:
-  port: 4000          # listen port
-  host: localhost     # hostname in generated URLs
-  bind: 127.0.0.1     # listen address
+  port: 4000
+  host: localhost
+  bind: 127.0.0.1
 ```
 
-The default `bind: 127.0.0.1` means the server only accepts
-connections from the local machine. This is almost always what you
-want — the HTTP MCP transport and the web UI both grant full node
-authority, and neither does any authentication on its own.
+The default bind is `127.0.0.1`, which means the server only
+accepts connections from the local machine. This is almost
+always the right choice. Egghead does no authentication of its
+own — the HTTP MCP transport and the web UI both grant full
+node authority to anyone who can connect — so a
+network-reachable endpoint without authentication is, in
+effect, an unauthenticated read/write API for your records
+store and your agents.
 
-If you want to expose the node externally, you have two options and
-only one of them is sound:
+There are two safe ways to deploy:
 
-**The right way: reverse proxy.** Keep the Egghead bind at
-`127.0.0.1:4000`. Run nginx, Caddy, or similar on the public
-interface. Terminate TLS there. Put authentication (basic auth,
-OAuth, mTLS, IP allow-list) in front of the proxy. Forward `/` and
-`/mcp` through to `127.0.0.1:4000`.
+1. **Loopback only.** Keep the default `bind: 127.0.0.1` and
+   reach the server from the same machine at
+   `http://127.0.0.1:4000`. This is the right shape for a
+   personal laptop or a developer machine.
+2. **Loopback plus a reverse proxy.** Keep the default bind,
+   then run nginx, Caddy, or similar on a public interface,
+   handling TLS and authentication. The proxy forwards `/`
+   and `/mcp` to `127.0.0.1:4000`, and Egghead never sees a
+   request the proxy did not authenticate. This is the right
+   shape for a node running on a VPS or a homelab box that
+   anyone outside the LAN should be able to reach.
 
-**The wrong way: `bind: 0.0.0.0` with nothing in front.** An
-Egghead node with no authentication listening on a public interface
-is a fully-authorized MCP server anyone can hit. Don't.
+There is exactly one safe way to bind `0.0.0.0` directly,
+without a reverse proxy in front: when every network interface
+the server is listening on is itself protected. If you put the
+machine on a Tailscale tailnet, only members of your tailnet
+can connect to it. If you put it on a private VPC subnet, only
+resources inside the VPC can connect. In both cases the network
+itself has done the authentication for you, and Egghead's lack
+of built-in auth is no longer a problem.
 
-If you're running on a trusted internal network (Tailscale, a
-VPC with strict ingress), `bind: 0.0.0.0` is fine — the perimeter
-is somewhere else. Know where your perimeter is.
+If your machine has a public IP and you bind `0.0.0.0` without
+either a reverse proxy or a network like the ones above, anyone
+on the internet can reach the endpoint, and because Egghead
+does no authentication on its own, they can read every record
+and prompt every agent. This is the failure mode that
+"unauthenticated public web app" usually implies, plus the
+uncomfortable detail that your agents may be configured to
+write files, run shell commands, or hit external APIs on your
+behalf. Don't bind `0.0.0.0` to a public interface without
+authentication in front.
 
-## Secrets and sessions
+## Secrets
 
-When binding beyond loopback, set `SECRET_KEY_BASE` in the
-environment:
+When you are binding beyond loopback, set `SECRET_KEY_BASE`
+in the environment:
 
 ```bash
 export SECRET_KEY_BASE=$(openssl rand -base64 48)
 egghead serve
 ```
 
-This keys Phoenix's session cookies. Without it, Egghead warns at
-startup and falls back to a generated-per-run key — usable for
-localhost, not for anything that crosses the network.
-
-Same rule as with API keys: keep it in the environment, not the
-config file. The `{env:SECRET_KEY_BASE}` pattern works if you want
-it referenced from config explicitly.
+`SECRET_KEY_BASE` is the secret the web server uses to sign
+session cookies and other server-side state. Without it, the
+server generates a per-process key at startup and warns. That
+is acceptable for localhost, where session continuity across
+restarts is not security-critical, but it is not acceptable
+for anything that crosses the network. Persist the value in
+the environment rather than in `config.yml`. The
+`{env:SECRET_KEY_BASE}` substitution lets you reference it
+from the configuration file without storing the secret there.
 
 ## Logs
 
-By default, logs land at:
+By default, the application log lives at
+`~/.local/state/egghead/egghead.log` (Egghead respects
+`$XDG_STATE_HOME` if set). The log routing depends on which
+command you ran:
 
-```
-~/.local/state/egghead/egghead.log
-```
+| Mode       | Used by                             |
+|------------|-------------------------------------|
+| `:console` | `egghead serve`, `iex -S mix`        |
+| `:file`    | the TUI and most CLI commands        |
+| `:silent`  | `egghead mcp` (because stdout carries the JSON-RPC protocol) |
 
-Honoring `$XDG_STATE_HOME` when set. Three modes:
-
-- `:console` — stdout. Used by `egghead serve` and `iex -S mix`.
-- `:file` — redirect to the log file. Used by the TUI (stdout is
-  the alt-screen renderer; logs would corrupt it) and by default
-  for most CLI commands.
-- `:silent` — to file, no console. Used by `egghead mcp` because
-  MCP is JSON-RPC on stdout and any log noise would break the
-  protocol.
-
-Tail them:
+To follow the log:
 
 ```bash
-egghead logs            # tail -f the log file
+egghead logs            # tail -f
 egghead logs -n 200     # start with the last 200 lines
 ```
 
-## Persistence model
+## State and persistence
 
-The records directory is the source of truth. Everything else is
-derived:
+The records directory is the source of truth. Everything else
+is derived from it:
 
-| Thing                                | Where it is                     | Rebuild if lost? |
-|--------------------------------------|----------------------------------|------------------|
-| Records                              | `<records_dir>/*.md`             | No — this is data |
-| Search index                         | `<records_dir>/.egghead/index.db` | Yes, from records |
-| Agent processes                      | RAM only                         | Yes, from agent records |
-| Live chat rooms                      | RAM only                         | No (save first)  |
-| Saved transcripts                    | Records with `class: transcript` | They're records  |
+| Thing                | Location                              | Rebuild if lost |
+|----------------------|---------------------------------------|-----------------|
+| Records              | `<records_dir>/*.md`                  | No, this is your data. |
+| Search index         | `<records_dir>/.egghead/index.db`     | Yes, from records. |
+| Agent processes      | RAM only                              | Yes, from `class: agent` records. |
+| Live chat rooms      | RAM only                              | No — `/save` first. |
+| Saved transcripts    | `class: transcript` records           | They are records. |
 
-The practical implications:
+That table has practical implications worth naming.
 
-- **Backup = copy the records directory.** `rsync`, `git`, cloud
-  sync, whatever you already use for Markdown. That's the whole
-  backup strategy.
-- **The index is disposable.** Delete
-  `<records_dir>/.egghead/index.db` and the store rebuilds it on
-  next start. First start takes longer; nothing is lost.
-- **Live rooms are not persistent.** If you want a conversation to
-  survive a node restart, `/save` it as a transcript first. Dropped
-  rooms auto-save by default, so in practice you mostly don't need
-  to think about it.
+Backup is `cp -r` or `rsync` against the records directory.
+There is no database to dump and no migration script to run.
+Whatever already keeps your Markdown notes safe — Git, iCloud,
+a NAS, a cron job — is also what keeps your Egghead store
+safe.
 
-## Version-controlling the store
+The search index is disposable. If you delete
+`<records_dir>/.egghead/index.db`, Egghead rebuilds it on next
+start; the rebuild takes longer than a normal startup but
+nothing is lost.
 
-`git init` inside your records directory turns your knowledge graph
-into a version-controlled artifact:
+Live rooms are not persistent. If you want a conversation to
+survive a restart, save the transcript first. The default
+`/drop` behavior auto-saves, so in practice you rarely have to
+think about this.
+
+## Version-controlling the records directory
+
+Putting your records directory under Git turns every note,
+every agent definition, and every saved transcript into a
+diffable artifact with history:
 
 ```bash
 cd ~/.egghead
@@ -149,62 +182,40 @@ git add -A
 git commit -m "initial"
 ```
 
-Commit regularly — the file-level diffs are readable, merge
-conflicts on separate records are trivial, and you get history on
-every note, every agent definition, every saved transcript. Widening
-an agent's capabilities becomes a git-diffable change. An
-accidentally-edited record becomes a `git restore` away from fixed.
+A consequence of putting agent records under Git: widening an
+agent's capabilities becomes a reviewable change. The diff
+shows exactly which verbs were added or removed, and a code
+review on a Git commit is the same review you would otherwise
+have to do at runtime. This is the workflow Egghead's
+authority model assumes.
 
-The `.egghead/` subdirectory (index, state) is safe to `.gitignore`
-— it'll be rebuilt on any fresh checkout.
+The `.egghead/` subdirectory (index, runtime state) is safe
+to add to `.gitignore`; it is rebuilt on any fresh checkout.
 
-## `egghead doctor`
+## Optional dependencies
 
-Run before you dig into a problem:
+| Platform | Package         | Purpose |
+|----------|-----------------|---------|
+| Linux    | `inotify-tools` | File watcher for record hot-reload. |
+| Linux    | `bubblewrap`    | Sandbox backend for `fs.*` and `proc.*` grants. |
+| macOS    | none            | FSEvents and `sandbox-exec` are native. |
+| Windows  | not supported   | — |
 
-```bash
-egghead doctor
-```
+`egghead doctor` checks both Linux dependencies and prints the
+install one-liner for your package manager when one is
+missing. Without `inotify-tools`, changes to records will not
+hot-reload until the next start; without `bubblewrap`, agents
+holding `fs.*` or `proc.*` grants run unsandboxed and Egghead
+warns at startup.
 
-Checks:
+Everything else is bundled in the binary. There is no BEAM or
+Elixir runtime to install separately; Burrito-packaged
+releases are self-contained.
 
-- Config file exists and parses
-- Records directory is present and writable
-- The SQLite index is readable (or can be rebuilt)
-- Each configured LLM provider responds to a lightweight probe
-- Agent records pass frontmatter validation (unknown capabilities,
-  bad scope keys, escalation risks; see the
-  [Capabilities guide]({{< ref "capabilities" >}}))
-- On Linux: `inotifywait` is installed (required for file watching)
-- Log file is writable
-- OpenTUI NIF is available for this platform (TUI feature)
+## Keeping the server alive
 
-Emits a summary of passes, warnings, and failures with suggested
-fixes. Non-zero exit on failure, zero exit on pass-or-warning — so
-it composes into scripts.
-
-Doctor is idempotent and safe to run against a live node.
-
-## Optional OS dependencies
-
-| OS       | What you need             | Why                                    |
-|----------|---------------------------|----------------------------------------|
-| Linux    | `inotify-tools`           | File watcher for record hot-reload     |
-| macOS    | Nothing                   | FSEvents is native                     |
-| Windows  | Not supported yet         |                                        |
-
-Without `inotify-tools`, changes to records require a manual restart
-to pick up. `egghead doctor` flags the absence and prints the
-install one-liner for your package manager.
-
-Everything else is bundled in the binary — no runtime dependencies,
-no BEAM installation required. Burrito-packaged releases are
-self-contained.
-
-## Keeping it alive
-
-`egghead serve` is a foreground process with no built-in
-daemonization. Use your system's process manager.
+`egghead serve` is a foreground process. It does not
+daemonize itself, so use the system's process manager.
 
 ### systemd
 
@@ -226,39 +237,35 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+Then:
+
 ```bash
 systemctl enable --now egghead
-systemctl status egghead
 journalctl -u egghead -f
 ```
 
 ### launchd (macOS)
 
-A `LaunchAgent` plist with `ProgramArguments = ["/usr/local/bin/egghead", "serve"]`
-and `KeepAlive = true`. Put it in `~/Library/LaunchAgents/` and
-`launchctl load` it.
-
-### tmux / screen
-
-For a dev box: `tmux new -s egghead "egghead serve"` and detach.
-Not production-grade, but fine for "I'm iterating and want this up
-without a terminal in the foreground."
+A LaunchAgent plist with
+`ProgramArguments = ["/usr/local/bin/egghead", "serve"]` and
+`KeepAlive = true`. Place the file in
+`~/Library/LaunchAgents/` and run `launchctl load` against it.
 
 ### Graceful shutdown
-
-`SIGTERM` cleanly flushes the supervision tree and closes the
-record store:
 
 ```bash
 kill $(pgrep -f 'egghead serve')
 ```
 
-The BEAM's abort menu (Ctrl-C in an interactive session, then `a`)
-also works in the foreground.
+`SIGTERM` flushes the supervision tree and closes the records
+store cleanly. The BEAM's interactive abort sequence
+(`Ctrl-C`, then `a`) also works when you are running the
+server in the foreground.
 
-## Reverse proxy example
+## Reverse proxy
 
-Caddy is probably the shortest path:
+A short Caddy example that handles TLS and basic auth in front
+of an Egghead node bound to loopback:
 
 ```caddy
 egghead.example.com {
@@ -269,7 +276,7 @@ egghead.example.com {
 }
 ```
 
-nginx:
+The equivalent for nginx:
 
 ```nginx
 server {
@@ -291,53 +298,56 @@ server {
 }
 ```
 
-Set `web.host` in config.yml to the external hostname
-(`egghead.example.com`) so generated links point at the proxy, not
-loopback.
+Set `web.host` in `config.yml` to the external hostname
+(`egghead.example.com` in this example) so any absolute URLs
+Egghead generates point at the proxy rather than at loopback.
 
-## Degraded mode
+## `egghead doctor`
 
-If no LLM provider is configured and no API key env vars are set,
-the node still comes up. What you get:
+Run `egghead doctor` whenever something looks off. It checks
+that the configuration file parses, that the records directory
+is present and writable, that the SQLite index is readable or
+rebuildable, that each configured LLM provider responds to a
+small probe, that every agent record passes frontmatter
+validation, that the Linux file-watcher and sandbox
+dependencies are installed, that the log file is writable,
+and that the OpenTUI native module is available for the TUI.
 
-- Records: search, read, write, traversal — all working
-- The web UI: full records browser, no chat
-- MCP tools: record-manipulation tools all functional; agent- and
-  consult-related tools return "no providers configured"
-- The TUI records mode: unchanged
-
-This is the "knowledge store with no agents" configuration — useful
-as a baseline, deliberately supported. Add a key to the config or
-the environment and the agent layer wakes up without a restart.
+`doctor` exits non-zero on failure and zero on pass-or-warning,
+so it composes into shell scripts. It is safe to run against a
+live node.
 
 ## Upgrading
 
-Replace the binary, restart the process. Records are version-
-independent (plain Markdown). The index may get rebuilt if the
-schema changed across versions — expect a slower first start in
-that case; nothing is lost.
+Replace the binary, then restart the process. Records are
+version-independent (they are plain Markdown), and the search
+index is automatically rebuilt if the schema changed across
+versions. The first start after an upgrade is sometimes
+slower for that reason; nothing is lost.
 
-If you're tracking releases, the GitHub releases page publishes
-binaries for macOS ARM64 and Linux x86_64 on every tag. See the
-installation docs for the install script.
+GitHub Releases publishes binaries for macOS arm64 and Linux
+x86_64 on every tag. The install script always points at the
+latest release.
 
 ## Monitoring
 
-Egghead doesn't ship Prometheus metrics or structured telemetry yet.
-For now: the log file is the observability surface. `egghead logs`
-and a log aggregator (journalctl, file-based Loki, whatever you
-already have) will get you the visibility you need for a single
-node.
+Egghead does not yet expose Prometheus metrics or
+OpenTelemetry traces. The log file is the observability
+surface today; tail it through `egghead logs` or pipe it into
+whatever log aggregator you already have (`journalctl`, Loki,
+Vector, anything that reads files).
 
-If you're running multiple nodes, the right move today is
-independent per-node backups and per-node log shipping. There is no
-cluster story.
+For multi-node deployments, the answer today is independent
+per-node backups and per-node log shipping. There is no
+cluster story, no shared state between nodes, and no built-in
+mechanism for syncing one node's records to another's beyond
+running Git on the records directory.
 
 ## See also
 
-- [Configuration]({{< ref "configuration" >}}) — what goes in
-  `config.yml`, how env vars interact
-- [MCP server]({{< ref "mcp" >}}) — exposing the tool surface, both
-  transports
-- [Capabilities]({{< ref "capabilities" >}}) — what agents are
-  allowed to do once they're running
+- [Configuration]({{< ref "configuration" >}}) covers the
+  full schema of `config.yml`.
+- [MCP server]({{< ref "mcp" >}}) covers exposing the tool
+  surface, on either transport.
+- [Capabilities]({{< ref "capabilities" >}}) covers what
+  agents are allowed to do once running.

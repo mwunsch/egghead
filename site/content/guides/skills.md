@@ -1,218 +1,173 @@
 ---
 title: Skills
+section: Agents
 weight: 19
+summary: Reusable instruction sets with declared tool requirements. Agents that already hold the required capabilities can invoke them.
 ---
 
-A skill is a packaged way of doing something — instructions for a
-common task, plus a declaration of the tool dependencies that task
-needs. Skills are composable: any [agent]({{< ref "agents" >}})
-with the required capabilities can invoke one. They're portable:
-drop a skill into a shared directory and every Egghead install
-picks it up.
+A skill is a Markdown file that pairs an instruction body with a
+declaration of the tools that body assumes. An agent invokes a
+skill when the user asks it to perform the task the skill
+describes; the skill itself contains no executable code.
 
-This guide covers where skills live, what goes in a `SKILL.md`, how
-the capability check works at invocation time, and the CLI for
-auditing them.
+Egghead's skill format follows the [Agent Skills
+spec](https://agentskills.io/home), which is the same format
+Claude Code and a growing number of other agent harnesses
+already use. If you have skills written for one of those tools
+already, dropping them into your Egghead skills directory is
+typically all it takes to make them work; the frontmatter keys
+and the `allowed-tools` syntax are the same. The one place
+Egghead diverges from the rest of the ecosystem is in how the
+`allowed-tools` declaration is interpreted at invocation time.
 
-## Two sources, one index
+Skills do not grant capabilities. If a skill declares
+`allowed-tools: WebFetch`, that is a *requirement* the agent
+must already meet, not a *grant* that suddenly gives the agent
+web access. This is a deliberate departure from frameworks like
+CrewAI, where adding a tool to an agent's spec is what unlocks
+it. In Egghead, an operator-supplied capability list is the
+gate, and a skill that needs a tool the agent cannot use simply
+never appears in that agent's discovery list.
 
-Skills come from three places, all treated the same:
+## Where Egghead looks for skills
 
-1. **The drop-zone directory** — default `~/.agents/skills/`,
-   configurable as `skills_dir` in
-   [config.yml]({{< ref "configuration" >}}). Each subdirectory
-   containing a `SKILL.md` is a skill.
-2. **Your record store, by class** — any record anywhere in the
-   records directory with `class: skill` in its frontmatter.
-3. **Your record store, by convention** — any file at
-   `skills/<name>/SKILL.md` inside your records directory is
-   auto-promoted to `class: skill` without needing the explicit
-   frontmatter line.
+There are three sources, and Egghead unifies them in one
+listing:
 
-All three are unified. `egghead skills list` shows them together;
-agents discover them together; there's no difference in behavior
-between them.
+1. The drop-zone directory, which defaults to
+   `~/.agents/skills/`. Override by setting `skills_dir` in
+   `config.yml`. Each subdirectory containing a `SKILL.md` is
+   one skill.
+2. Anywhere in your records directory, by class — any record
+   whose frontmatter has `class: skill` is loaded as a skill.
+3. By convention inside the records directory — any file at
+   `skills/<name>/SKILL.md` is auto-promoted to `class: skill`,
+   so you do not have to write the line.
 
-The drop-zone is for skills you want to share without bundling them
-into your notes. The store paths are for skills that belong to this
-particular project or graph. Pick whichever fits; you can move a
-skill between sources later.
+`egghead skills list` shows every skill from every source. There
+is no behavioral difference between the three paths; the choice
+is about portability. Drop-zone skills follow you across nodes;
+records-directory skills travel with the project they belong to.
 
-## Anatomy of a SKILL.md
+## File format
 
 ```yaml
 ---
 name: pr-review
 description: Review a GitHub pull request for obvious issues.
 allowed-tools: Bash(gh:*) Read Grep
-compatibility: Best results with Claude Sonnet 4+ or equivalent.
+compatibility: Best with Claude Sonnet 4+ or equivalent.
 ---
 
 # PR review
 
 When asked to review a pull request:
 
-1. Fetch the diff with `gh pr diff <number>` — don't try to look at
-   individual files unless the diff is too large to process at once.
-2. Scan for the usual: missing error handling, test coverage gaps,
-   obvious security issues (SQL injection, XSS, unchecked redirects).
-3. Cite specific file and line locations in your feedback.
-4. Keep the summary tight. Lead with "what's good"; flag concerns
-   next; end with "looks ready" or "one more round."
+1. Fetch the diff with `gh pr diff <number>`.
+2. Scan for missing error handling, test coverage gaps, and
+   obvious security issues.
+3. Cite specific file and line locations.
 ```
 
-The frontmatter is small by design:
+| Key             | Required | Constraint |
+|-----------------|----------|------------|
+| `name`          | yes      | Lowercase, hyphens, ≤ 64 characters. |
+| `description`   | yes      | One line, ≤ 1024 characters. Surfaces in `skills list`. |
+| `allowed-tools` | no       | Space-separated tokens. Syntax below. |
+| `compatibility` | no       | Free-form note about model fit. Not interpreted by Egghead. |
 
-| Key             | Required | What it does                                     |
-|-----------------|----------|--------------------------------------------------|
-| `name`          | yes      | Skill id; lowercase + hyphens; ≤ 64 chars       |
-| `description`   | yes      | One-line summary; ≤ 1024 chars; shown in `skills list` |
-| `allowed-tools` | no       | Space-separated tokens declaring what this skill uses |
-| `compatibility` | no       | Human-readable note about model/version fit     |
+The body — everything after the frontmatter — is the
+instruction set the invoking agent reads. An empty body fails
+validation; the prose is the substance of the skill, and the
+frontmatter is the index card.
 
-The body — everything after the second `---` — is the skill's
-instruction set, free-form prose. This is required (empty bodies
-fail validation) and is what the agent actually reads when invoking
-the skill.
+## `allowed-tools` syntax
 
-## `allowed-tools`
+`allowed-tools` is a space-separated list of tokens in
+Claude-Code-compatible syntax. Each token translates to a
+capability requirement at invocation time:
 
-The `allowed-tools` field is a space-separated list of tokens in
-Claude-Code-compatible syntax:
+| Token                         | Translates to                            |
+|-------------------------------|-------------------------------------------|
+| `Bash(git:*)`                 | `proc.exec{patterns: ["git:*"]}`          |
+| `Bash(rg)`                    | `proc.exec{cmds: ["rg"]}`                 |
+| `Read`                        | `fs.read`                                 |
+| `Grep`                        | `fs.read`                                 |
+| `WebFetch(domain:github.com)` | `net.get{hosts: ["github.com"]}`          |
+| `WebSearch`                   | `net.get{hosts: ["*"]}`                   |
 
-```yaml
-allowed-tools: Bash(git:*) Bash(gh:*) Read Grep WebFetch(domain:github.com)
-```
+Tokens that do not map to a known tool surface as warnings in
+`egghead skills check`. They are not errors — a skill is
+allowed to reference a tool Egghead has not learned about yet —
+but they do flag that the token will not produce a capability
+check.
 
-At skill-invocation time, Egghead parses each token into a
-capability request:
+## Why skills cannot widen capabilities
 
-| Token                           | Capability request                                 |
-|---------------------------------|----------------------------------------------------|
-| `Bash(git:*)`                   | `proc.exec{patterns: ["git:*"]}`                   |
-| `Bash(rg)`                      | `proc.exec{cmds: ["rg"]}`                          |
-| `Read`                          | `fs.read`                                          |
-| `Grep`                          | `fs.read`                                          |
-| `WebFetch(domain:github.com)`   | `net.get{hosts: ["github.com"]}`                   |
-| `WebSearch`                     | `net.get{hosts: ["*"]}`                            |
+Most agent frameworks treat tool declarations as the place where
+authority gets granted. You add `WebFetch` to the agent's tool
+list, and now the agent can fetch the web. Egghead splits those
+two ideas: capabilities are granted by the operator in the
+agent's frontmatter; skills *consume* those capabilities. A
+skill is more like a recipe than a permission slip.
 
-The translation table covers the common Claude Code tools. Tokens
-that don't map to a known tool surface as warnings in
-`egghead skills check` — they're not errors, because a skill can
-reference a tool Egghead hasn't learned about yet, but they do
-flag "this token won't resolve to a capability check."
-
-## Skills never widen capabilities
-
-This is the rule that makes the system sound: a skill declaring
-`allowed-tools: WebFetch` does not grant the invoking agent any
-ability to fetch the web. The agent must already hold the matching
-capability. The skill's declaration is a *requirement*, not a
-*grant*.
-
-At invocation time, Egghead checks the agent's held capabilities
-against the skill's derived requirements. If the agent is missing
-anything, the skill is filtered out of discovery for that agent.
-The filter is silent — the skill just doesn't show up. No error,
-no prompt, no widening path.
-
-The practical effect: skills are safe to share. A skill that needs
-`proc.exec{cmds: [git]}` will only run for agents you've explicitly
-given that capability to. The author of the skill and the operator
-of the node maintain a clean division: the skill says what it needs,
-the operator decides who gets it.
-
-See the [Capabilities guide]({{< ref "capabilities" >}}) for the
-capability model itself — the risk tiers, the attenuation rules,
-and how to grant capabilities to an agent.
+The practical effect is that you can install a skill from
+someone else's repository without worrying about what authority
+it grants. If your agents already have the capabilities the
+skill needs, the skill works. If they don't, the skill is
+filtered out of discovery for those agents — silently, with no
+prompt and no surprise. Curating who has what stays under your
+control, per agent, per node.
 
 ## CLI
 
-Three commands for day-to-day skill work:
-
 ```bash
-egghead skills list                    # all skills, with source and description
-egghead skills show pr-review          # full frontmatter + body for one skill
+egghead skills list                       # every available skill, with source
+egghead skills show pr-review             # frontmatter + body for one skill
 egghead skills check pr-review --agent scout
 ```
 
-`check` is the useful one during development. It reports:
+`check` is the command worth knowing during development. For a
+given agent it tells you which `allowed-tools` tokens the
+agent's capabilities satisfy, which tokens are missing, and the
+exact `egghead agents grant` line you would run to fill each
+gap. Use it to debug "why doesn't the skill show up for this
+agent" before reaching for anything else.
 
-- Which `allowed-tools` tokens the agent's capabilities satisfy
-- Which tokens the agent is missing
-- A suggested `egghead agents grant` command to fill each gap
-- Any tokens that didn't resolve to a known capability (warnings)
+## Authoring guidance
 
-Run `check` before trying to invoke a new skill — it takes a few
-seconds and saves you the "why didn't the skill show up" puzzle.
+A few patterns that work well in practice.
 
-## Compatibility
+Be specific in `description`. It is what an agent reads when
+deciding whether to invoke the skill. "Review a PR" is too
+vague to be useful; "Review a GitHub PR for security issues and
+test coverage gaps" gives the model something to match against.
 
-The `compatibility:` field is free-form human-readable text.
+Declare tools narrowly. `Bash(git:*)` is better than `Bash` for
+the same reason a narrow capability is better than a broad one:
+operators tend to grant exactly what is requested, and a broad
+declaration asks for broader authority than the skill actually
+needs.
 
-```yaml
-compatibility: Requires a model that can call tools. Tested with
-  Claude Sonnet 4+, GPT-4o, and Gemini 2.0.
-```
+Write the body as numbered steps. Models follow numbered
+sequences reliably, and a future reader of the skill can read
+the steps as documentation.
 
-Egghead doesn't interpret it — there's no gate keyed off
-compatibility. The value shows up in `skills show` output and in the
-TUI skill picker so humans curating a skill know what to expect.
-If you want hard enforcement based on model, do that in the
-agent's disposition (or keep the skill out of that agent's reach
-via capabilities).
+## What skills are not
 
-## Authoring a skill
+A skill is not code. Egghead does not load anything executable
+from a skill file. The agent reads the body as instruction
+prose, and any tool calls go through the agent's own
+capabilities and Egghead's built-in or external MCP tools.
 
-The minimum is frontmatter with `name` + `description` + a body:
+A skill is not a capability bypass. Adding `allowed-tools: Bash`
+to a skill does not give an agent subprocess access; the agent
+must already hold `proc.exec`, and the scopes have to match.
 
-```yaml
----
-name: rebase-audit
-description: Walk recent rebases and flag anything suspicious.
----
+A skill is not global. A skill only resolves for agents whose
+capabilities cover its `allowed-tools`. Two agents with
+different capability sets see different skill lists, and that is
+how the system stays honest about authority.
 
-When asked to audit recent rebases:
-
-1. Get the reflog for the last N days with `git reflog --date=iso`.
-2. Identify rebase entries...
-```
-
-That's a valid skill. If it doesn't list `allowed-tools`, the
-capability check is trivial (no requirements) and the skill is
-available to any agent — though without a tool declaration, the
-agent has to decide on its own what tools to reach for, which
-defeats some of the point.
-
-Practical guidance:
-
-- **Be specific in `description`.** It's how agents and humans
-  decide whether to invoke the skill. "Review a PR" is mediocre;
-  "Review a GitHub PR for security issues and test coverage gaps"
-  is useful.
-- **Declare tools narrowly.** `Bash(git:*)` is better than `Bash`;
-  `WebFetch(domain:github.com)` is better than `WebFetch`. Narrow
-  declarations let operators grant narrow capabilities, which
-  keeps the node safer.
-- **Write the body as you'd write notes to a colleague.** Short,
-  numbered steps. Concrete examples where the task is subtle.
-  Models do well with this style.
-
-## What skills are, and aren't
-
-Skills are instruction sets with declared tool requirements. They
-are not:
-
-- **A plugin system.** Egghead doesn't load code from a skill.
-  Skills are content; execution goes through the agent's held
-  capabilities and Egghead's built-in or external MCP tools.
-- **A capability-escape hatch.** Adding `allowed-tools: Bash` to
-  a skill doesn't give an agent subprocess access. Capabilities are
-  the gate; the skill declares need, not authority.
-- **Global.** A skill only runs for agents whose capabilities cover
-  its `allowed-tools`. Curating who has what stays under your
-  control — per agent, per node.
-
-The model is content-first: the valuable part of a skill is the
-prose. The capability declaration is a compatibility hint, not a
-mechanism. That's the design.
+The rest of the authority story — the verbs, the scopes, the
+sandbox — is in [Capabilities]({{< ref "capabilities" >}}).

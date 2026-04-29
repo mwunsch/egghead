@@ -1,56 +1,55 @@
 ---
-title: Getting Started
+title: Getting started
+section: Getting started
 weight: 5
+summary: Install Egghead, configure an LLM provider, write a record, hold a conversation. About ten minutes.
 ---
 
-This guide takes you from zero to a working Egghead node —
-installed, configured, with a few records in it and a conversation
-going with an agent. It's linear; each step sets up the next. At
-the end, you'll know where to go for any particular feature you
-want to explore.
-
-## What you'll end up with
-
-- Egghead installed and running locally
-- A records directory (where your notes and agent definitions live)
-- At least one LLM provider configured
-- A note you wrote, visible in search
-- A conversation with the built-in Index agent
-- Optionally: Egghead wired into Claude Code (or another MCP client)
-
-Expect ten to fifteen minutes the first time. Less once you know
-the moves.
+This guide takes you from nothing to a running Egghead node with
+one record in your store and one conversation against an agent.
+Each step depends on the one before it, so work through them in
+order. By the end you will know which other guide to read next
+for whatever you want to do.
 
 ## Prerequisites
 
-- **macOS (Apple Silicon or Intel) or Linux (x86_64 / arm64).**
-  Windows isn't supported yet.
-- **An API key for an LLM provider.** Anthropic, OpenAI, Google,
-  xAI, Groq, DeepSeek, Mistral, OpenRouter, or a local runner like
-  Ollama or LM Studio. Egghead can run without one (record store
-  only), but this guide assumes you want the agent layer working.
-- **On Linux: `inotify-tools`.** Needed for the file watcher. The
-  installer warns if it's missing; `egghead doctor` does too.
+You need a Mac (Apple Silicon or Intel) or a Linux machine on
+x86_64 or arm64. Windows is not supported. You also need an API
+key for at least one LLM provider, since the agent layer cannot
+do anything without one. Egghead supports Anthropic, OpenAI,
+Google, xAI, Groq, DeepSeek, Mistral, and OpenRouter, and it can
+talk to local runners like Ollama or LM Studio. The record store
+itself works with no provider configured, but every feature that
+calls a model returns an error in that mode.
+
+On Linux, install `inotify-tools` and `bubblewrap` from your
+package manager before continuing. Egghead uses the first to
+notice when you edit a record and the second to sandbox the file
+and process operations agents are allowed to perform. The
+installer warns if either is missing, and `egghead doctor`
+re-checks at any time.
 
 ## Install
+
+Run the install script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mwunsch/egghead/main/install.sh | sh
 ```
 
-This drops a self-contained binary at `~/.local/bin/egghead`. Add
-that to your `PATH` if it isn't already. Prebuilt binaries are also
-available on the [GitHub releases
-page](https://github.com/mwunsch/egghead/releases) if you'd rather
-fetch them directly.
+The script downloads a self-contained binary to
+`~/.local/bin/egghead`. If that directory is not on your `PATH`
+yet, add it. Prebuilt binaries are also published on the
+[GitHub releases page](https://github.com/mwunsch/egghead/releases)
+if you would rather fetch them by hand.
 
-Verify:
+Confirm the install worked by asking for help:
 
 ```bash
 egghead --help
 ```
 
-You should see a list of subcommands. If that works, you're set.
+You should see a list of subcommands.
 
 ## First-run setup
 
@@ -58,30 +57,28 @@ You should see a list of subcommands. If that works, you're set.
 egghead init
 ```
 
-Walks a short wizard:
+The wizard asks three questions and writes
+`~/.config/egghead/config.yml` at the end. First, it asks where
+your records should live; the default is `~/.egghead`, and you
+can change it later by editing the config file. Second, it asks
+which LLM provider to set up and where to find the API key; you
+can either paste the key directly or point at an environment
+variable. Third, it fetches the available models for that
+provider and lets you pick one as the default.
 
-1. **Records directory.** Where your notes will live. Default is
-   `~/.egghead`. Pick something else if you have preferences; you
-   can change it later in `config.yml`.
-2. **LLM provider.** Pick one from the menu and paste your API key
-   (or confirm it should read from an environment variable). You
-   can add more providers later with `egghead llm add`.
-3. **Default model.** After the provider is set up, Egghead fetches
-   the available models and lets you pick one.
+You can re-run `egghead init` at any time, or you can edit
+`config.yml` by hand. The full schema lives in
+[Configuration]({{< ref "configuration" >}}).
 
-The wizard writes `~/.config/egghead/config.yml` at the end. That
-file is the source of truth for anything you configured — see the
-[Configuration guide]({{< ref "configuration" >}}) if you want to
-understand what's in it.
-
-Verify:
+Then verify the install picked up everything correctly:
 
 ```bash
 egghead doctor
 ```
 
-Should come back with mostly green. If something complains, the
-message will point at the fix.
+`doctor` reports on the config file, the records directory, each
+configured provider, and any platform-specific dependencies. If
+it finds a problem, the message tells you how to fix it.
 
 ## Launch the TUI
 
@@ -89,108 +86,97 @@ message will point at the fix.
 egghead
 ```
 
-You're now in the TUI. Two modes:
+The TUI opens in records mode, which is a Notational
+Velocity-style records browser: instant search at the top,
+arrow-key navigation, a preview pane on the right. Type a title
+that does not match an existing record and press Enter; Egghead
+opens `$EDITOR` with a scaffolded Markdown file for you to fill
+in.
 
-- **Records mode** (default) — a Notational Velocity-style records
-  browser: instant search on top, arrow-key navigation, Markdown
-  preview on the right. Type to search; type a title that doesn't
-  match any record to scaffold a new one; hit Enter to open in
-  `$EDITOR`.
-- **Chat mode** — type `/chat` to enter it. An IRC-style shared
-  transcript with agents, slash commands, `@`-mention addressing.
-
-Quit with `Ctrl+Q`. Esc in chat mode takes you back to records mode.
+To switch to chat mode, type `/chat`. Chat mode is an IRC-style
+shared transcript that includes you and one or more agents.
+You send messages by typing and pressing Enter; you address a
+specific agent with `@<agent-id>`; you run commands like `/save`
+and `/handoff` from the same prompt. `Esc` returns to records
+mode, and `Ctrl+Q` quits the TUI altogether.
 
 ## Write your first record
 
-In records mode, type a title that doesn't match anything (say,
-`my first note`) and hit Enter. Your editor opens with a scaffolded
-Markdown file. Type something:
+Stay in records mode and type a title that does not match
+anything in your store, like `my first note`. Press Enter, and
+your editor opens a scaffolded Markdown file. Write a sentence,
+save, and quit the editor. The new record is in the list
+immediately and is searchable as soon as you start typing in the
+search bar.
 
-```markdown
-# My first note
+The record format — frontmatter, wikilinks, classes, the lot —
+is documented in [Records]({{< ref "records" >}}). Read that
+guide next if you want to understand what `[[wikilinks]]` resolve
+to and how `class:` changes the system's behavior.
 
-I installed Egghead today. The records directory lives at
-~/.egghead. The config file is at ~/.config/egghead/config.yml.
+## Hold a conversation
 
-Things I want to explore:
-- [[notes/chat-rooms]]
-- [[notes/skills]]
-```
-
-Save and close the editor. You're back in the TUI; the new record
-is in the list. The `[[wikilinks]]` you wrote are live — if you
-create a record with id `notes/chat-rooms` later, those links
-resolve. Until then they render as unresolved wikilinks (which is
-a legitimate state — you're signaling intent to link).
-
-See the [Records guide]({{< ref "records" >}}) for the full
-frontmatter surface, wikilink syntax, tags, and classes.
-
-## Your first conversation
-
-From the TUI:
+Type `/chat` to enter chat mode. You are now in the default chat
+room, looking at an empty transcript. Send a message:
 
 ```
-/chat
+Hi. What's in this records store?
 ```
 
-You're in the default chat room, looking at an empty transcript.
-Type something:
+The built-in `index` agent ships with every install. It holds
+read-only access to your records and exists so that a fresh
+install always has someone to talk to. With only `index` in the
+roster, every open message activates it. Try addressing it
+directly, too:
 
 ```
-Hi. Can you tell me what's in this records store?
+@index list every record tagged "note"
 ```
 
-Hit Enter. The built-in Index agent sees the message, searches
-your records, and responds. Because this is an open message (no
-`@`-mention), Index decides on its own whether to participate.
-With only one agent in your roster, it's going to.
-
-Try a direct mention next:
-
-```
-@index what records are tagged with "note"?
-```
-
-Or hit it with `/help` to see the slash commands available in chat
-mode. The full story lives in the
-[Chat rooms guide]({{< ref "chat-rooms" >}}).
-
-When you're done, save the conversation:
+When you are done, save the conversation:
 
 ```
 /save
 ```
 
-It lands in your store as a record with `class: transcript`.
+The transcript becomes a record in your store with
+`class: transcript`, which means you can search it, link to it,
+and rejoin it later by typing `/join chat/<id>`. The full set of
+slash commands is documented in
+[Chat rooms]({{< ref "chat-rooms" >}}).
 
-## Add a specialist agent
+## Add an agent
 
-Index is good for "what's in the store?" questions. For anything
-more specific, you'll want to create your own agent.
-
-Quickest path:
+`index` is intentionally limited; for anything beyond looking at
+the store, you write your own agents. The fastest path is the
+interactive wizard:
 
 ```bash
 egghead agents new
 ```
 
-Walks an interactive flow: name, model, capability picker,
-`$EDITOR` for the system prompt. Writes a record at
-`agents/<name>.md` in your store. The new agent shows up in chat
-rooms immediately — no restart, no re-index.
+The wizard walks you through naming the agent, picking a model,
+selecting capabilities (sorted from low risk to high), and
+writing the system prompt in `$EDITOR`. It saves the result as
+`agents/<slug>.md` in your records directory. The agent is live
+in chat rooms immediately, with no restart and no reindex
+step, because the file watcher noticed the new record and
+started a process for it.
 
-For the full frontmatter surface and how agents come alive, see
-the [Agents guide]({{< ref "agents" >}}). For what `capabilities:`
-means and why you should think about it, see
-[Capabilities]({{< ref "capabilities" >}}).
+The full anatomy of an agent record is in
+[Agents]({{< ref "agents" >}}), and the full meaning of the
+`capabilities:` field is in
+[Capabilities]({{< ref "capabilities" >}}). If you are coming
+from a framework where agents are Python classes or YAML role
+definitions, the thing to know is that an Egghead agent is a
+file. Editing the file updates the running agent on the next
+turn.
 
-## Hook Egghead into Claude Code (optional)
+## Wire Egghead into Claude Code
 
-If you use Claude Code and want your records and agents available
-as tools, add an MCP entry to `.mcp.json` (in your project, or in
-`~/.claude.json` globally):
+If you use Claude Code, you can expose your records and agents
+to it as MCP tools. Add an entry to `.mcp.json` in your project
+or to `~/.claude.json` for a global hook-up:
 
 ```json
 {
@@ -203,79 +189,60 @@ as tools, add an MCP entry to `.mcp.json` (in your project, or in
 }
 ```
 
-Restart Claude Code. The `egghead_*` tools appear — search, read,
-create records, prompt agents, spin up a consultation. Ask Claude
-Code "What's in my records about X?" and it reaches for
-`egghead_search` on its own.
+Restart Claude Code. The fifteen `egghead_*` tools appear in
+the tool list, and Claude can now search your records, prompt
+your agents, and ask the room for input the same way it uses
+its other MCP servers. The tool surface and the HTTP transport
+alternative are documented in [MCP server]({{< ref "mcp" >}}).
 
-See the [MCP server guide]({{< ref "mcp" >}}) for the full tool
-surface and how to wire the HTTP transport instead.
+## Run a long-lived node
 
-## Running in the background
-
-For a persistent node (web UI, HTTP MCP endpoint, long-running
-agent state), use `egghead serve`:
+If you would rather have Egghead running in the background with
+a web UI and a network-reachable MCP endpoint, use the server
+mode:
 
 ```bash
 egghead serve
 ```
 
-Opens on `http://localhost:4000`. LiveView records browser, chat
-rooms, MCP at `/mcp`, all on one port. Bound to loopback by
-default.
+The web server starts on `http://localhost:4000`, listening only
+on the loopback interface by default. From that one port you get
+a records browser, the chat rooms in a windowed UI, and the MCP
+HTTP endpoint at `/mcp`. For the full operational story —
+running under `systemd` or `launchd`, putting a reverse proxy in
+front, exposing the node beyond your laptop — read
+[Running a node]({{< ref "running-a-node" >}}).
 
-For serious use — systemd, reverse proxies, exposing externally —
-the [Running a node guide]({{< ref "running-a-node" >}}) covers
-the operational surface.
+## Command reference
 
-## Quick reference
+Worth knowing as you explore:
 
-The commands worth knowing:
-
-```bash
-egghead                  # Launch TUI
-egghead init             # First-run wizard
-egghead serve            # Web + MCP HTTP server
-egghead mcp              # MCP stdio (for editor integration)
-egghead doctor           # Check setup
-egghead agents list      # Running agents, with token usage
-egghead agents new       # Create an agent interactively
-egghead skills list      # Available skills
-egghead config path      # Show resolved config path
-egghead llm list         # Configured providers
-egghead logs             # Tail the log file
+```text
+egghead                  Launch the TUI.
+egghead init             First-run wizard.
+egghead serve            Web UI and MCP HTTP server.
+egghead mcp              MCP stdio server, for editor integrations.
+egghead doctor           Diagnose configuration and dependencies.
+egghead agents list      Show running agents and their token usage.
+egghead agents new       Interactive agent creation.
+egghead skills list      Show available skills.
+egghead config path      Print the resolved configuration path.
+egghead llm list         Show configured LLM providers.
+egghead logs             Tail the application log.
 ```
 
-Every command accepts `--help` for its own flag surface.
+Every subcommand accepts `--help` for a flag listing.
 
-## Where to go next
+## When something breaks
 
-Depending on what you want to do:
+Run `egghead doctor` first. It catches the common first-run
+failures: a missing API key environment variable, the absence
+of `inotify-tools` on Linux, a malformed `config.yml`. The
+message tells you exactly what is wrong and how to fix it.
 
-- **Work with records** — [Records]({{< ref "records" >}}),
-  [Record classes]({{< ref "record-classes" >}}).
-- **Collaborate with agents** — [Chat
-  rooms]({{< ref "chat-rooms" >}}),
-  [Agents]({{< ref "agents" >}}), [Skills]({{< ref "skills" >}}).
-- **Lock down what agents can do** —
-  [Capabilities]({{< ref "capabilities" >}}).
-- **Integrate with editors or external clients** —
-  [MCP server]({{< ref "mcp" >}}),
-  [Consultation]({{< ref "consultation" >}}).
-- **Run a persistent node** —
-  [Running a node]({{< ref "running-a-node" >}}),
-  [Configuration]({{< ref "configuration" >}}).
+If `doctor` looks clean but something is still off, tail the
+log with `egghead logs`. Errors from the supervision tree and
+from the agent loop land there.
 
-The guides cross-link; pick a thread and pull.
-
-## If something breaks
-
-- **`egghead doctor`** is the first move. It checks config,
-  records directory, providers, and common setup problems.
-- **`egghead logs`** tails the log file. Errors from the agent
-  loop and the supervision tree land here.
-- **GitHub issues:** [mwunsch/egghead/issues](https://github.com/mwunsch/egghead/issues).
-
-Most first-run problems are one of: missing API key env var,
-`inotify-tools` absent on Linux, or a typo in `config.yml`. Doctor
-catches all three.
+If you think you have found a bug, open an issue at
+[mwunsch/egghead/issues](https://github.com/mwunsch/egghead/issues).

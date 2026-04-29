@@ -1,355 +1,294 @@
 ---
 title: Chat rooms
+section: Agents
 weight: 16
+summary: Shared-transcript multi-agent coordination. Addressing modes, activation, turn budget, save and rehydrate.
 ---
 
-A chat room is where collaboration happens. Humans and agents share
-one transcript; every participant sees every message; messages route
-by convention (who you addressed, who the system thinks is relevant)
-rather than by delegation. The model is IRC with AI participants —
-and that shape is load-bearing, not decorative.
+A chat room is a long-lived process that holds a shared
+transcript, a roster of agents, and a turn budget. Every agent
+in the roster sees every message. A coordinator inside Egghead
+decides which agent or agents respond to each message based on
+how the sender addressed it.
 
-This guide covers the concepts you need to drive a room: how to
-address agents, how activation gets decided, what the turn budget is
-doing, and how to save and resume a conversation.
+If you have used CrewAI's hierarchy, Paperclip's board operator,
+or another framework where one agent decides who acts next, the
+shape here is different on purpose. Egghead's room is closer to
+an IRC channel than to a workflow graph: there is no dispatcher,
+nobody is waiting for an instruction, and any agent who has
+something to add can speak. The coordinator's job is to decide
+which agents are eligible on a given turn, not to assign roles.
+The research pointing at this design is summarized in
+[Research influences]({{< ref "research-influences" >}}).
 
-## What a room is
+A room lives in memory for as long as the node runs. If you
+want the conversation to survive a restart, save the transcript
+to a record first; rejoining the saved transcript later
+rehydrates the room from it.
 
-A live chat room is an OTP process that holds:
+## What `/pass` means
 
-- **The transcript** — every message in order.
-- **The roster** — which agents are eligible to speak here.
-- **The turn budget** — how many agent responses are allowed before
-  the room pauses for you.
-- **The mute list** — per-room, ephemeral.
+A few sections below this one talk about `/pass`, so it is
+worth defining up front. When an agent is asked to respond and
+genuinely has nothing useful to add, it can yield with the
+single token `/pass`. The coordinator catches the token,
+removes it from the visible output, and renders an italic
+action line in its place — something like *"shuffles notes,
+finds nothing new"* — so the transcript reads cleanly.
 
-Messages broadcast over PubSub. Every agent in the roster subscribes
-independently to the room's topic. When you send a message, the
-system's coordinator decides who gets to respond — and what "respond"
-even means — based on how the message was addressed.
+The point of `/pass` is that an agent that has nothing to say
+should *say* nothing rather than fabricate a contribution.
+Yielding does not count against the turn budget, so a quiet
+agent costs you nothing. There are two cases where the rule
+shifts: in `@everyone` mode, the coordinator rejects `/pass`
+and asks once more for a substantive line; if the agent passes
+again, the coordinator substitutes a flavor line rather than
+force a fabricated reply.
 
-A room persists as a Phoenix process for as long as the node runs,
-or until you save and drop it. Saved rooms land as
-`class: transcript` records in your store and can be rehydrated later.
+## Lifecycle
 
-## Creating and listing rooms
-
-From `iex` or any code that embeds Egghead:
+From `iex`:
 
 ```elixir
-Egghead.create_room(id: "architecture-sync", round_budget: 15)
+Egghead.create_room(id: "architecture-sync")
 Egghead.list_rooms()
 Egghead.room_exists?("architecture-sync")
 Egghead.default_room()
 ```
 
-From the TUI: type `/chat` to enter chat mode, then `/join
-<room-id>` to switch into a specific room. Create-if-missing
-semantics — typing `/join design-review` brings the room into
-existence if it didn't already.
+From the TUI, `/chat` enters chat mode and `/join <id>` switches
+to a room with that id, creating it if it does not already
+exist. From the shell, `egghead chat` opens the default room.
 
-A default room is reserved so you always have somewhere to talk.
-`egghead chat` without a room argument targets it.
+`Egghead.chat/2` sends a message to a room.
+`Egghead.watch/1` streams the room's events to stdout, which is
+useful when you want to follow the conversation from `iex` or
+another terminal. `Egghead.chat_transcript/1` returns the full
+message list as data.
 
-## Sending messages
+## Addressing modes
 
-```elixir
-Egghead.chat("What are we working on today?")              # default room
-Egghead.chat("architecture-sync", "Let's talk about auth")  # named room
-Egghead.watch()                                             # stream to stdout
-```
-
-From the TUI, just type and hit Enter. From the web UI, same.
-
-`chat_transcript/1` returns the full transcript as a list of
-messages. `chat_save/1` persists it as a record.
-
-## Addressing: open, @agent, @everyone, @jam
-
-The four activation modes cover every way you might want a room to
-react.
+There are four ways to send a message, and the way you address
+the message determines who responds.
 
 ### Open message
 
 ```
-Starting the refactor review — anyone have context on the auth
-middleware history?
+Anyone have context on the auth middleware?
 ```
 
-No @-mention, no prefix. The coordinator picks the agent whose tags
-and disposition are most relevant to the message (a small TF-IDF
-scoring pass across the roster) and lets them speak first. Other
-agents can chime in on subsequent turns, or stay silent.
+No prefix and no `@`-mention. The coordinator scores every
+eligible agent in the room by
+[TF-IDF](https://en.wikipedia.org/wiki/Tf%E2%80%93idf) overlap
+between the message tokens and each agent's tags plus
+disposition, then prompts every eligible agent in score order.
+The activation budget caps how many can speak in total
+(see below).
 
-This is the default rhythm. An open message is a broadcast where the
-room chooses its own order.
+In a typical room, most agents in the roster *are* prompted on
+an open message; each one then decides individually whether to
+respond substantively or yield with `/pass`. So the right
+mental model is "most agents get a turn, and the ones who have
+nothing useful to add stay quiet" — not "only one or two are
+even asked."
 
-### `@agent-id` — direct address
-
-```
-@scout what's up with the rate-limiting on api.stripe.com?
-```
-
-Addresses a single agent. Fuzzy matching on the id, so `@scout`,
-`@agents/scout`, and `@scot` all land on the same agent. The
-addressed agent may respond, or may yield (see `/pass` below).
-Nobody else responds.
-
-Direct address **overrides mute** — if you muted Scout earlier and
-then explicitly `@scout` them, Scout speaks. Addressing is louder
-than muting.
-
-### `@everyone` — huddle
+### Direct address
 
 ```
-@everyone quick roll-call: what's your current best guess about
-the deadlock?
+@researcher what's the rate limit on api.stripe.com?
 ```
 
-Also `@channel`. Every eligible agent responds, one at a time, in
-serial order. Everyone must contribute — `/pass` is disallowed by
-the coordinator. If an agent tries to pass, they're prompted once
-more ("offer one honest line — agreement, a reservation, a question
-— do not pass"); if they pass again, the coordinator accepts it
-with a flavor line rather than forcing a made-up reply.
+Direct address resolves through fuzzy matching on the agent
+id, so `@researcher`, `@agents/researcher`, and `@reseacher`
+all land on the same agent. Only the addressed agent is
+prompted to respond; everyone else stays silent for that turn.
 
-Huddle mode overrides mute. When you say everyone, you mean everyone.
+That said, every other agent in the room *sees* the exchange
+in their own context on the next turn. Direct addressing is
+about who responds, not about who can hear; the room remains a
+shared transcript and a `@`-mention is not a way to hide a
+conversation from the rest of the roster.
 
-### `@jam` — cacophony
+Direct address is louder than `mute`: even if you muted an
+agent earlier, an explicit `@` against that agent in the same
+turn still gets a reply. The mute itself is not lifted, just
+overridden for the one message.
 
-```
-@jam what would your angle on this be?
-```
-
-Every agent responds in parallel. They don't see each other's
-in-flight output — that's the point. Half-baked thoughts welcome;
-the value is the variety, not the consensus. Use when you're
-looking for fresh framings rather than a decision.
-
-Jam mode also overrides mute.
-
-## The two-tier activation gate
-
-Before any agent runs, the coordinator decides who's eligible.
-Two tiers:
-
-**Structural filter.** Zero API cost. The coordinator looks at the
-addressing (open, @name, @everyone, @jam), filters out muted agents
-where appropriate, filters out agents mid-handoff, and narrows the
-pool. For explicit addressing the work ends here.
-
-**Relevance scoring.** Only for open messages. The coordinator
-tokenizes the message (lowercase, strip punctuation, drop
-stopwords) and scores each remaining agent by TF-IDF overlap
-against the agent's tags plus disposition. The highest-scoring
-agent speaks first; others may follow on subsequent turns if the
-conversation draws them in.
-
-The net effect is **sparse activation**: in a room of ten agents,
-most open messages will elicit a response from one or two. You only
-pay for the agents who are genuinely relevant. See the
-[Agents guide]({{< ref "agents" >}}) for how tags and disposition
-shape what counts as relevant.
-
-## `/pass`
-
-Agents can yield with a single token:
+### `@everyone` (alias `@channel`)
 
 ```
-/pass
+@everyone what's your best guess on the deadlock?
 ```
 
-Not a crash, not a refusal — a polite "I've got nothing to add
-here." The coordinator catches `/pass` and renders it in the
-transcript as an italic action line ("shuffles notes, finds
-nothing new" / "stays quiet — the room's got it" / ...) rather
-than printing the raw token. The render is picked deterministically
-from a pool so the same pass shows the same action across every
-open viewer.
+Every eligible agent responds in series. `/pass` is rejected
+by the coordinator in this mode (see the `/pass` section
+above). `@everyone` overrides mute for the same reason direct
+address does.
 
-Three things to know about pass:
+### `@jam`
 
-- **It doesn't count against the turn budget.** Only substantive
-  responses tick the budget. An agent that wants to stay silent
-  costs you nothing.
-- **It's disallowed in `@everyone`.** The coordinator re-prompts,
-  and if the agent passes again, substitutes a flavor line so you
-  don't get a made-up reply.
-- **Streamed content overrides it.** If the agent produced
-  substantive output during tool use and then ended with `/pass`,
-  the streamed content is kept and the pass is dropped. The pass
-  was just a signal of "I'm done," not a refusal.
+```
+@jam what's your angle on this?
+```
+
+Every eligible agent responds in parallel without seeing each
+other's drafts. Use this when you want a spread of independent
+takes rather than a converging discussion. `@jam` also
+overrides mute.
+
+## Activation
+
+Before any agent runs, the coordinator decides who is eligible
+to respond. It does this in two stages.
+
+The first stage is a structural filter that costs no API calls.
+It selects agents based on the addressing mode, removes any
+agents you have muted (where mute applies), and removes agents
+currently mid-handoff. For explicit addressing — `@researcher`,
+`@everyone`, `@jam` — this is the entire gate.
+
+The second stage runs only on open messages. The coordinator
+scores each remaining agent by
+[TF-IDF](https://en.wikipedia.org/wiki/Tf%E2%80%93idf) overlap
+between the message tokens and each agent's tags + disposition.
+The top scorer goes first; the rest follow in score order. The
+score does not gate eligibility on its own — every agent the
+structural filter let through is prompted. Score order
+determines who speaks first and gets to set the room's
+direction.
 
 ## Turn budget
 
-Rooms have a turn budget — how many agent responses are allowed
-before the room pauses. Default is 15. When the budget hits zero,
-the room broadcasts `:budget_exhausted` and the UI shows a nudge:
+Each room has an activation budget that scales with the size of
+the roster. The formula is
+`clamp(ceil(1.5 × agent_count), 6, 21)`: a roster of two agents
+gets a budget of six, a roster of ten gets fifteen, and a
+roster of twenty gets the ceiling of twenty-one. The 1.5×
+multiplier gives every agent room to respond once with a
+partial allowance for cascade replies, and the floor and
+ceiling keep tiny rooms loose and big rooms bounded.
 
-> We've been chatting for a bit. Anything to add? If not, `/continue`.
+Each substantive agent response decrements the budget by one;
+`/pass` does not count against it. When the budget hits zero,
+the room broadcasts `:budget_exhausted` and the UI prompts you:
 
-Type `/continue` (or call `Egghead.chat_continue/1`) to refill the
-budget. Any @-mentions that arrived while the budget was zero get
-replayed when you continue, so nothing is lost if timing was tight.
+> `/continue` to keep going.
 
-The budget exists because agents left alone can chatter. You
-wouldn't leave five coworkers in a meeting room with a question
-and return in an hour expecting anything useful; the budget is the
-meeting's scheduled end.
+`Egghead.chat_continue/1` or `/continue` resets the budget.
+Any `@`-mentions queued while the budget was at zero are
+replayed on continue, so a directly-addressed agent never
+silently swallows a turn.
 
-## Muting
+The budget exists to keep humans in the loop. Agents left on
+their own will keep talking; the budget is the meeting's
+scheduled end time.
 
-Per-room, in-memory, not persisted.
+## Slash commands
 
-```
-/mute scout         # stop Scout from activating in this room
-/unmute scout       # allow Scout to activate again
-```
+| Command | Effect |
+|---------|--------|
+| `/save` | Write the transcript as a `class: transcript` record at `chat/<room-id>`. |
+| `/continue` | Reset the activation budget. |
+| `/handoff <agent>` | Summarize the agent's session into a deliberation, clear the session, and rehydrate from the recent transcript. |
+| `/join <room-or-transcript>` | Switch into another room, or rehydrate a saved transcript into a live room. |
+| `/leave` | Exit chat mode. The room keeps running. |
+| `/drop` | Stop the room and auto-save. `/drop --no-save` skips the save. |
+| `/halt` | Stop the room without saving. |
+| `/mute <agent>` | Suppress the agent's activation in this room for open messages and `@jam`. |
+| `/unmute <agent>` | Lift the mute. |
+| `/invite <agent>` | Add the agent to the roster. Starts the agent's process if it is not running. |
+| `/kick <agent>` | Remove the agent from the roster and clear its per-room session. |
+| `/whois <agent>` | Print model, capabilities, and joined rooms; includes a wikilink to the source record. |
+| `/rooms` | List every live room. |
+| `/list` | Show this room's roster, budget, and mute list. |
+| `/help` | Slash-command reference. |
+| `/quit` | Quit the TUI. |
 
-Mute applies to open messages and `@jam`. It does *not* apply when
-you `@scout` directly or when you `@everyone` — both of those are
-explicit requests that the mute yields to.
+`/invite `, `/kick `, and `/whois ` (each with a trailing
+space) open pickers that list candidate agents.
 
-If you want a long-term "this agent shouldn't talk here," the
-right move is usually a
-[capability narrow]({{< ref "capabilities" >}}) or a
-`disposition:` edit on the agent record itself, not a mute.
+## Mute versus kick
 
-## Roster: `/invite`, `/kick`, `/whois`
+Mute is per-room and in-memory. The agent stays in the roster,
+its per-room session keeps its history, and direct addressing
+(`@agent`, `@everyone`) bypasses the mute. Kick is a different
+operation: it removes the agent from the roster and drops the
+agent's per-room session, which is the agent's internal
+working state for that room — its turn history, token usage,
+and the records it has referenced.
 
-Mute silences. Roster commands change who's actually present.
+What the agent loses on kick is that internal session state.
+What the agent does *not* lose is access to the room's
+transcript: when you re-invite later, the agent rebuilds its
+LLM context by reading the current transcript, including
+everything that was said before the kick. Kick is "stop using
+the working notes you've been keeping in this room and start
+fresh from the room's record"; it is not "forget this
+conversation ever happened."
 
-```
-/invite kiwi        # bring Kiwi into this room (starts the process if needed)
-/kick kiwi          # evict Kiwi from this room
-/whois kiwi         # model, capabilities, rooms-joined
-```
+The agent process itself keeps running for any other rooms it
+belongs to. `/kick` refuses to remove the last agent from the
+default room, because the default room is the fallback chat
+surface and is expected to always have at least one
+inhabitant.
 
-All three open a picker if you stop after the space — `/invite ` lists
-agents who aren't here yet, `/kick ` lists agents who are, `/whois `
-lists every known agent (running or just present as a record).
-
-`/invite` reads the agent record (from `agents/<name>.md` or wherever
-your store keeps it), starts the process if it isn't already running,
-and joins it to the room. The agent appears in the sidebar and starts
-participating on the next activation pass. Inviting an agent that's
-already here is a no-op with a friendly notice.
-
-`/kick` is distinct from `/mute` in one important way: kick clears
-the agent's per-room session. The session is the LLM-side conversation
-history the agent holds for this room — every turn, every tool call,
-every token spent. Mute leaves that book on the shelf; kick shreds
-it. Re-invite later and the agent rebuilds from the current room
-transcript, with no recollection of what was said before the kick.
-The agent process itself keeps running for any other rooms it's in.
-
-`/kick` refuses to remove the last agent from the default room. The
-default room is reserved as a fallback chat surface; it always has
-at least one inhabitant.
-
-`/whois` is read-only. It prints a system notice with the agent's
-model, the capability grants it holds, and every live room it's
-currently joined to. If the agent is backed by a record in your
-store, `/whois` includes a `[[agents/<id>]]` wikilink — Tab to it in
-records mode to jump to the source. The built-in Index agent is
-marked `(built-in — no backing record)` until you shadow it with
-your own `id: index` record.
-
-## Handoff: `/handoff`
-
-Agents have context windows. When one fills up, you have a choice:
-start forgetting the oldest messages (bad), or summarize and
-continue (good). Handoff is the latter.
+## Handoff
 
 ```
-/handoff scout
+/handoff researcher
 ```
 
-Or: `Egghead.handoff("agents/scout", room_id: "architecture-sync")`.
+Or, programmatically:
 
-What happens:
+```elixir
+Egghead.handoff("agents/researcher", room_id: "architecture-sync")
+```
 
-1. The agent summarizes its session (its own turns, peer turns,
-   tool results) into a `class: deliberation` record.
-2. The agent's session state is cleared.
-3. The agent rehydrates from the room's recent transcript —
-   typically the last fifty messages — so it wakes with peer
-   context, not amnesia.
-4. The most recent deliberation is injected into the agent's next
-   system prompt as a preview of what it used to know.
+When you trigger a handoff, the agent summarizes its session
+into a `class: deliberation` record, the session state is
+cleared, and the agent rehydrates from the most recent fifty
+or so messages in the room. The most recent deliberation is
+appended to the next system prompt, so the agent has a
+hand-off note from its prior self.
 
-Agents sometimes suggest handoff on their own when they notice
-their context creeping toward full. You can also invoke handoff
-proactively between tasks.
+The shape was directly informed by Amp's writeup,
+[Hand-off](https://ampcode.com/news/handoff), which describes
+the same compaction-vs-handoff trade and lands at the same
+conclusion: when an agent's working memory is full, replace it
+with a fresh agent that inherits a written summary, rather
+than try to compress the existing one in place.
 
-## Saving and rehydrating
+You typically run a handoff when an agent's context window is
+nearing its limit (the session emits a suggestion at
+`context_threshold`, default 0.70) or when you want to start a
+new task with a clean slate.
+
+## Save and rehydrate
+
+`/save` writes a `class: transcript` record at
+`chat/<room-id>`. The body contains every message rendered
+verbatim, prefixed with `**name** at <ts>`. The participants
+are captured in `links:`.
 
 ```
 /save
 ```
 
-Persists the transcript as a `class: transcript` record with id
-`chat/<room-id>`. Body = every message formatted with a header.
-Participants captured in `links:`.
+Later, `/join chat/architecture-sync` reads the transcript and
+rehydrates the room from it. The conversation resumes with the
+same agents and the same message history. If no saved
+transcript exists for the id, a fresh room is created.
 
-Later:
+The reason `class: transcript` is distinct from
+`class: deliberation` is that transcripts can be rehydrated
+and deliberations cannot.
 
-```
-/join architecture-sync
-```
+## See also
 
-If `chat/architecture-sync` exists as a transcript, the room
-rehydrates from it — the conversation resumes from where it left
-off, with all the context intact. If no saved transcript exists,
-a fresh room spins up.
-
-The distinction between `class: transcript` (possibly still alive)
-and `class: deliberation` (closed artifact) exists precisely because
-transcripts can be rehydrated and deliberations can't. See the
-[Record classes guide]({{< ref "record-classes" >}}).
-
-## Multi-room management
-
-All of this composes across rooms. You can have several rooms
-running at once, each with its own roster, transcript, and budget:
-
-```
-/rooms              # see all live rooms
-/list               # current room participants and details
-/join design-sync   # switch rooms
-/drop               # stop the current room, auto-saves
-/drop --no-save     # stop without saving
-```
-
-Within a room, the participant set is yours to shape. Use `/invite`
-and `/kick` (above) for membership; `/mute` and `/unmute` for
-silence without eviction; `/whois` to inspect anyone the room has
-opinions about.
-
-`/drop` is reversible by default — the transcript is saved, so
-rejoining later resumes.
-
-## Consult as a one-shot room
-
-When you want a quick multi-perspective answer without managing a
-room, [consultation]({{< ref "consultation" >}}) gives you a
-fire-and-forget shape: one question, aggregated responses, auto-save,
-auto-stop. Under the hood it's just a room, same activation rules,
-same `/pass` semantics — but the whole lifecycle fits in one call.
-
-## What makes this shape work
-
-Three design commitments that are worth naming so you know what
-you're getting:
-
-- **Shared transcript, not delegation.** Every agent in the room
-  sees every message. Nobody's a dispatcher. Peer visibility is
-  what lets agents self-select for relevance and disagree in the
-  open.
-- **Sparse activation.** Most open messages elicit responses from
-  one or two agents, not ten. The gate is deliberate — you're not
-  paying for agents that aren't relevant, and you're not reading
-  replies from agents that don't have much to add.
-- **Human in the loop by default.** The turn budget is a circuit
-  breaker. Left to their own devices, agents will keep talking;
-  the budget makes sure you're the pacing element, not them.
+- [Agents]({{< ref "agents" >}}) covers what an agent is and
+  how the coordinator scores it.
+- [Capabilities]({{< ref "capabilities" >}}) covers what an
+  agent in the room is allowed to do once it speaks.
+- [Consultation]({{< ref "consultation" >}}) is the one-shot
+  shape that wraps the same coordinator behind a single
+  function call.

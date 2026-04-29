@@ -1,0 +1,17 @@
+{{ define "main" }}
+<div class="docs-shell">
+  {{ partial "guides-rail.html" . }}
+
+  <article class="docs-content">
+    <header class="docs-header">
+      <p class="docs-eyebrow">Documentation</p>
+      <h1 class="docs-title">{{ .Title }}</h1>
+      {{ with .Params.summary }}<p class="docs-lede">{{ . }}</p>{{ end }}
+    </header>
+
+    <div class="docs-prose prose">
+      {{ .Content }}
+    </div>
+  </article>
+</div>
+{{ end }}

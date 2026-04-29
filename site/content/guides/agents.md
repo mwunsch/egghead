@@ -166,7 +166,9 @@ granting another, and the OS sandbox for filesystem and process
 verbs are all documented in
 [Capabilities]({{< ref "capabilities" >}}). Read that guide
 before you author an agent that does anything beyond reading
-records.
+records. The matching list of *tools* each capability unlocks —
+including how to extend the catalog with MCP servers — is in
+[Tools]({{< ref "tools" >}}).
 
 ## The built-in `index` agent
 

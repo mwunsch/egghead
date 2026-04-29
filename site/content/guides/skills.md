@@ -158,7 +158,8 @@ the steps as documentation.
 A skill is not code. Egghead does not load anything executable
 from a skill file. The agent reads the body as instruction
 prose, and any tool calls go through the agent's own
-capabilities and Egghead's built-in or external MCP tools.
+capabilities against the catalog described in
+[Tools]({{< ref "tools" >}}).
 
 A skill is not a capability bypass. Adding `allowed-tools: Bash`
 to a skill does not give an agent subprocess access; the agent
@@ -170,4 +171,6 @@ different capability sets see different skill lists, and that is
 how the system stays honest about authority.
 
 The rest of the authority story — the verbs, the scopes, the
-sandbox — is in [Capabilities]({{< ref "capabilities" >}}).
+sandbox — is in [Capabilities]({{< ref "capabilities" >}}); the
+catalog of tools an agent picks from, including how MCP servers
+extend it, is in [Tools]({{< ref "tools" >}}).

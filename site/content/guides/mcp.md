@@ -209,6 +209,9 @@ one-on-one query.
 
 ## See also
 
+- [Tools]({{< ref "tools" >}}) covers the inverse direction —
+  Egghead as an MCP *client*, registering external servers so
+  their tools appear in an agent's catalog.
 - [Consultation]({{< ref "consultation" >}}) covers the
   pattern most external MCP callers end up using.
 - [Running a node]({{< ref "running-a-node" >}}) covers

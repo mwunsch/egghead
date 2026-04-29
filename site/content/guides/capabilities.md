@@ -1,7 +1,7 @@
 ---
 title: Capabilities
 section: Capabilities
-weight: 20
+weight: 21
 summary: Per-agent grants of resource.verb pairs, optionally scoped, enforced at the call site and (for filesystem and process verbs) by an OS sandbox.
 ---
 
@@ -47,6 +47,12 @@ opposite: capabilities are written into the agent's record
 in Git, and revoke them between sessions. There is no runtime
 prompt at the tool-call site. Widening an agent's authority is
 an edit to a Markdown file.
+
+The catalog of tools each capability unlocks — built-in record
+operations, network, filesystem, subprocess, plus anything you
+register from an MCP server — is documented separately in
+[Tools]({{< ref "tools" >}}). This guide is the authority side;
+that one is the menu side.
 
 ## Resource families and verbs
 

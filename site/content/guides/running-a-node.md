@@ -103,11 +103,26 @@ authentication in front.
 Every running egghead process is an Erlang node. When you launch a
 second egghead command from the same machine — `egghead`, `egghead mcp`,
 `egghead rooms` — it discovers the long-running `egghead serve` over
-the local Erlang Port Mapper Daemon (epmd, port 4369), connects, and
+the local Erlang Port Mapper Daemon (epmd) on TCP 4369, connects, and
 becomes a client of that supervision tree. You see one set of agents,
 one set of rooms, one record store. Same-host attach is zero-config:
 no flag, no env var, no entry in `config.yml`. The cookie is whatever
 OTP wrote to `~/.erlang.cookie` the first time a named node started.
+
+This is the cluster-internal interface — distinct from the HTTP and
+MCP surfaces above, which are the *public* interfaces a reverse proxy
+sits in front of. Distribution is what makes the TUI feel like a thin
+client over `egghead serve` instead of a separate program: same
+processes, same PubSub, same coordinator. [Why Elixir/OTP]({{< ref
+"why-elixir-otp" >}}) goes into why this is a runtime primitive rather
+than a feature we built; the short version is that Ericsson designed
+distribution into the BEAM in the 1980s so a phone-switching cluster
+could route calls between physical machines, and Egghead inherits the
+result. The
+[Distributed Erlang reference](https://www.erlang.org/doc/system/distributed.html)
+and the
+[epmd(1) man page](https://www.erlang.org/doc/apps/erts/epmd_cmd.html)
+are the authoritative documentation for the underlying mechanism.
 
 The same mechanism extends to a LAN or a tailnet. The piece that
 changes is the hostname.

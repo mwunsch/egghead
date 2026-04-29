@@ -145,7 +145,12 @@ that is what it is.
 
 Two BEAM nodes on the same network can call each other's
 processes as if the processes were local. `Phoenix.PubSub`
-broadcasts across the cluster automatically.
+broadcasts across the cluster automatically. The
+[Distributed Erlang reference](https://www.erlang.org/doc/system/distributed.html)
+describes the underlying primitives; the
+[Erlang Port Mapper Daemon](https://www.erlang.org/doc/apps/erts/epmd_cmd.html)
+(epmd, TCP 4369) is the discovery service that lets named nodes
+find one another.
 
 Egghead uses this for the TUI/server split: `egghead serve`
 runs the full supervision tree, and `egghead` (the TUI)
@@ -155,6 +160,14 @@ coordinator — no separate sync layer, no custom protocol.
 The work to make that real was a week of `Node.connect`
 plumbing, not a quarter-long product effort, because the
 runtime was built for it.
+
+Cross-host works the same way. Set `server.host` on a
+machine in your tailnet or LAN, point clients at it with
+`EGGHEAD_SERVER=host`, and the same code paths take over —
+shared agents, shared rooms, shared coordinator across
+physical hosts. [Running a node]({{< ref "running-a-node" >}})
+covers the operational details (cookies, firewall rules, the
+unencrypted-on-the-wire caveat).
 
 ## What the runtime is not good for
 

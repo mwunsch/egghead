@@ -1,43 +1,100 @@
-.TH EGGHEAD-DOCTOR 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead-doctor \- diagnose setup problems
-.SH SYNOPSIS
-.B egghead doctor
-.RB [ \-\-config
-.IR PATH ]
-.SH DESCRIPTION
-Run diagnostic checks on the Egghead installation. Reports pass/fail
-status for each component.
-.SH CHECKS
-.TP
-.B Config
-Config file exists and is valid YAML.
-.TP
-.B Records
-Records directory is accessible.
-.TP
-.B Index
-SQLite index is present and readable.
-.TP
-.B NIF
-OpenTUI NIF binary exists for this platform.
-.TP
-.B Port
-Web port is available (not bound by another process).
-.TP
-.B Logs
-Log file path is writable.
-.TP
-.B Providers
-Each configured LLM provider is reachable.
-.SH FLAGS
-.TP
-.B \-\-config \fIPATH\fR
-Override config file location.
-.TP
-.B \-h, \-\-help
-Show help text.
-.SH SEE ALSO
-.BR egghead-config (1),
-.BR egghead-llm (1),
-.BR egghead (1)
+.Dd $Mdocdate$
+.Dt EGGHEAD-DOCTOR 1
+.Os
+.Sh NAME
+.Nm egghead-doctor
+.Nd diagnose setup problems
+.Sh SYNOPSIS
+.Nm egghead doctor
+.Op Fl -config Ar path
+.Sh DESCRIPTION
+.Cm doctor
+runs every check
+.Nm egghead
+needs to come up cleanly and reports pass, fail, or warning for
+each. Use it after install, after editing the configuration, when
+something is misbehaving, and any time the answer is non-obvious.
+.Pp
+.Cm doctor
+warns; it does not block. Even when warnings fire, records still
+load and the system still starts; the warnings exist to surface
+problems that would otherwise corrupt frontmatter silently or leave
+agents running with less authority than their records imply.
+.Sh CHECKS
+.Bl -tag -width Ds
+.It Sy Configuration file
+Exists at the expected path and parses as YAML. The error message
+points at
+.Cm egghead init
+when no file exists.
+.It Sy Records directory
+Exists and is readable.
+.It Sy SQLite index
+Present at
+.Pa <records_dir>/.egghead/index.db .
+A missing index is a soft warning; it is rebuilt automatically on
+next start.
+.It Sy NIF binary
+The OpenTUI native bridge is present for the current platform.
+.It Sy Web endpoint
+Reachable when a node is already running, or the port is available
+when standalone.
+.It Sy Log file
+.Pa $XDG_STATE_HOME/egghead/egghead.log
+is writable.
+.It Sy Sandbox backend
+.Xr sandbox-exec 1
+on macOS,
+.Xr bwrap 1
+on Linux. Without it, agents holding
+.Sy fs.*
+or
+.Sy proc.*
+grants run unsandboxed and the runtime warns at startup.
+.It Sy BEAM cookie
+.Pa ~/.erlang.cookie
+exists and has restrictive permissions, when cross-host attach is
+configured.
+.It Sy inotify-tools Pq Linux only
+.Xr inotifywait 1
+is on
+.Ev PATH .
+Without it the file watcher cannot pick up records edited outside
+.Nm
+in real time.
+.It Sy LLM providers
+Each configured provider answers a small request.
+.It Sy Agent capability hygiene
+For each
+.Cm class: agent
+record:
+malformed frontmatter, unknown capability names (with suggested
+close matches), unknown scope keys, scope values whose types do not
+match the key, escalation risks (an
+.Sy fs.write
+that covers the records directory, a
+.Sy proc.exec
+with no
+.Sy in: , Sy cmds: ,
+or
+.Sy patterns: ),
+and external grants that have no hoistable sandbox root and would
+therefore be inert.
+.El
+.Sh OPTIONS
+.Bl -tag -width "--config path"
+.It Fl -config Ar path
+Override the configuration file location.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+egghead doctor
+.Ed
+.Sh SEE ALSO
+.Xr egghead-config 1 ,
+.Xr egghead-llm 1 ,
+.Xr egghead-service 1 ,
+.Xr egghead 1 ,
+.Xr egghead 5

@@ -1,44 +1,93 @@
-.TH EGGHEAD-SERVE 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead-serve \- web and MCP HTTP server
-.SH SYNOPSIS
-.B egghead serve
-.RB [ \-\-port
-.IR N ]
-.RB [ \-i | \-\-interactive ]
-.RB [ \-\-config
-.IR PATH ]
-.SH DESCRIPTION
-Start the web server and MCP HTTP endpoint. The MCP endpoint is
-available at
-.B /mcp
-on the same port. Logs go to stdout.
-.PP
-For the MCP stdio transport (editor integration), use
-.BR egghead-mcp (1)
+.Dd $Mdocdate$
+.Dt EGGHEAD-SERVE 1
+.Os
+.Sh NAME
+.Nm egghead-serve
+.Nd run the web UI and MCP HTTP server
+.Sh SYNOPSIS
+.Nm egghead serve
+.Op Fl -port Ar n
+.Op Fl -config Ar path
+.Sh DESCRIPTION
+.Cm serve
+starts a long-lived process that hosts the web UI, the records
+browser, the chat-room UI, and the MCP HTTP endpoint at
+.Pa /mcp ,
+all on the same port. Logs are written to standard output. The
+command runs in the foreground; it does not daemonize itself.
+.Pp
+The same supervision tree backs the TUI. If a
+.Cm serve
+process is already running on the same machine, launching the TUI
+or any other
+.Nm
+command attaches to it as a client over BEAM distribution. Same-host
+attach is zero-config; cross-host attach is documented in
+.Xr egghead 5
+under the
+.Sy server:
+section.
+.Pp
+For the MCP stdio transport, used by editor integrations,
+see
+.Xr egghead-mcp 1
 instead.
-.SH FLAGS
-.TP
-.B \-\-port \fIN\fR
-Override the HTTP port. Default: 4000.
-.TP
-.B \-i, \-\-interactive
-Keep the BEAM break menu available (Ctrl+C to inspect). Without this
-flag, Ctrl+C exits cleanly.
-.TP
-.B \-\-config \fIPATH\fR
-Override config file location.
-.TP
-.B \-h, \-\-help
-Show help text.
-.SH EXAMPLES
-.nf
+.Sh OPTIONS
+.Bl -tag -width "--config path"
+.It Fl -port Ar n
+Override
+.Sy web.port
+from the configuration for this invocation. Default:
+.Sy 4000 .
+.It Fl -config Ar path
+Override the configuration file location.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh BIND AND EXPOSURE
+The default
+.Sy web.bind
+is
+.Sy 127.0.0.1 .
+.Nm
+performs no authentication of its own; a network-reachable endpoint
+without authentication exposes the entire records store and the
+agent layer. There are two safe deployments: loopback only, and
+loopback plus a reverse proxy that handles authentication and TLS.
+Binding to
+.Sy 0.0.0.0
+is only safe when the network itself authenticates connections (a
+tailnet, a private VPC, a LAN you trust). See
+.Xr egghead 5
+and the
+.Sx Running a node
+guide for the full discussion.
+.Sh SHUTDOWN
+The process exits cleanly on
+.Sy SIGTERM
+or with the BEAM break sequence
+.Pq Sy Ctrl-C, then a .
+.Pp
+For unattended operation, install the user-scope service supervisor
+with
+.Xr egghead-service 1 ,
+which writes a LaunchAgent on macOS or a systemd user unit on Linux,
+restarts on failure, and routes logs to the standard XDG log file.
+.Sh EXAMPLES
+Run on the default port:
+.Bd -literal -offset indent
 egghead serve
-egghead serve \-\-port 8080
-egghead serve \-\-interactive
-.fi
-.SH SEE ALSO
-.BR egghead-mcp (1),
-.BR egghead-config (1),
-.BR egghead-doctor (1),
-.BR egghead (1)
+.Ed
+.Pp
+Run on a custom port:
+.Bd -literal -offset indent
+egghead serve --port 8080
+.Ed
+.Sh SEE ALSO
+.Xr egghead-mcp 1 ,
+.Xr egghead-service 1 ,
+.Xr egghead-config 1 ,
+.Xr egghead-doctor 1 ,
+.Xr egghead-logs 1 ,
+.Xr egghead 1 ,
+.Xr egghead 5

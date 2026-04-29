@@ -1,88 +1,189 @@
-.TH EGGHEAD 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead \- a personal knowledge base with AI agents that live inside it
-.SH SYNOPSIS
-.B egghead
-.RI [ command ]
-.RI [ flags ]
-.SH DESCRIPTION
-.B egghead
-is a personal knowledge base with AI agents that live inside it.
-Plain markdown records are the knowledge graph; agents read, write,
-and collaborate within it.
-.PP
+.Dd $Mdocdate$
+.Dt EGGHEAD 1
+.Os
+.Sh NAME
+.Nm egghead
+.Nd a notebook that writes back
+.Sh SYNOPSIS
+.Nm
+.Op Fl -config Ar path
+.Op Fl -server Ar host
+.Op Fl -version
+.Op Fl h | -help
+.Op Ar command Op Ar args ...
+.Sh DESCRIPTION
+.Nm
+is a record-store-first multi-agent system on Elixir/OTP. Plain Markdown
+records under a directory you choose are the substrate; agents are
+participants in the graph, not owners of it. A SQLite index materializes
+queries over the records. Agents are themselves records with
+.Cm class: agent ;
+their bodies are system prompts and their frontmatter declares the
+model and capabilities they hold. External tools consult the whole
+arrangement over MCP.
+.Pp
 Running
-.B egghead
-with no arguments launches the terminal UI (TUI).
-.SH COMMANDS
-.TP
-.B init
-First-run setup wizard. Configures records directory, LLM providers,
-and the built-in agent model.
-.TP
-.B serve
-Start the web server and MCP HTTP endpoint. Logs to stdout.
-.TP
-.B mcp
-Start the MCP stdio server for editor integration (e.g. Claude Code).
-.TP
-.B llm \fIsubcommand\fR
-Manage LLM providers. Subcommands: list, add, remove, test, models.
-.TP
-.B agent \fIsubcommand\fR
-Manage agents. Subcommands: list, new.
-.TP
-.B config \fIsubcommand\fR
-View or edit configuration. Subcommands: set, path.
-.TP
-.B doctor
-Run diagnostic checks on the installation.
-.TP
-.B logs
-Tail the application log file.
-.SH FLAGS
-.TP
-.B \-\-config \fIPATH\fR
-Override the config file location.
-.TP
-.B \-h, \-\-help
-Show help text.
-.TP
-.B \-\-version
-Show version.
-.SH EXAMPLES
-.nf
-egghead                           # Launch the TUI
-egghead init                      # First-run setup
-egghead llm add                   # Add an LLM provider
-egghead agent new                 # Create a new agent
-egghead serve \-\-port 8080        # Run servers on port 8080
-.fi
-.SH ENVIRONMENT
-.TP
-.B EGGHEAD_CONFIG
-Override the config file path (same as \-\-config).
-.TP
-.B ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY
-LLM provider API keys (auto-detected if set).
-.SH FILES
-.TP
-.I ~/.config/egghead/config.yml
+.Nm
+with no command launches the terminal UI: a Notational
+Velocity-style records browser, with an IRC-style chat room behind
+.Cm /chat .
+With no LLM provider configured the system gracefully degrades to a
+record-store-only interface; reads keep working, anything that needs
+to call a model returns a clean error.
+.Sh COMMANDS
+.Bl -tag -width "service"
+.It Cm (default)
+Launch the TUI.
+.It Cm init
+First-run setup wizard. Picks a records directory, configures LLM
+providers, sets the default model, and offers to install the
+background service.
+.It Cm serve
+Run the web UI and the MCP HTTP endpoint as a long-lived process.
+.It Cm mcp
+Speak the MCP protocol over stdin/stdout. Used by editor integrations.
+.It Cm llm Op Cm list | add | remove | test | models
+Manage LLM providers and inspect available models.
+.It Cm agents Op Cm list | new | grant | revoke | capabilities
+Manage agents (records with
+.Cm class: agent )
+and their held capabilities.
+.It Cm skills Op Cm list | show | check
+Inspect skills available to agents.
+.It Cm tools Op Cm list | mcp ...
+Inspect the agent tool catalog and configured MCP servers.
+.It Cm rooms Op Cm list | new | drop | show
+List, create, drop, or inspect chat rooms.
+.It Cm eval Op Cm list | run | runs | report | compare
+Run multi-agent evaluation tasks against a roster, grade with a
+synthetic Judge agent, and persist a run record.
+.It Cm config Op Cm set Ar key Ar value | path | show-cookie
+View, edit, or print configuration paths.
+.It Cm service Op Cm install | uninstall | status | logs
+Install or remove a user-scope process supervisor for
+.Cm egghead serve
+(LaunchAgent on macOS, systemd user unit on Linux).
+.It Cm doctor
+Diagnose setup problems: configuration, records directory, index,
+NIF binary, web port, log file, sandbox backend, providers, and
+capability hygiene across all agents.
+.It Cm logs
+Tail the application log.
+.It Cm help Op Ar command
+Print top-level help, or help for a single command.
+.El
+.Pp
+Every command accepts
+.Fl h
+or
+.Fl -help
+for command-specific help.
+.Sh OPTIONS
+.Bl -tag -width "--server host"
+.It Fl -config Ar path
+Override the configuration file location for this invocation.
+Equivalent to setting
+.Ev EGGHEAD_CONFIG .
+.It Fl -server Ar host
+Attach to an
+.Cm egghead serve
+running on
+.Ar host
+over BEAM distribution. Equivalent to setting
+.Ev EGGHEAD_SERVER .
+The TUI, MCP stdio server, and most read-side commands work as a
+client of that node when this is set.
+.It Fl -version
+Print the version string and exit. The version is computed at compile
+time from the current date and the git SHA
+.Pq for example, Sy 2026.4.14+61d171a .
+.It Fl h , Fl -help
+Print help.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width "ANTHROPIC_API_KEY"
+.It Ev EGGHEAD_CONFIG
+Path to the configuration file. May point at a directory (in which
+case
+.Pa config.yml
+inside it is read) or directly at a YAML file.
+.It Ev EGGHEAD_SERVER
+Hostname of an
+.Cm egghead serve
+to attach to. Same effect as
+.Fl -server .
+.It Ev EGGHEAD_RECORDS
+Override the records directory for this invocation. The TUI also
+honors
+.Ev EGGHEAD_RECORDS_DIR
+for the same purpose.
+.It Ev XDG_CONFIG_HOME , Ev XDG_STATE_HOME
+Honored when locating the configuration file and the log file.
+.It Ev ANTHROPIC_API_KEY , Ev OPENAI_API_KEY , Ev GOOGLE_API_KEY , ...
+Provider API keys. When set, providers are auto-detected at startup
+even if no explicit
+.Cm llm:
+entry exists in the configuration file. See
+.Xr egghead 5
+for the full list of recognized variables.
+.It Ev SECRET_KEY_BASE
+Used by the web server to sign session cookies. Set this when binding
+beyond loopback.
+.El
+.Sh FILES
+.Bl -tag -width "~/.local/state/egghead/egghead.log"
+.It Pa ~/.config/egghead/config.yml
 Configuration file. See
-.BR egghead (5).
-.TP
-.I ~/.egghead/
+.Xr egghead 5 .
+.It Pa ~/.egghead/
 Default records directory.
-.TP
-.I ~/.local/state/egghead/egghead.log
+.It Pa ~/.egghead/.egghead/index.db
+Derived SQLite index. Rebuilt from the source files at any time.
+.It Pa ~/.local/state/egghead/egghead.log
 Application log file.
-.SH SEE ALSO
-.BR egghead-init (1),
-.BR egghead-serve (1),
-.BR egghead-mcp (1),
-.BR egghead-llm (1),
-.BR egghead-agent (1),
-.BR egghead-config (1),
-.BR egghead-doctor (1),
-.BR egghead (5),
-.BR egghead (7)
+.It Pa ~/.erlang.cookie
+BEAM distribution cookie. Required at the same path on every host
+that participates in cross-host attach.
+.It Pa .mcp.json
+Project-local MCP client configuration that wires
+.Cm egghead mcp
+into editor integrations like Claude Code.
+.El
+.Sh EXAMPLES
+Launch the TUI:
+.Bd -literal -offset indent
+egghead
+.Ed
+.Pp
+First-run setup, then add an agent:
+.Bd -literal -offset indent
+egghead init
+egghead agents new
+.Ed
+.Pp
+Run the web and MCP HTTP server on a non-default port:
+.Bd -literal -offset indent
+egghead serve --port 8080
+.Ed
+.Pp
+Attach to a tailnet-reachable node:
+.Bd -literal -offset indent
+EGGHEAD_SERVER=orca.tailnet.ts.net egghead
+egghead --server orca.tailnet.ts.net rooms list
+.Ed
+.Sh SEE ALSO
+.Xr egghead-init 1 ,
+.Xr egghead-serve 1 ,
+.Xr egghead-mcp 1 ,
+.Xr egghead-llm 1 ,
+.Xr egghead-agents 1 ,
+.Xr egghead-skills 1 ,
+.Xr egghead-tools 1 ,
+.Xr egghead-rooms 1 ,
+.Xr egghead-eval 1 ,
+.Xr egghead-config 1 ,
+.Xr egghead-service 1 ,
+.Xr egghead-doctor 1 ,
+.Xr egghead-logs 1 ,
+.Xr egghead 5 ,
+.Xr egghead 7

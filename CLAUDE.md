@@ -23,14 +23,23 @@ egghead init                     # First-run setup wizard
 egghead serve                    # Web + MCP HTTP server (headless)
 egghead mcp                      # MCP stdio server (editor integration)
 egghead llm list|add|remove|test|models
-egghead agents list|new
-egghead config [set K V | path]
+egghead agents list|new|grant|revoke|capabilities
+egghead skills list|show|check
+egghead tools [list|mcp ...]
+egghead rooms list|new|drop|show
+egghead eval list|run|runs|report|compare
+egghead config [set K V | path | show-cookie]
+egghead service install|uninstall|status|logs
 egghead doctor                   # Diagnose setup problems
 egghead logs                     # Tail application logs
 ANTHROPIC_API_KEY=… iex -S mix   # Interactive (full system loaded)
 mix test                         # Test suite
 mix format
 ```
+
+Man pages live in `man/` and document every command in detail
+(`egghead(1)`, `egghead-<sub>(1)`, `egghead(5)` for `config.yml`,
+`egghead(7)` for the conceptual overview).
 
 All commands support `--help` (instant, via bash). Commands that touch
 configuration support `--config PATH` to override the config file.
@@ -54,7 +63,7 @@ llm:
   - provider: anthropic
     api_key: "{env:ANTHROPIC_API_KEY}"
 
-default_model: anthropic/claude-haiku-4-5
+default_model: anthropic/claude-sonnet-4-6
 
 web:
   port: 4000
@@ -257,7 +266,7 @@ Tool names are `egghead_*`-namespaced:
 - Providers: `egghead_providers`, `egghead_models`
 
 `egghead_consult` is the primary integration for external clients that
-want to ask the swarm a question without managing rooms themselves.
+want to ask the agent layer a question without managing rooms themselves.
 
 ## Versioning & Releases
 
@@ -409,7 +418,7 @@ Egghead.chat("@everyone ...")      # Huddle: serial, must-respond
 Egghead.chat("@jam ...")           # Cacophony: parallel, low threshold
 Egghead.chat_continue()            # Grant more rounds
 Egghead.chat_save()                # Save transcript as class:transcript record
-Egghead.consult("What about X?")   # Ephemeral room, swarm responds, returns result
+Egghead.consult("What about X?")   # Ephemeral room, agents respond, returns result
 Egghead.prompt("agents/scout", "direct 1:1 prompt")
 Egghead.handoff("agents/scout")    # Manual context handoff
 ```

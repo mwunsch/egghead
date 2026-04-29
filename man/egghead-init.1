@@ -1,41 +1,73 @@
-.TH EGGHEAD-INIT 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead-init \- first-run setup wizard
-.SH SYNOPSIS
-.B egghead init
-.RB [ \-\-config
-.IR PATH ]
-.RB [ \-\-dry\-run ]
-.SH DESCRIPTION
-Walks through initial Egghead setup: records directory location, LLM
-provider configuration (API key entry and verification), and built-in
-agent model selection. Saves results to
-.IR ~/.config/egghead/config.yml .
-.PP
-Safe to re-run. Existing values are shown as defaults and preserved
-unless changed.
-.SH FLAGS
-.TP
-.B \-\-config \fIPATH\fR
-Save config to a custom path instead of the default.
-.TP
-.B \-\-dry\-run
-Show what would be written without saving anything.
-.TP
-.B \-h, \-\-help
-Show help text.
-.SH ENVIRONMENT
-.TP
-.B EGGHEAD_CONFIG
-Override the config file path (same as \-\-config).
-.SH EXAMPLES
-.nf
+.Dd $Mdocdate$
+.Dt EGGHEAD-INIT 1
+.Os
+.Sh NAME
+.Nm egghead-init
+.Nd first-run setup wizard
+.Sh SYNOPSIS
+.Nm egghead init
+.Op Fl -dry-run
+.Op Fl -config Ar path
+.Sh DESCRIPTION
+The
+.Cm init
+wizard walks through the three things every new install needs:
+the records directory, at least one LLM provider, and a default
+model. It writes the result to
+.Pa ~/.config/egghead/config.yml
+(respecting
+.Ev XDG_CONFIG_HOME
+and
+.Ev EGGHEAD_CONFIG ) ,
+creating the records directory if it does not exist.
+.Pp
+.Cm init
+is safe to re-run. When a configuration file already exists, the
+wizard prompts before overwriting and shows existing values as
+defaults.
+.Pp
+On hosts that support a user-scope service supervisor, the wizard
+offers to install one at the end so
+.Cm egghead serve
+survives logout and restarts on failure. See
+.Xr egghead-service 1 .
+.Pp
+The wizard knows about Anthropic, OpenAI, Google, xAI, Groq, DeepSeek,
+Mistral, OpenRouter, Ollama, LM Studio, and any custom OpenAI-compatible
+endpoint. API keys can be entered directly or referenced from the
+environment via the
+.Sy {env:VAR}
+substitution syntax described in
+.Xr egghead 5 .
+.Sh OPTIONS
+.Bl -tag -width "--config path"
+.It Fl -dry-run
+Print the configuration that would be written without saving it.
+The records directory is also not created.
+.It Fl -config Ar path
+Save the configuration to a custom path instead of the XDG default.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+Default setup:
+.Bd -literal -offset indent
 egghead init
-egghead init \-\-config ~/projects/my\-kb/egghead.yml
-egghead init \-\-dry\-run
-.fi
-.SH SEE ALSO
-.BR egghead-config (1),
-.BR egghead-llm (1),
-.BR egghead-doctor (1),
-.BR egghead (1)
+.Ed
+.Pp
+Save to a project-scoped configuration:
+.Bd -literal -offset indent
+egghead init --config ~/projects/my-kb/egghead.yml
+.Ed
+.Pp
+Preview without writing:
+.Bd -literal -offset indent
+egghead init --dry-run
+.Ed
+.Sh SEE ALSO
+.Xr egghead-config 1 ,
+.Xr egghead-llm 1 ,
+.Xr egghead-doctor 1 ,
+.Xr egghead-service 1 ,
+.Xr egghead 1 ,
+.Xr egghead 5

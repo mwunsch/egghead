@@ -81,17 +81,21 @@ egghead init                     # First-run setup wizard
 egghead serve                    # Web UI + MCP HTTP at http://localhost:4000
 egghead mcp                      # MCP stdio server (for editor integration)
 egghead agents <list|new|grant|revoke|capabilities>
-egghead skills <list|check>      # Manage agent skills
+egghead skills <list|show|check> # Manage agent skills
 egghead tools                    # Inspect agent tools and MCP servers
-egghead rooms                    # List open chat rooms
+egghead rooms <list|new|drop|show>
 egghead llm <list|add|remove|test|models>
-egghead eval                     # Run multi-agent eval tasks
-egghead config <show|set|path>
+egghead eval <list|run|runs|report|compare>
+egghead config <set|path|show-cookie>
+egghead service <install|uninstall|status|logs>
 egghead doctor                   # Diagnose setup problems
 egghead logs                     # Tail application logs
 ```
 
-All commands support `--help` and `--config PATH`.
+All commands support `--help` and `--config PATH`. A full set of man
+pages ships in `man/` — `man egghead` for the umbrella, `man egghead.5`
+for the configuration file format, `man egghead.7` for the conceptual
+overview.
 
 ## Records
 
@@ -205,7 +209,7 @@ llm:
   - provider: anthropic
     api_key: "{env:ANTHROPIC_API_KEY}"
 
-default_model: anthropic/claude-haiku-4-5
+default_model: anthropic/claude-sonnet-4-6
 
 web:
   port: 4000

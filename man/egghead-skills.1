@@ -1,0 +1,80 @@
+.Dd $Mdocdate$
+.Dt EGGHEAD-SKILLS 1
+.Os
+.Sh NAME
+.Nm egghead-skills
+.Nd manage skills available to agents
+.Sh SYNOPSIS
+.Nm egghead skills
+.Op Cm list
+.Nm egghead skills
+.Cm show Ar name
+.Nm egghead skills
+.Cm check Ar name Fl -agent Ar agent-id
+.Sh DESCRIPTION
+A skill is a Markdown file pairing an instruction body with a
+declaration of the tools that body assumes. The format follows the
+.Lk https://agentskills.io "Agent Skills specification" ,
+which is the same format Claude Code and a growing number of agent
+harnesses use: skills written for one of those tools usually drop in
+to
+.Nm
+without modification.
+.Pp
+Skills do not grant capabilities. A skill's
+.Sy allowed-tools
+declaration is a
+.Em requirement
+the agent must already meet, not a grant. An agent that lacks the
+required capabilities never sees the skill in its discovery list.
+.Pp
+Skills are sourced from three places:
+.Bl -tag -width Ds
+.It Pa $SKILLS_DIR
+A drop-zone outside the records directory, defaulting to
+.Pa ~/.agents/skills .
+Files at
+.Pa <name>/SKILL.md
+are auto-indexed.
+.It Records with Cm class: skill
+Anything declared as a skill in the records directory.
+.It Pa skills/<name>/SKILL.md No in the store
+Auto-classified as a skill on read.
+.El
+.Sh COMMANDS
+.Bl -tag -width "check name"
+.It Cm list
+List every skill, with its source location and whether the
+frontmatter validates. Default when no subcommand is given.
+.It Cm show Ar name
+Print the skill's frontmatter and body, plus any validation
+warnings. Aliased as
+.Cm inspect .
+.It Cm check Ar name Fl -agent Ar agent-id
+Report the capability delta between the skill's
+.Sy allowed-tools
+and the named agent's grants: which tokens are satisfied, which are
+missing, and the exact
+.Cm egghead agents grant
+line that would close each gap. The right command to reach for when
+"why doesn't this skill show up for this agent?" comes up.
+.El
+.Sh OPTIONS
+.Bl -tag -width "--agent id"
+.It Fl a , Fl -agent Ar agent-id
+Agent to check against, for
+.Cm check .
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+egghead skills list
+egghead skills show pr-review
+egghead skills check pr-review --agent scout
+.Ed
+.Sh SEE ALSO
+.Xr egghead-agents 1 ,
+.Xr egghead-tools 1 ,
+.Xr egghead 1 ,
+.Xr egghead 7

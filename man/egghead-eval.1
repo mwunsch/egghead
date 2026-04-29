@@ -1,0 +1,95 @@
+.Dd $Mdocdate$
+.Dt EGGHEAD-EVAL 1
+.Os
+.Sh NAME
+.Nm egghead-eval
+.Nd run multi-agent evaluation tasks
+.Sh SYNOPSIS
+.Nm egghead eval
+.Op Cm list
+.Nm egghead eval
+.Cm run Ar task-id
+.Op Fl -roster Cm user | task
+.Op Fl -judge Ar agent-id
+.Op Fl -timeout Ar seconds
+.Nm egghead eval
+.Cm runs
+.Nm egghead eval
+.Cm report Ar run-id
+.Nm egghead eval
+.Cm compare Ar run-a Ar run-b
+.Sh DESCRIPTION
+.Cm eval
+posts a task prompt into an ephemeral chat room, waits for the
+conversation to converge, grades the resulting transcript with a
+synthetic Judge agent, and writes a durable run record. The grading
+methodology is ported from
+.Lk https://arxiv.org/abs/2503.01935 "MultiAgentBench (MARBLE)" ,
+so the numbers in a run record line up methodologically with the
+published literature.
+.Pp
+Each run produces two records: the conversation as a
+.Cm class: transcript
+record, and a durable run record at
+.Pa eval-runs/<timestamp>-<hash>
+tagged
+.Sy [eval, run, <category>] ,
+with KPI and per-dimension scores in the frontmatter and a
+milestone breakdown in the body.
+.Sh COMMANDS
+.Bl -tag -width "compare a b"
+.It Cm list
+List bundled tasks, grouped by category, with required capabilities.
+Default when no subcommand is given.
+.It Cm run Ar task-id
+Run a task against a roster. By default, every
+.Cm class: agent
+record in the store joins the room.
+.It Cm runs
+List past run records.
+.It Cm report Ar run-id
+Re-render the run record's KPI summary, per-dimension scores, and
+milestone breakdown.
+.It Cm compare Ar run-a Ar run-b
+Write a comparison record covering the two runs side by side. Useful
+for A/B-testing roster changes against the same task.
+.El
+.Sh OPTIONS
+.Bl -tag -width "--timeout n"
+.It Fl -roster Cm user | task
+Select who participates in the run.
+.Cm user
+.Pq the default
+joins every
+.Cm class: agent
+record from your store.
+.Cm task
+spawns transient agent processes from personas declared by the task
+itself; those agents live only for the duration of the run, are
+never written to the records directory, and disappear when the room
+stops. Use
+.Cm task
+to compare your own roster against the task's reference roster on
+the same prompt.
+.It Fl -judge Ar agent-id
+Override the Judge agent. Defaults to the bundled Judge defined by
+the task.
+.It Fl -timeout Ar seconds
+Wall-clock cap on a run.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+egghead eval list
+egghead eval run research/profile-1
+egghead eval run research/profile-1 --roster task
+egghead eval runs
+egghead eval report 2026-04-15-abc123
+egghead eval compare 2026-04-15-abc123 2026-04-16-def456
+.Ed
+.Sh SEE ALSO
+.Xr egghead-agents 1 ,
+.Xr egghead-rooms 1 ,
+.Xr egghead 1 ,
+.Xr egghead 7

@@ -1,0 +1,97 @@
+.Dd $Mdocdate$
+.Dt EGGHEAD-SERVICE 1
+.Os
+.Sh NAME
+.Nm egghead-service
+.Nd install, manage, or remove background service supervision
+.Sh SYNOPSIS
+.Nm egghead service
+.Cm install
+.Op Fl -dry-run
+.Op Fl y | Fl -yes
+.Nm egghead service
+.Cm uninstall
+.Nm egghead service
+.Cm status
+.Nm egghead service
+.Cm logs
+.Op Fl n Ar lines
+.Sh DESCRIPTION
+.Cm egghead serve
+is a foreground process; it does not daemonize itself.
+.Cm service
+writes a user-scope process supervisor unit so the server starts at
+login and restarts on failure, and logs to the same XDG log file
+.Cm egghead logs
+already reads.
+.Pp
+The platform branches:
+.Bl -tag -width Ds
+.It macOS
+LaunchAgent at
+.Pa ~/Library/LaunchAgents/computer.egghead.plist ,
+label
+.Sy computer.egghead .
+Loaded with
+.Cm launchctl bootstrap .
+.It Linux
+systemd user unit at
+.Pa ~/.config/systemd/user/egghead.service .
+Enabled and started with
+.Cm systemctl --user .
+.El
+.Pp
+When the running configuration references API keys via
+.Sy {env:VAR} ,
+.Cm install
+offers to bake the currently-set values into the unit's environment
+so the supervised process sees them without inheriting your
+interactive shell.
+.Pp
+.Cm egghead init
+offers to install the service at the end of first-run setup. The
+same offer is available afterward by running
+.Cm egghead service install
+directly.
+.Sh COMMANDS
+.Bl -tag -width "uninstall"
+.It Cm install
+Resolve the
+.Nm egghead
+binary, render the unit template, write the file, and load it.
+.It Cm uninstall
+Stop, unload, and remove the unit.
+.It Cm status
+Show the platform's native service status (output of
+.Cm launchctl print
+or
+.Cm systemctl --user status ) .
+.It Cm logs Op Fl n Ar lines
+Tail the XDG log file. Alias of
+.Xr egghead-logs 1 .
+.El
+.Sh OPTIONS
+.Bl -tag -width "--dry-run"
+.It Fl -dry-run
+For
+.Cm install ,
+print the unit that would be written without touching the filesystem.
+.It Fl y , Fl -yes
+For
+.Cm install ,
+skip confirmation prompts.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+egghead service install
+egghead service status
+egghead service logs
+egghead service uninstall
+.Ed
+.Sh SEE ALSO
+.Xr egghead-serve 1 ,
+.Xr egghead-logs 1 ,
+.Xr egghead-doctor 1 ,
+.Xr egghead 1

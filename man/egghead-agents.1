@@ -1,0 +1,129 @@
+.Dd $Mdocdate$
+.Dt EGGHEAD-AGENTS 1
+.Os
+.Sh NAME
+.Nm egghead-agents
+.Nd manage agents and their capabilities
+.Sh SYNOPSIS
+.Nm egghead agents
+.Op Cm list
+.Nm egghead agents
+.Cm new
+.Op Fl -name Ar name
+.Op Fl -model Ar model
+.Op Fl -dry-run
+.Nm egghead agents
+.Cm grant Ar agent-id Op Ar spec
+.Op Fl -yes
+.Nm egghead agents
+.Cm revoke Ar agent-id Ar spec
+.Nm egghead agents
+.Cm capabilities Ar agent-id
+.Sh DESCRIPTION
+An agent is a record with
+.Cm class: agent .
+The body is the system prompt; the frontmatter declares the model,
+the tags, and the capabilities the agent holds. Drop a record with
+that class into the records directory and an agent process starts.
+Edit it and the process hot-reloads. Delete it and the process stops.
+There is no separate registration step.
+.Pp
+.Cm agents
+operates on the agents currently running in the supervision tree.
+.Cm grant
+and
+.Cm revoke
+both rewrite the agent's record on disk; the running process restarts
+with the new authority.
+.Sh COMMANDS
+.Bl -tag -width "capabilities id"
+.It Cm list
+Print the running roster: name, id, and model. Default when no
+subcommand is given.
+.It Cm new
+Create a new agent interactively. The wizard picks an id, a model,
+a starting capability bundle, and writes the file. Use the flags
+below to skip individual prompts.
+.It Cm grant Ar agent-id Op Ar spec
+Add a capability to an agent. With no
+.Ar spec ,
+opens an interactive picker over the catalog, sorted from low risk
+to high. With a
+.Ar spec ,
+applies it directly after a confirmation; pass
+.Fl -yes
+to skip the prompt. The grant is written into the agent's record.
+.It Cm revoke Ar agent-id Ar spec
+Remove a capability from the agent's record.
+.It Cm capabilities Ar agent-id
+Print the agent's currently held capabilities, sorted by risk tier.
+Aliased as
+.Cm caps .
+.El
+.Sh OPTIONS
+.Bl -tag -width "--model model"
+.It Fl -name Ar name
+Agent id, for
+.Cm new .
+Skips the name prompt.
+.It Fl -model Ar model
+Model in
+.Sy provider/model
+form, for
+.Cm new .
+Skips the picker.
+.It Fl -dry-run
+Preview the agent record without writing it, for
+.Cm new .
+.It Fl y , Fl -yes
+Skip the confirmation prompt, for
+.Cm grant .
+.It Fl -config Ar path
+Override the configuration file location.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh CAPABILITY SPEC GRAMMAR
+The compact spec form mirrors the YAML grammar described in
+.Xr egghead 7
+and the
+.Sx Capabilities
+guide:
+.Bd -literal -offset indent
+records.read
+records.update{classes=[deliberation,inbox]}
+net.get{hosts=[*.github.com,api.anthropic.com]}
+proc.exec{in=~/Work,cmds=[rg,jq]}
+.Ed
+.Pp
+Internal verbs
+.Pq Sy records.* , Sy agent.*
+default to the universe in their bare form. External verbs
+.Pq Sy net.* , Sy fs.* , Sy proc.*
+default to empty in their bare form: a typo or omitted scope cannot
+silently grant unrestricted external access. Wide grants are
+permitted; they have to be written down explicitly.
+.Sh EXAMPLES
+Create an agent interactively:
+.Bd -literal -offset indent
+egghead agents new
+.Ed
+.Pp
+Create one without prompts:
+.Bd -literal -offset indent
+egghead agents new --name scout --model anthropic/claude-haiku-4-5
+.Ed
+.Pp
+Inspect and adjust held capabilities:
+.Bd -literal -offset indent
+egghead agents capabilities scout
+egghead agents grant scout 'net.get{hosts=[*.github.com]}'
+egghead agents revoke scout records.update
+.Ed
+.Sh SEE ALSO
+.Xr egghead-llm 1 ,
+.Xr egghead-skills 1 ,
+.Xr egghead-tools 1 ,
+.Xr egghead-doctor 1 ,
+.Xr egghead 1 ,
+.Xr egghead 7

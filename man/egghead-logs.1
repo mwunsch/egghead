@@ -1,0 +1,44 @@
+.Dd $Mdocdate$
+.Dt EGGHEAD-LOGS 1
+.Os
+.Sh NAME
+.Nm egghead-logs
+.Nd tail the application log
+.Sh SYNOPSIS
+.Nm egghead logs
+.Op Fl n Ar lines
+.Sh DESCRIPTION
+.Cm logs
+tails the application log file at
+.Pa $XDG_STATE_HOME/egghead/egghead.log
+.Pq typically Pa ~/.local/state/egghead/egghead.log .
+Run it in a separate terminal to watch the log while the TUI
+holds the alt-screen, or while a service-supervised
+.Cm egghead serve
+runs in the background.
+.Pp
+The log routing depends on the command in use. The TUI and most
+CLI commands write to the file; the
+.Cm mcp
+command also writes only to the file
+.Pq standard output is the wire protocol ;
+.Cm serve
+writes both to the file and to standard output.
+.Sh OPTIONS
+.Bl -tag -width "-n lines"
+.It Fl n , Fl -lines Ar lines
+Show this many lines initially before following. Default:
+.Sy 10 .
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+egghead logs
+egghead logs -n 200
+.Ed
+.Sh SEE ALSO
+.Xr egghead-doctor 1 ,
+.Xr egghead-service 1 ,
+.Xr egghead-serve 1 ,
+.Xr egghead 1

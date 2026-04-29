@@ -1,42 +1,65 @@
-.TH EGGHEAD-CONFIG 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead-config \- view and edit configuration
-.SH SYNOPSIS
-.B egghead config
-.RI [ subcommand ]
-.RB [ \-\-config
-.IR PATH ]
-.SH DESCRIPTION
-View and modify Egghead configuration. Config is stored in YAML at
-.I ~/.config/egghead/config.yml
-(respects
-.BR $XDG_CONFIG_HOME ).
-.SH SUBCOMMANDS
-.TP
-.B (default)
-Show current configuration.
-.TP
-.B set \fIkey\fR \fIvalue\fR
-Set a config value using dot-path notation.
-.TP
-.B path
-Print the config file path.
-.SH FLAGS
-.TP
-.B \-\-config \fIPATH\fR
-Override config file location.
-.TP
-.B \-h, \-\-help
-Show help text.
-.SH EXAMPLES
-.nf
+.Dd $Mdocdate$
+.Dt EGGHEAD-CONFIG 1
+.Os
+.Sh NAME
+.Nm egghead-config
+.Nd view and edit configuration
+.Sh SYNOPSIS
+.Nm egghead config
+.Nm egghead config
+.Cm set Ar key Ar value
+.Nm egghead config
+.Cm path
+.Nm egghead config
+.Cm show-cookie
+.Sh DESCRIPTION
+.Cm config
+inspects and edits the configuration file at
+.Pa ~/.config/egghead/config.yml
+(respecting
+.Ev XDG_CONFIG_HOME
+and
+.Ev EGGHEAD_CONFIG ) .
+.Cm set
+edits the YAML in place, preserving comments and whitespace where
+it can. The full configuration schema is in
+.Xr egghead 5 .
+.Sh COMMANDS
+.Bl -tag -width "show-cookie"
+.It Cm (default)
+Print the current configuration.
+.It Cm set Ar key Ar value
+Set a value using dot-path notation: nested keys are addressed as
+.Sy web.port ,
+.Sy default_model ,
+and so on.
+.It Cm path
+Print the resolved configuration file path.
+.It Cm show-cookie
+Print the BEAM distribution cookie at
+.Pa ~/.erlang.cookie
+to standard output, with explanatory commentary on standard error.
+Used to bootstrap cross-host BEAM distribution: copy the cookie to
+each peer host at the same path with mode
+.Sy 0400 .
+.El
+.Sh OPTIONS
+.Bl -tag -width "--config path"
+.It Fl -config Ar path
+Override the configuration file location.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
 egghead config
 egghead config path
 egghead config set web.port 8080
-egghead config set default_model anthropic/claude\-opus\-4\-6
-.fi
-.SH SEE ALSO
-.BR egghead-init (1),
-.BR egghead-doctor (1),
-.BR egghead (5),
-.BR egghead (1)
+egghead config set default_model anthropic/claude-sonnet-4-6
+egghead config show-cookie | ssh peer 'cat > ~/.erlang.cookie'
+.Ed
+.Sh SEE ALSO
+.Xr egghead-init 1 ,
+.Xr egghead-doctor 1 ,
+.Xr egghead 5 ,
+.Xr egghead 1

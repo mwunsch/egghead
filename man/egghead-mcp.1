@@ -1,26 +1,100 @@
-.TH EGGHEAD-MCP 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead-mcp \- MCP stdio server
-.SH SYNOPSIS
-.B egghead mcp
-.RB [ \-\-config
-.IR PATH ]
-.SH DESCRIPTION
-Start the MCP stdio server. Reads JSON-RPC messages from stdin and
-writes responses to stdout. Used by editor integrations like Claude
-Code via
-.IR .mcp.json .
-.PP
-For the HTTP MCP endpoint, use
-.BR egghead-serve (1)
-(available at /mcp on the web port).
-.SH FLAGS
-.TP
-.B \-\-config \fIPATH\fR
-Override config file location.
-.TP
-.B \-h, \-\-help
-Show help text.
-.SH SEE ALSO
-.BR egghead-serve (1),
-.BR egghead (1)
+.Dd $Mdocdate$
+.Dt EGGHEAD-MCP 1
+.Os
+.Sh NAME
+.Nm egghead-mcp
+.Nd MCP stdio server
+.Sh SYNOPSIS
+.Nm egghead mcp
+.Op Fl -config Ar path
+.Sh DESCRIPTION
+.Cm mcp
+speaks the Model Context Protocol over standard input and standard
+output. It is the transport an editor integration spawns as a
+subprocess; the editor writes JSON-RPC requests to stdin, reads
+responses from stdout, and tears the process down at the end of the
+session. There is one
+.Nm
+node per editor session.
+.Pp
+The HTTP MCP transport, mounted at
+.Pa /mcp
+on the web server, is the right choice when several clients should
+share one
+.Nm
+node or when the client connects from another machine. See
+.Xr egghead-serve 1 .
+.Pp
+Logging is suppressed on this command (the
+.Sy :silent
+log mode), because standard output carries the wire protocol. Logs
+still go to the XDG log file; tail it with
+.Xr egghead-logs 1
+if you need to debug.
+.Pp
+When
+.Ev EGGHEAD_SERVER
+or
+.Fl -server
+is set, the
+.Cm mcp
+command attaches to the named
+.Cm egghead serve
+node over BEAM distribution and brokers MCP requests through it,
+giving the editor the same record store and the same agents as the
+running node.
+.Sh OPTIONS
+.Bl -tag -width "--config path"
+.It Fl -config Ar path
+Override the configuration file location.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh TOOLS
+.Cm mcp
+exposes fifteen tools, each prefixed
+.Sy egghead_ :
+.Pp
+.Bl -tag -width "Records" -compact
+.It Records
+.Sy egghead_search ,
+.Sy egghead_get ,
+.Sy egghead_list ,
+.Sy egghead_create ,
+.Sy egghead_update ,
+.Sy egghead_find_links ,
+.Sy egghead_backlinks ,
+.Sy egghead_recent
+.It Agents
+.Sy egghead_agents ,
+.Sy egghead_prompt ,
+.Sy egghead_handoff ,
+.Sy egghead_save
+.It Consultation
+.Sy egghead_consult
+.It Providers
+.Sy egghead_providers ,
+.Sy egghead_models
+.El
+.Pp
+.Sy egghead_consult
+is the primary integration point for clients that want a one-shot
+multi-agent answer without managing rooms themselves.
+.Sh EXAMPLES
+A minimal
+.Pa .mcp.json
+that wires
+.Cm egghead mcp
+into Claude Code or another MCP-aware editor:
+.Bd -literal -offset indent
+{
+  "mcpServers": {
+    "egghead": { "command": "egghead", "args": ["mcp"] }
+  }
+}
+.Ed
+.Sh SEE ALSO
+.Xr egghead-serve 1 ,
+.Xr egghead-tools 1 ,
+.Xr egghead-logs 1 ,
+.Xr egghead 1

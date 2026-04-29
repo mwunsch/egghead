@@ -1,0 +1,74 @@
+.Dd $Mdocdate$
+.Dt EGGHEAD-ROOMS 1
+.Os
+.Sh NAME
+.Nm egghead-rooms
+.Nd manage chat rooms
+.Sh SYNOPSIS
+.Nm egghead rooms
+.Op Cm list
+.Nm egghead rooms
+.Cm new Op Ar name
+.Nm egghead rooms
+.Cm drop Ar room-id
+.Op Fl -no-save
+.Nm egghead rooms
+.Cm show Ar room-id
+.Sh DESCRIPTION
+A chat room is a long-lived process holding a shared transcript, a
+roster of agents, and a turn budget. Every agent in the roster reads
+every message; a coordinator decides which agent or agents respond
+to each one based on how the sender addressed it. Three dialogue
+modes are available — open messages, the
+.Sy @everyone
+huddle (serial, must-respond), and
+.Sy @jam
+(parallel cacophony) — and agents can yield with
+.Sy /pass
+when they have nothing to add. The
+.Sx Chat rooms
+guide covers the full model.
+.Pp
+A room lives in memory for as long as the node runs. To survive a
+restart, save the transcript first; the default
+.Cm drop
+auto-saves before stopping the room.
+.Sh COMMANDS
+.Bl -tag -width "show id"
+.It Cm list
+Print the live rooms, with agent and message counts. The default
+room is marked. Default when no subcommand is given.
+.It Cm new Op Ar name
+Create a new room. Without an argument,
+.Nm
+generates an id; with one, the argument becomes the id.
+.It Cm drop Ar room-id Op Fl -no-save
+Stop a room. By default, the transcript is saved as a
+.Cm class: transcript
+record before the room stops.
+.Fl -no-save
+discards the transcript instead. The default room cannot be dropped.
+.It Cm show Ar room-id
+Print a room's roster, message count, and recent transcript head.
+.El
+.Sh OPTIONS
+.Bl -tag -width "--no-save"
+.It Fl -no-save
+For
+.Cm drop ,
+discard the in-memory transcript instead of saving it as a record.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+egghead rooms                       # list rooms
+egghead rooms new design-review     # create a named room
+egghead rooms show design-review    # peek at the transcript
+egghead rooms drop design-review    # save and stop
+.Ed
+.Sh SEE ALSO
+.Xr egghead-agents 1 ,
+.Xr egghead-eval 1 ,
+.Xr egghead 1 ,
+.Xr egghead 7

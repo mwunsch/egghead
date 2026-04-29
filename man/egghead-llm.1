@@ -1,62 +1,99 @@
-.TH EGGHEAD-LLM 1 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead-llm \- manage LLM providers
-.SH SYNOPSIS
-.B egghead llm
-.RI [ subcommand ]
-.RB [ \-\-config
-.IR PATH ]
-.SH DESCRIPTION
-Manage LLM provider configuration. Egghead supports multiple providers
-simultaneously. Each provider needs an API key and gives access to its
-models. Supported providers: Anthropic, OpenAI, Google, and
-OpenAI-compatible APIs.
-.SH SUBCOMMANDS
-.TP
-.B list
-Show configured providers and key status. This is the default when no
+.Dd $Mdocdate$
+.Dt EGGHEAD-LLM 1
+.Os
+.Sh NAME
+.Nm egghead-llm
+.Nd manage LLM providers
+.Sh SYNOPSIS
+.Nm egghead llm
+.Op Cm list | add | remove Ar name | test | models
+.Sh DESCRIPTION
+.Cm llm
+manages the
+.Sy llm:
+section of
+.Pa ~/.config/egghead/config.yml .
+.Nm
+supports multiple providers concurrently; each provider supplies an
+API key (or references one through
+.Sy {env:VAR} )
+and contributes its models to the catalog.
+.Pp
+Out of the box,
+.Nm
+ships presets for Anthropic, OpenAI, Google, xAI, Groq, DeepSeek,
+Mistral, OpenRouter, Ollama, and LM Studio, plus a generic
+OpenAI-compatible endpoint. Provider API keys are auto-detected from
+the environment at startup
+.Pq Ev ANTHROPIC_API_KEY , Ev OPENAI_API_KEY , Ev GOOGLE_API_KEY , and so on ;
+the configuration file is for persistent, considered choices,
+the environment is for credentials.
+.Sh COMMANDS
+.Bl -tag -width "remove name"
+.It Cm list
+Show configured providers and their key status. The default when no
 subcommand is given.
-.TP
-.B add
-Add a provider interactively.
-.TP
-.B remove \fIname\fR
-Remove a provider by name.
-.TP
-.B test
-Verify all configured providers can connect.
-.TP
-.B models
-List all available models with context window sizes.
-.SH FLAGS
-.TP
-.B \-\-config \fIPATH\fR
-Override config file location.
-.TP
-.B \-h, \-\-help
-Show help text.
-.SH CONFIGURATION
-Provider config lives in
-.I ~/.config/egghead/config.yml
-under
-.BR llm: .
-API keys can reference environment variables:
-.PP
-.nf
+.It Cm add
+Walk through adding a provider interactively. Picks the provider,
+prompts for the key (or env-ref), and verifies it with a small request.
+.It Cm remove Ar name
+Remove the named provider from the configuration.
+.It Cm test
+Verify each configured provider can connect.
+.It Cm models
+List every model each provider reports, with context-window sizes.
+.El
+.Sh OPTIONS
+.Bl -tag -width "--config path"
+.It Fl -config Ar path
+Override the configuration file location.
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh CONFIGURATION
+The
+.Sy llm:
+section is a list of provider entries:
+.Bd -literal -offset indent
 llm:
-  \- provider: anthropic
+  - provider: anthropic
     api_key: "{env:ANTHROPIC_API_KEY}"
-.fi
-.SH EXAMPLES
-.nf
-egghead llm
+
+  - provider: openai
+    api_key: "{env:OPENAI_API_KEY}"
+
+  - provider: openai
+    name: together
+    base_url: https://api.together.xyz/v1
+    api_key: "{env:TOGETHER_API_KEY}"
+.Ed
+.Pp
+.Sy name:
+distinguishes a custom entry from a default of the same provider, and
+.Sy base_url:
+opts into an OpenAI-compatible endpoint other than the provider's own.
+The
+.Sy {env:VAR}
+substitution lets you keep the configuration file under version
+control without committing keys.
+.Sh EXAMPLES
+Add a provider:
+.Bd -literal -offset indent
 egghead llm add
+.Ed
+.Pp
+Inspect the model catalog:
+.Bd -literal -offset indent
 egghead llm models
-egghead llm remove openai
+.Ed
+.Pp
+Verify everything is reachable:
+.Bd -literal -offset indent
 egghead llm test
-.fi
-.SH SEE ALSO
-.BR egghead-init (1),
-.BR egghead-config (1),
-.BR egghead-doctor (1),
-.BR egghead (1)
+.Ed
+.Sh SEE ALSO
+.Xr egghead-init 1 ,
+.Xr egghead-config 1 ,
+.Xr egghead-doctor 1 ,
+.Xr egghead 1 ,
+.Xr egghead 5

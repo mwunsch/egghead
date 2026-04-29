@@ -1,0 +1,111 @@
+.Dd $Mdocdate$
+.Dt EGGHEAD-TOOLS 1
+.Os
+.Sh NAME
+.Nm egghead-tools
+.Nd inspect the agent tool catalog and configured MCP servers
+.Sh SYNOPSIS
+.Nm egghead tools
+.Op Cm list
+.Op Fl -agent Ar agent-id
+.Op Fl -source Cm all | local | mcp
+.Nm egghead tools mcp
+.Op Cm list | available | show Ar name | who Ar name | remove Ar name
+.Nm egghead tools mcp
+.Cm add Ar name
+.Op Fl -stdio Ar command | Fl -http Ar url
+.Sh DESCRIPTION
+A tool is a function the model can call.
+.Nm
+ships a built-in set
+.Pq record-store tools, web fetch, filesystem, subprocess
+and lets you extend the catalog by registering Model Context Protocol
+servers. The two sources merge into one menu, and which entries an
+agent sees on that menu depends on the capabilities the agent holds.
+.Pp
+.Cm tools
+inspects that catalog from both directions: the
+.Cm list
+subcommand walks the menu top-down (every tool, optionally filtered to
+one agent), and the
+.Cm mcp
+subcommands walk it from the server side (registered servers, their
+.Sy requires:
+sets, and the agents eligible to use them).
+.Sh COMMANDS
+.Bl -tag -width "mcp available"
+.It Cm list
+Print the catalog, grouped by source. Tools the agent can use are
+marked with a green dot; tools filtered out by the offering-time
+gate are dimmed and marked with a hollow dot. Default when no
+subcommand is given.
+.It Cm mcp list
+List configured MCP servers and their connection status.
+.It Cm mcp available
+List the curated registry of common servers
+.Pq Exa, GitHub, Brave, Slack, the local filesystem server, Egghead itself .
+Aliased as
+.Cm mcp registry .
+.It Cm mcp show Ar name
+Show one server's configuration, the tools it advertises, and the
+list of agents whose grants are a superset of its
+.Sy requires: .
+.It Cm mcp who Ar name
+Print the agents eligible to use the named server, one per line.
+The inverse of
+.Cm tools list --agent .
+.It Cm mcp add Ar name
+Register an MCP server. With a flag, the launch command is
+declared explicitly; without one, the wizard walks through the
+curated registry.
+.It Cm mcp remove Ar name
+Stop the server process and remove the entry from configuration.
+.El
+.Sh OPTIONS
+.Bl -tag -width "--source val"
+.It Fl -agent Ar agent-id
+Filter
+.Cm list
+to the tools one agent can actually call.
+.It Fl -source Cm all | local | mcp
+Restrict
+.Cm list
+to one source. Default:
+.Cm all .
+.It Fl -stdio Ar command
+Declare an MCP server's launch command for stdio transport, for
+.Cm mcp add .
+.It Fl -http Ar url
+Declare an MCP server's HTTP URL, for
+.Cm mcp add .
+.It Fl h , Fl -help
+Show help.
+.El
+.Sh EXAMPLES
+The catalog one agent can actually call:
+.Bd -literal -offset indent
+egghead tools list --agent scout
+.Ed
+.Pp
+Register a server from the curated registry:
+.Bd -literal -offset indent
+egghead tools mcp add exa
+.Ed
+.Pp
+Register a server by hand:
+.Bd -literal -offset indent
+egghead tools mcp add weather --stdio "mcp-weather"
+egghead tools mcp add api    --http  "https://api.example.com/mcp"
+.Ed
+.Pp
+Diagnose why a tool is missing from an agent's menu:
+.Bd -literal -offset indent
+egghead tools mcp show exa     # what does exa require?
+egghead tools mcp who exa      # which agents are eligible?
+.Ed
+.Sh SEE ALSO
+.Xr egghead-agents 1 ,
+.Xr egghead-skills 1 ,
+.Xr egghead-mcp 1 ,
+.Xr egghead 1 ,
+.Xr egghead 7

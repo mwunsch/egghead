@@ -1,91 +1,236 @@
-.TH EGGHEAD 5 "April 2026" "egghead 0.1.0" "Egghead Manual"
-.SH NAME
-egghead \- configuration file format
-.SH SYNOPSIS
-.I ~/.config/egghead/config.yml
-.SH DESCRIPTION
-The egghead configuration file is a YAML document that controls
-records location, LLM provider credentials, default model, and
-web server settings.
-.PP
-The file location follows the XDG Base Directory specification,
-defaulting to
-.IR ~/.config/egghead/config.yml .
-Override with the
-.B EGGHEAD_CONFIG
-environment variable or the
-.B \-\-config
-flag.
-.SH FORMAT
-.nf
+.Dd $Mdocdate$
+.Dt EGGHEAD 5
+.Os
+.Sh NAME
+.Nm config.yml
+.Nd egghead configuration file
+.Sh SYNOPSIS
+.Pa ~/.config/egghead/config.yml
+.Sh DESCRIPTION
+.Nm egghead
+reads its configuration from a single YAML file. With no
+configuration file and no environment variables set, the system
+still comes up: record reading, search, the TUI records browser, and
+the eight record-related MCP tools all work. Anything that needs an
+LLM returns an error in that mode.
+.Pp
+The file location is resolved in this order, taking the first match:
+.Bl -enum -compact
+.It
+.Ev EGGHEAD_CONFIG ,
+if set. May point at a directory (in which case
+.Pa config.yml
+inside it is read) or directly at a YAML file.
+.It
+.Pa $XDG_CONFIG_HOME/egghead/config.yml ,
+when the variable is set.
+.It
+.Pa ~/.config/egghead/config.yml
+otherwise.
+.El
+.Pp
+.Cm egghead config path
+prints the resolved path. When
+.Nm egghead
+writes the file, it sets the file mode to
+.Sy 0600
+on the assumption that API keys may end up inside.
+.Pp
+Three layers determine an effective setting; the highest layer
+that has a value wins:
+.Bl -enum -compact
+.It
+Environment variables. Provider API keys
+.Pq Ev ANTHROPIC_API_KEY , Ev OPENAI_API_KEY , and so on
+are detected at startup and override anything in the configuration
+file.
+.It
+The configuration file.
+.It
+Built-in defaults.
+.El
+.Pp
+The practical implication: the configuration file is for persistent,
+considered choices; the environment is for credentials and
+per-session overrides.
+.Sh KEYS
+Every key is optional. A configuration file containing only
+.Sy default_model: anthropic/claude-sonnet-4-6
+is a legal file.
+.Bl -tag -width "default_model"
+.It Sy records_dir
+Where records live. Tilde expansion is honored. Default:
+.Pa ~/.egghead .
+.It Sy skills_dir
+Drop-zone for portable skills outside the records directory. Default:
+.Pa ~/.agents/skills .
+.It Sy sandbox
+Workspace ceiling for
+.Sy fs.*
+and
+.Sy proc.*
+grants. Optional; can be declared per-agent instead.
+.It Sy llm
+List of LLM providers. Each entry has a
+.Sy provider:
+(one of
+.Sy anthropic ,
+.Sy openai ,
+.Sy google ,
+.Sy xai ,
+.Sy groq ,
+.Sy deepseek ,
+.Sy mistral ,
+.Sy openrouter ,
+.Sy ollama ,
+.Sy lmstudio ,
+or a custom OpenAI-compatible name) and an
+.Sy api_key:
+.Pq literal or Sy {env:VAR} .
+Optional
+.Sy name:
+distinguishes a custom entry from a default of the same provider;
+optional
+.Sy base_url:
+opts into an OpenAI-compatible endpoint other than the provider's
+own.
+.It Sy default_model
+Model in
+.Sy provider/model
+form, used for new agents and 1:1 prompts. Default:
+.Sy anthropic/claude-sonnet-4-6 .
+.It Sy default_room
+Default chat-room id, created on demand. Default:
+.Sy default .
+.It Sy web.port
+TCP port the web server listens on. Default:
+.Sy 4000 .
+.It Sy web.host
+Host used in generated absolute URLs. Default:
+.Sy localhost .
+.It Sy web.bind
+Listen address. Default:
+.Sy 127.0.0.1 .
+Set to
+.Sy 0.0.0.0
+to bind every interface; only safe behind a reverse proxy or on a
+network that authenticates connections itself
+.Pq tailnet, private VPC .
+.It Sy server.host
+Hostname this node registers under for cross-host BEAM distribution.
+Switches the BEAM to longnames. Required for cross-host attach;
+omit it for same-host attach (which is zero-config).
+.It Sy server.port_range
+Inclusive
+.Sy [min, max]
+range pinning the BEAM distribution listener's port range, so a
+single firewall rule covers it.
+.It Sy mcp_servers
+List of external MCP servers
+.Nm egghead
+mounts as a client. Each entry has a
+.Sy name: ,
+a
+.Sy transport:
+.Pq Sy stdio No or Sy http ,
+either a
+.Sy command:
+or a
+.Sy url: ,
+optional
+.Sy env: ,
+and a
+.Sy requires:
+list naming the capabilities an agent must already hold to be offered
+this server's tools. The
+.Sy requires:
+grammar matches
+.Sy capabilities:
+on agent records.
+.El
+.Sh ENVIRONMENT REFERENCES
+Anywhere a string value could be sensitive, write
+.Sy {env:VAR}
+and
+.Nm egghead
+resolves it from the environment at load time. The literal string
+sits in the file; the secret stays in the environment. This pattern
+lets you commit the configuration file under version control without
+committing the keys.
+.Bd -literal -offset indent
+llm:
+  - provider: anthropic
+    api_key: "{env:ANTHROPIC_API_KEY}"
+.Ed
+.Sh AUTO-DETECTED PROVIDERS
+If the
+.Sy llm:
+section is empty (or the configuration file does not exist at all),
+.Nm egghead
+checks for these environment variables at startup and registers the
+corresponding providers automatically:
+.Bl -column -compact "openrouter " "GOOGLE_API_KEY or GEMINI_API_KEY"
+.It Sy anthropic   Ta Ev ANTHROPIC_API_KEY
+.It Sy openai      Ta Ev OPENAI_API_KEY
+.It Sy google      Ta Ev GOOGLE_API_KEY No or Ev GEMINI_API_KEY
+.It Sy xai         Ta Ev XAI_API_KEY
+.It Sy groq        Ta Ev GROQ_API_KEY
+.It Sy deepseek    Ta Ev DEEPSEEK_API_KEY
+.It Sy mistral     Ta Ev MISTRAL_API_KEY
+.It Sy openrouter  Ta Ev OPENROUTER_API_KEY
+.El
+.Sh EXAMPLE
+.Bd -literal -offset indent
 records_dir: ~/.egghead
 
 llm:
   - provider: anthropic
-    api_key: sk-ant-...
-  - provider: openai
-    api_key: "{env:OPENAI_API_KEY}"
-  - provider: custom
-    name: local-llama
-    base_url: http://localhost:11434/v1
-    api_key: ollama
+    api_key: "{env:ANTHROPIC_API_KEY}"
 
-default_model: anthropic/claude-haiku-4-5
+  - provider: openai
+    name: together
+    base_url: https://api.together.xyz/v1
+    api_key: "{env:TOGETHER_API_KEY}"
+
+default_model: anthropic/claude-sonnet-4-6
 
 web:
   port: 4000
   host: localhost
   bind: 127.0.0.1
-.fi
-.SH KEYS
-.TP
-.B records_dir
-Path to the records directory. Tilde expansion is supported.
-Default: ~/.egghead
-.TP
-.B llm
-List of LLM provider configurations. Each entry has:
-.RS
-.TP
-.B provider
-Provider name: anthropic, openai, google, or custom.
-.TP
-.B api_key
-API key string, or an environment variable reference using
-the \fB{env:VAR_NAME}\fR syntax.
-.TP
-.B base_url
-(Optional) Base URL for custom OpenAI-compatible endpoints.
-.TP
-.B name
-(Optional) Display name for custom providers.
-.RE
-.TP
-.B default_model
-Model ID in \fIprovider/model\fR format (e.g. anthropic/claude-haiku-4-5).
-Used by the built-in Index agent. Other agents specify their own model
-in their record frontmatter.
-.TP
-.B web.port
-HTTP port for the web server. Default: 4000.
-.TP
-.B web.host
-Hostname for URL generation. Default: localhost.
-.TP
-.B web.bind
-Bind address. Use 0.0.0.0 for network access. Default: 127.0.0.1.
-.SH ENVIRONMENT VARIABLE REFERENCES
-API keys can reference environment variables instead of storing
-secrets in plaintext:
-.PP
-.nf
-api_key: "{env:ANTHROPIC_API_KEY}"
-.fi
-.PP
-The variable is resolved at runtime. If the variable is not set,
-the key is treated as nil.
-.SH SEE ALSO
-.BR egghead (1),
-.BR egghead-init (1),
-.BR egghead-config (1),
-.BR egghead (7)
+
+# Optional — only needed for cross-host BEAM distribution.
+server:
+  host: orca.tailnet.ts.net
+  port_range: [9100, 9105]
+
+mcp_servers:
+  - name: exa
+    transport: stdio
+    command: npx -y exa-mcp-server
+    env:
+      EXA_API_KEY: "{env:EXA_API_KEY}"
+    requires:
+      - net.get:
+          hosts: ["api.exa.ai"]
+.Ed
+.Sh FILES
+.Bl -tag -width "~/.local/state/egghead/egghead.log"
+.It Pa ~/.config/egghead/config.yml
+The configuration file.
+.It Pa ~/.egghead/
+Default records directory.
+.It Pa ~/.egghead/.egghead/index.db
+Derived SQLite index, rebuilt from records on demand.
+.It Pa ~/.local/state/egghead/egghead.log
+Application log file.
+.It Pa ~/.erlang.cookie
+BEAM distribution cookie. Required at the same path on every host
+participating in cross-host attach.
+.El
+.Sh SEE ALSO
+.Xr egghead 1 ,
+.Xr egghead-init 1 ,
+.Xr egghead-config 1 ,
+.Xr egghead-llm 1 ,
+.Xr egghead 7

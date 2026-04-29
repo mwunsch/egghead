@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string><%= label %></string>
+  <key>ProgramArguments</key>
+  <array>
+    <string><%= binary %></string>
+<%= for arg <- args do %>    <string><%= arg %></string>
+<% end %>  </array>
+  <key>WorkingDirectory</key>
+  <string><%= working_dir %></string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>EGGHEAD_CONFIG</key>
+    <string><%= config_path %></string>
+<%= for {k, v} <- env_pairs do %>    <key><%= k %></key>
+    <string><%= v %></string>
+<% end %>  </dict>
+  <key>StandardOutPath</key>
+  <string><%= log_path %></string>
+  <key>StandardErrorPath</key>
+  <string><%= log_path %></string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

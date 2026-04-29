@@ -321,9 +321,38 @@ releases are self-contained.
 ## Keeping the server alive
 
 `egghead serve` is a foreground process. It does not
-daemonize itself, so use the system's process manager.
+daemonize itself. The fastest path to a supervised node is
+the built-in installer:
 
-### systemd
+```bash
+egghead service install
+```
+
+That writes a user-scope unit (LaunchAgent on macOS, systemd
+user unit on Linux), enables it to start at login, and
+loads it. Logs go to the standard XDG log file, so
+`egghead logs` keeps working without any extra plumbing.
+
+```
+egghead service install      # write + load unit
+egghead service status       # platform-native status
+egghead service logs         # tail the log file
+egghead service uninstall    # stop + remove unit
+```
+
+If your config references API keys via `{env:VAR}`, the
+installer will offer to bake the currently-set values into
+the unit's environment so the supervised process sees them
+without inheriting your interactive shell.
+
+The same prompt is offered at the end of `egghead init` —
+new installs land on a supervised node without any extra
+steps.
+
+### By hand: systemd
+
+For multi-user systems or any case where you want a
+system-wide unit instead of a user one:
 
 ```ini
 # /etc/systemd/system/egghead.service
@@ -338,24 +367,27 @@ Environment="ANTHROPIC_API_KEY=..."
 Environment="SECRET_KEY_BASE=..."
 ExecStart=/usr/local/bin/egghead serve
 Restart=on-failure
+StandardOutput=append:/var/log/egghead/egghead.log
+StandardError=append:/var/log/egghead/egghead.log
 
 [Install]
 WantedBy=multi-user.target
 ```
-
-Then:
 
 ```bash
 systemctl enable --now egghead
 journalctl -u egghead -f
 ```
 
-### launchd (macOS)
+### By hand: launchd (macOS)
 
 A LaunchAgent plist with
 `ProgramArguments = ["/usr/local/bin/egghead", "serve"]` and
 `KeepAlive = true`. Place the file in
-`~/Library/LaunchAgents/` and run `launchctl load` against it.
+`~/Library/LaunchAgents/` and run `launchctl bootstrap` against
+it. Point `StandardOutPath` and `StandardErrorPath` at the
+same XDG log file Egghead writes to, so `egghead logs` keeps
+working uniformly.
 
 ### Graceful shutdown
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=Egghead
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=<%= working_dir %>
+Environment=EGGHEAD_CONFIG=<%= config_path %>
+<%= for {k, v} <- env_pairs do %>Environment=<%= k %>=<%= v %>
+<% end %>ExecStart=<%= exec_start %>
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:<%= log_path %>
+StandardError=append:<%= log_path %>
+
+[Install]
+WantedBy=default.target

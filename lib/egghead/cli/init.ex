@@ -95,10 +95,35 @@ defmodule Egghead.CLI.Init do
         :ok ->
           IO.puts("")
           Widgets.success("Configuration saved to #{Config.config_path()}")
+          maybe_install_service()
 
         {:error, reason} ->
           Widgets.error("Failed to save config: #{inspect(reason)}")
       end
+    end
+  end
+
+  defp maybe_install_service do
+    case :os.type() do
+      {:unix, _} ->
+        IO.puts("")
+        Widgets.header("Background service")
+
+        IO.puts(
+          "Egghead can run as a background service so it starts at login\n" <>
+            "and survives logout. Logs go to the standard XDG log file."
+        )
+
+        IO.puts("")
+
+        if Widgets.confirm("Install the background service now?") do
+          Egghead.CLI.Service.install([])
+        else
+          IO.puts("Skipped. Run `egghead service install` later if you change your mind.")
+        end
+
+      _ ->
+        :ok
     end
   end
 

@@ -10,7 +10,7 @@ defmodule Egghead.CLI do
   instead of `Mix.Task.run("app.start")`.
   """
 
-  @commands ~w(init serve mcp llm agents skills tools rooms config doctor logs help tui eval)
+  @commands ~w(init serve mcp llm agents skills tools rooms config doctor logs help tui eval service)
 
   @doc """
   Main entry point. Parses argv and dispatches to the appropriate
@@ -262,6 +262,10 @@ defmodule Egghead.CLI do
     Egghead.CLI.EvalCmd.run(args)
   end
 
+  defp dispatch(:service, args, _opts) do
+    Egghead.CLI.Service.run(args)
+  end
+
   defp dispatch(nil, [], _opts) do
     # No arguments: launch the TUI
     Egghead.CLI.TUI.run([])
@@ -299,6 +303,7 @@ defmodule Egghead.CLI do
       rooms         List open chat rooms
       eval          Run multi-agent eval tasks
       config        View/edit configuration
+      service       Install/uninstall background service supervision
       doctor        Diagnose setup problems
       logs          Tail application logs
 

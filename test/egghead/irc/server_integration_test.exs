@@ -213,6 +213,71 @@ defmodule Egghead.IRC.ServerIntegrationTest do
       :gen_tcp.close(sock)
       Room.stop(room_id)
     end
+
+    test "LIST marks the default room with a topic hint", ctx do
+      room_id = "list-default-#{:erlang.unique_integer([:positive])}"
+      {:ok, _} = Room.start_link(id: room_id)
+
+      saved = :persistent_term.get(:egghead_default_room, nil)
+      :persistent_term.put(:egghead_default_room, room_id)
+
+      on_exit(fn ->
+        if saved,
+          do: :persistent_term.put(:egghead_default_room, saved),
+          else: :persistent_term.erase(:egghead_default_room)
+      end)
+
+      sock = connect(ctx.port)
+      register(sock, "default-lister")
+
+      send_line(sock, "LIST")
+      lines = recv_until(sock, " 323 default-lister", 2000)
+
+      entry =
+        Enum.find(lines, &String.contains?(&1, " 322 default-lister ##{room_id}"))
+
+      assert entry, "expected 322 RPL_LIST entry for #{room_id}"
+      assert entry =~ "Default room"
+      assert entry =~ "#default"
+
+      :gen_tcp.close(sock)
+      Room.stop(room_id)
+    end
+  end
+
+  describe "#default alias" do
+    test "JOIN #default routes to the actual default room", ctx do
+      room_id = "alias-default-#{:erlang.unique_integer([:positive])}"
+      {:ok, _} = Room.start_link(id: room_id)
+
+      saved = :persistent_term.get(:egghead_default_room, nil)
+      :persistent_term.put(:egghead_default_room, room_id)
+
+      on_exit(fn ->
+        if saved,
+          do: :persistent_term.put(:egghead_default_room, saved),
+          else: :persistent_term.erase(:egghead_default_room)
+      end)
+
+      sock = connect(ctx.port)
+      register(sock, "aliaser")
+
+      send_line(sock, "JOIN #default")
+
+      # Echoed JOIN must use the canonical channel name (post-alias) so
+      # the client's membership state matches the room we actually
+      # subscribed it to. Otherwise PRIVMSGs from #<canonical> arrive on
+      # a channel the client doesn't think it joined.
+      lines = recv_until(sock, "366 aliaser", 2000)
+
+      assert Enum.any?(lines, fn l ->
+               l =~ ~r/^:aliaser![^ ]+ JOIN ##{room_id}/
+             end),
+             "JOIN echo should use canonical room id, not #default. got: #{inspect(lines)}"
+
+      :gen_tcp.close(sock)
+      Room.stop(room_id)
+    end
   end
 
   # --- helpers ---

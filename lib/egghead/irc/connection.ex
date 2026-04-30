@@ -611,7 +611,14 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp do_join(channel, state) do
-    case NickMap.channel_to_room(channel) do
+    # `#default` is an alias for the configured default room (or the
+    # auto-created dated fallback). Resolve before routing so the rest
+    # of the path operates on the real room id and the client's JOIN
+    # echo / membership tracking matches what subsequent PRIVMSGs and
+    # NAMES will reference.
+    canonical = resolve_default_alias(channel)
+
+    case NickMap.channel_to_room(canonical) do
       nil ->
         reply(
           state,
@@ -633,21 +640,32 @@ defmodule Egghead.IRC.Connection do
         else
           state = subscribe_room(state, room_id)
 
-          # Echo JOIN back to client so its UI updates.
+          # Echo JOIN with the canonical channel name (post-alias) so
+          # the client's membership state matches what we actually
+          # subscribed it to.
           send_line(
             state.__socket__,
             Protocol.encode(
               prefix: prefix_for(state.nick, state.user, state.server),
               command: "JOIN",
-              params: [channel]
+              params: [canonical]
             )
           )
 
-          send_names(channel, room_id, state)
+          send_names(canonical, room_id, state)
           state
         end
     end
   end
+
+  defp resolve_default_alias("#default") do
+    case Egghead.default_room() do
+      nil -> "#default"
+      room_id -> NickMap.room_to_channel(room_id)
+    end
+  end
+
+  defp resolve_default_alias(other), do: other
 
   # Spawn a forwarder Task that subscribes to the room's PubSub topic
   # and re-sends each message tagged with the room_id. Linked to the
@@ -870,6 +888,7 @@ defmodule Egghead.IRC.Connection do
       end
 
     rooms = Room.list_ids()
+    default = Egghead.default_room()
 
     matching =
       case requested do
@@ -880,9 +899,15 @@ defmodule Egghead.IRC.Connection do
     reply(state, Numerics.list_start(state.server, state.nick))
 
     Enum.each(matching, fn room_id ->
+      topic =
+        cond do
+          room_id == default -> "Default room — also reachable as #default"
+          true -> ""
+        end
+
       reply(
         state,
-        Numerics.list_entry(state.server, state.nick, NickMap.room_to_channel(room_id), 0, "")
+        Numerics.list_entry(state.server, state.nick, NickMap.room_to_channel(room_id), 0, topic)
       )
     end)
 

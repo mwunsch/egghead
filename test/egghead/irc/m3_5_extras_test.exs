@@ -82,6 +82,39 @@ defmodule Egghead.IRC.M35ExtrasTest do
       assert line =~ "401 opsy no-such-agent"
     end
 
+    test "INVITE against #default doesn't crash when caller hasn't joined #default", %{
+      sock: sock,
+      room_id: room_id
+    } do
+      # Regression: `#default` is a per-connection alias resolved on
+      # JOIN, but `target_to_room_id/2` used to fall through to a
+      # literal "default" room id when the caller hadn't joined via
+      # that name. Subsequent Room.join("default", ...) crashed the
+      # connection with :no_proc. Now `target_to_room_id/2` resolves
+      # `#default` against `Egghead.default_room/0` even without a
+      # local alias.
+      saved = :persistent_term.get(:egghead_default_room, nil)
+      :persistent_term.put(:egghead_default_room, room_id)
+
+      on_exit(fn ->
+        if saved,
+          do: :persistent_term.put(:egghead_default_room, saved),
+          else: :persistent_term.erase(:egghead_default_room)
+      end)
+
+      send_line(sock, "INVITE no-such-agent #default")
+
+      # Still 401 (agent doesn't exist) — but the connection must
+      # remain alive (no crash).
+      line = recv_one(sock, 1500)
+      assert line =~ "401 opsy no-such-agent"
+
+      # Sanity: connection survives the call.
+      send_line(sock, "PING :alive")
+      pong = recv_one(sock, 1000)
+      assert pong =~ "PONG"
+    end
+
     # Skipping the 443-already-on-channel test: it requires a real
     # registered agent process that `resolve_agent_anywhere/1` (which
     # walks `Egghead.Agent.list_agents/0`) can find. Heavy to set up
@@ -103,6 +136,19 @@ defmodule Egghead.IRC.M35ExtrasTest do
       lines = recv_until(sock, " 318 opsy", 1500)
       assert Enum.any?(lines, &String.contains?(&1, "311 opsy opsy "))
       assert Enum.any?(lines, &String.contains?(&1, "318 opsy opsy"))
+    end
+
+    test "WHOIS for an agent does NOT emit 320 RPL_WHOISSPECIAL", %{sock: sock} do
+      # Regression: 320 has split semantics across IRCds — ERC and
+      # several other clients render it as "is identified to services"
+      # regardless of trailing text, so packing context/disposition/
+      # capabilities into 320 lines silently lost the data. We now use
+      # 311 realname + 312 server-info + 335 RPL_WHOISBOT instead.
+      send_line(sock, "WHOIS opsy")
+      lines = recv_until(sock, " 318 opsy", 1500)
+
+      refute Enum.any?(lines, &String.contains?(&1, " 320 ")),
+             "WHOIS should not emit 320 (got: #{inspect(lines)})"
     end
   end
 

@@ -752,14 +752,22 @@ defmodule Egghead.IRC.Connection do
     Map.get(state.aliases, room_id) || NickMap.room_to_channel(room_id)
   end
 
-  # Reverse lookup for inbound traffic. Client sends `PRIVMSG #default :hi`
-  # — `#default` isn't a room id, but we have an alias entry pointing it
-  # at the canonical room. Returns the room id, or nil if the channel
-  # name doesn't resolve to anything we know.
+  # Reverse lookup for inbound traffic. Three layers:
+  # 1. Per-connection alias (set on JOIN #default → that room id)
+  # 2. Global `#default` alias (so KICK/INVITE work even without a JOIN)
+  # 3. Canonical: strip `#`/`&`/etc.
+  # Returns the room id, or nil if the channel name doesn't look like a
+  # channel at all.
   defp target_to_room_id(state, channel) do
-    case Enum.find(state.aliases, fn {_room_id, alias_name} -> alias_name == channel end) do
-      {room_id, _alias} -> room_id
-      nil -> NickMap.channel_to_room(channel)
+    cond do
+      match = Enum.find(state.aliases, fn {_room_id, alias_name} -> alias_name == channel end) ->
+        elem(match, 0)
+
+      channel == "#default" ->
+        Egghead.default_room() || NickMap.channel_to_room(channel)
+
+      true ->
+        NickMap.channel_to_room(channel)
     end
   end
 
@@ -1373,6 +1381,13 @@ defmodule Egghead.IRC.Connection do
       room_id ->
         case resolve_agent_anywhere(nick) do
           {:ok, agent_id} ->
+            unless Room.exists?(room_id) do
+              # INVITE auto-creates like JOIN — otherwise typing
+              # `/invite scout #brand-new-room` would silently no-op
+              # or crash on the missing GenServer.
+              ensure_room(room_id)
+            end
+
             already? =
               Room.exists?(room_id) and
                 case Room.get_state(room_id) do
@@ -1380,11 +1395,16 @@ defmodule Egghead.IRC.Connection do
                   _ -> false
                 end
 
-            if already? do
-              reply(state, Numerics.user_on_channel(state.server, state.nick, nick, channel))
-            else
-              Room.join(room_id, agent_id)
-              reply(state, Numerics.inviting(state.server, state.nick, nick, channel))
+            cond do
+              already? ->
+                reply(state, Numerics.user_on_channel(state.server, state.nick, nick, channel))
+
+              not Room.exists?(room_id) ->
+                reply(state, Numerics.no_such_nick(state.server, state.nick, channel))
+
+              true ->
+                Room.join(room_id, agent_id)
+                reply(state, Numerics.inviting(state.server, state.nick, nick, channel))
             end
 
           :not_found ->
@@ -1451,23 +1471,31 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp whois_agent(nick, agent, state) do
-    realname = "#{agent.name} · #{agent.model || "no model"}"
+    # Pack metadata into the realname (311) and server-info (312)
+    # fields, which clients render verbatim. Avoid 320 RPL_WHOISSPECIAL
+    # — ERC and several other clients hardcode it as "is identified to
+    # services" regardless of trailing text. 335 RPL_WHOISBOT marks
+    # agents distinctly in modern clients.
+    ctx = agent.current_context_tokens || 0
+    window = agent.context_window || 0
+    pct = if window > 0, do: round(ctx / window * 100), else: 0
+
+    realname =
+      [agent.name, agent.model || "no model", "context #{pct}%"]
+      |> Enum.join(" · ")
+
+    info =
+      ["Egghead agent · #{agent.id}"]
+      |> maybe_append(agent.disposition, fn d -> "disposition: #{d}" end)
+      |> maybe_append(format_caps(agent.capabilities), fn c -> "caps: #{c}" end)
+      |> Enum.join(" · ")
 
     reply(
       state,
       Numerics.whois_user(state.server, state.nick, nick, "agent", state.server, realname)
     )
 
-    reply(
-      state,
-      Numerics.whois_server(
-        state.server,
-        state.nick,
-        nick,
-        state.server,
-        "Egghead agent · #{agent.id}"
-      )
-    )
+    reply(state, Numerics.whois_server(state.server, state.nick, nick, state.server, info))
 
     channels = agent_channels(agent.id)
 
@@ -1475,46 +1503,24 @@ defmodule Egghead.IRC.Connection do
       reply(state, Numerics.whois_channels(state.server, state.nick, nick, channels))
     end
 
-    ctx = agent.current_context_tokens || 0
-    window = agent.context_window || 0
-    pct = if window > 0, do: round(ctx / window * 100), else: 0
+    reply(state, Numerics.whois_bot(state.server, state.nick, nick))
+  end
 
-    reply(
-      state,
-      Numerics.whois_special(
-        state.server,
-        state.nick,
-        nick,
-        "Context: #{pct}% (#{format_int(ctx)} / #{format_int(window)})"
-      )
-    )
+  defp maybe_append(list, nil, _fmt), do: list
+  defp maybe_append(list, "", _fmt), do: list
+  defp maybe_append(list, [], _fmt), do: list
+  defp maybe_append(list, value, fmt), do: list ++ [fmt.(value)]
 
-    if agent.disposition && agent.disposition != "" do
-      reply(
-        state,
-        Numerics.whois_special(
-          state.server,
-          state.nick,
-          nick,
-          "Disposition: #{agent.disposition}"
-        )
-      )
-    end
+  defp format_caps(nil), do: nil
+  defp format_caps([]), do: nil
 
-    if agent.capabilities && agent.capabilities != [] do
-      caps =
-        agent.capabilities
-        |> Enum.map(fn
-          %{resource: r, verb: v} -> "#{r}.#{v}"
-          other -> inspect(other)
-        end)
-        |> Enum.join(", ")
-
-      reply(
-        state,
-        Numerics.whois_special(state.server, state.nick, nick, "Capabilities: #{caps}")
-      )
-    end
+  defp format_caps(caps) do
+    caps
+    |> Enum.map(fn
+      %{resource: r, verb: v} -> "#{r}.#{v}"
+      other -> inspect(other)
+    end)
+    |> Enum.join(", ")
   end
 
   defp whois_human(nick, state) do

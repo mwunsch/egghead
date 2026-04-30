@@ -149,9 +149,25 @@ defmodule Egghead.IRC.Numerics do
     }
   end
 
-  @doc "320 RPL_WHOISSPECIAL — free-form additional WHOIS info (one line per call)."
+  @doc """
+  320 RPL_WHOISSPECIAL — nominally "free-form info," but in practice
+  many clients (ERC, hexchat) hard-code it as "is identified to
+  services" regardless of trailing text. Avoid for arbitrary metadata;
+  use realname (311) or bot marker (335) instead. Kept for callers
+  that have a use for the literal-services semantic.
+  """
   def whois_special(server, asker, nick, line) do
     %Message{prefix: server, command: "320", params: [asker, nick], trailing: line}
+  end
+
+  @doc "335 RPL_WHOISBOT — modern marker rendered distinctly by current clients."
+  def whois_bot(server, asker, nick, network \\ "Egghead") do
+    %Message{
+      prefix: server,
+      command: "335",
+      params: [asker, nick],
+      trailing: "is a bot on #{network}"
+    }
   end
 
   @doc "341 RPL_INVITING — confirms an INVITE was sent."

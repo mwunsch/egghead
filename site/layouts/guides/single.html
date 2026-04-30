@@ -66,10 +66,16 @@
   </article>
 
   {{ if and .TableOfContents (gt (len .TableOfContents) 50) }}
-    <aside class="docs-toc-rail" aria-label="On this page">
-      <p class="docs-toc-rail__label">On this page</p>
-      {{ .TableOfContents }}
-    </aside>
+    <details class="docs-disclosure docs-disclosure--toc" open>
+      <summary class="docs-disclosure__toggle">
+        <span class="docs-disclosure__label">On this page</span>
+        <span class="docs-disclosure__caret" aria-hidden="true"></span>
+      </summary>
+      <aside class="docs-toc-rail" aria-label="On this page">
+        <p class="docs-toc-rail__label">On this page</p>
+        {{ .TableOfContents }}
+      </aside>
+    </details>
   {{ else }}
     <aside></aside>
   {{ end }}

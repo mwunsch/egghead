@@ -15,25 +15,31 @@
   "Evaluation"
   "Background"
 }}
-<nav class="docs-rail" aria-label="Guides">
-  <a class="docs-rail__home {{ if $current.IsSection }}docs-link--active{{ end }}"
-     href="{{ "guides/" | relURL }}">All Guides</a>
+<details class="docs-disclosure docs-disclosure--rail" open>
+  <summary class="docs-disclosure__toggle">
+    <span class="docs-disclosure__label">Guides menu</span>
+    <span class="docs-disclosure__caret" aria-hidden="true"></span>
+  </summary>
+  <nav class="docs-rail" aria-label="Guides">
+    <a class="docs-rail__home {{ if $current.IsSection }}docs-link--active{{ end }}"
+       href="{{ "guides/" | relURL }}">All Guides</a>
 
-  {{ range $sections }}
-    {{ $section := . }}
-    {{ $pages := where $guides "Params.section" $section }}
-    {{ with $pages }}
-      <div class="docs-section">
-        <p class="docs-section__label">{{ $section }}</p>
-        <ul class="docs-section__list">
-          {{ range (sort . "Weight") }}
-            <li>
-              <a class="docs-link {{ if eq .Permalink $current.Permalink }}docs-link--active{{ end }}"
-                 href="{{ .RelPermalink }}">{{ .Title }}</a>
-            </li>
-          {{ end }}
-        </ul>
-      </div>
+    {{ range $sections }}
+      {{ $section := . }}
+      {{ $pages := where $guides "Params.section" $section }}
+      {{ with $pages }}
+        <div class="docs-section">
+          <p class="docs-section__label">{{ $section }}</p>
+          <ul class="docs-section__list">
+            {{ range (sort . "Weight") }}
+              <li>
+                <a class="docs-link {{ if eq .Permalink $current.Permalink }}docs-link--active{{ end }}"
+                   href="{{ .RelPermalink }}">{{ .Title }}</a>
+              </li>
+            {{ end }}
+          </ul>
+        </div>
+      {{ end }}
     {{ end }}
-  {{ end }}
-</nav>
+  </nav>
+</details>

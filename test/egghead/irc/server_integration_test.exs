@@ -194,7 +194,10 @@ defmodule Egghead.IRC.ServerIntegrationTest do
 
   describe "LIST" do
     test "LIST returns all running rooms", ctx do
-      room_id = "list-#{:erlang.unique_integer([:positive])}"
+      # Suffix is a fixed string (not the unique-integer counter) so the
+      # room id can never accidentally contain a numeric like "323" that
+      # collides with the LIST-end marker we recv_until on.
+      room_id = "list-room-#{:erlang.unique_integer([:positive])}"
       {:ok, _} = Room.start_link(id: room_id)
 
       sock = connect(ctx.port)
@@ -202,10 +205,10 @@ defmodule Egghead.IRC.ServerIntegrationTest do
 
       send_line(sock, "LIST")
 
-      lines = recv_until(sock, "323", 2000)
-      assert Enum.any?(lines, &String.contains?(&1, "321 lister"))
-      assert Enum.any?(lines, &String.contains?(&1, "322 lister ##{room_id}"))
-      assert Enum.any?(lines, &String.contains?(&1, "323 lister"))
+      lines = recv_until(sock, " 323 lister", 2000)
+      assert Enum.any?(lines, &String.contains?(&1, " 321 lister"))
+      assert Enum.any?(lines, &String.contains?(&1, " 322 lister ##{room_id}"))
+      assert Enum.any?(lines, &String.contains?(&1, " 323 lister"))
 
       :gen_tcp.close(sock)
       Room.stop(room_id)

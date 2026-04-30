@@ -1476,6 +1476,12 @@ defmodule Egghead.IRC.Connection do
     # — ERC and several other clients hardcode it as "is identified to
     # services" regardless of trailing text. 335 RPL_WHOISBOT marks
     # agents distinctly in modern clients.
+    #
+    # NOTE: deliberately not surfacing `agent.disposition` here. That
+    # field is `record.body || ""` (see `lib/egghead/record/agent.ex`)
+    # — i.e. the whole system prompt, multi-paragraph. Client renderers
+    # wrap it across many lines. Tags and capabilities are short labels
+    # that fit on one line each.
     ctx = agent.current_context_tokens || 0
     window = agent.context_window || 0
     pct = if window > 0, do: round(ctx / window * 100), else: 0
@@ -1486,7 +1492,7 @@ defmodule Egghead.IRC.Connection do
 
     info =
       ["Egghead agent · #{agent.id}"]
-      |> maybe_append(agent.disposition, fn d -> "disposition: #{d}" end)
+      |> maybe_append(format_tags(agent.tags), fn t -> "tags: #{t}" end)
       |> maybe_append(format_caps(agent.capabilities), fn c -> "caps: #{c}" end)
       |> Enum.join(" · ")
 
@@ -1522,6 +1528,11 @@ defmodule Egghead.IRC.Connection do
     end)
     |> Enum.join(", ")
   end
+
+  defp format_tags(nil), do: nil
+  defp format_tags([]), do: nil
+  defp format_tags(tags) when is_list(tags), do: Enum.join(tags, ", ")
+  defp format_tags(_), do: nil
 
   defp whois_human(nick, state) do
     reply(

@@ -361,23 +361,66 @@ defmodule Egghead.TUI.Chat.Model do
 
   def hydrate_agents(room_id), do: fetch_agents(room_id)
 
-  defp fetch_agents(room_id) do
-    muted = muted_set(room_id)
+  defp fetch_agents(nil) do
+    # No room selected — fall back to the global running list so the
+    # roster panel and pickers still have something to show.
+    muted = MapSet.new()
 
     try do
       Egghead.list_agents()
-      |> Enum.map(fn a ->
-        %AgentPresence{
-          id: a.id,
-          name: a.name,
-          status: :idle,
-          muted?: MapSet.member?(muted, a.id)
-        }
-      end)
+      |> Enum.map(fn a -> agent_presence(a.id, a.name, muted) end)
     rescue
       _ -> []
     catch
       _, _ -> []
+    end
+  end
+
+  defp fetch_agents(room_id) do
+    # The sidebar mirrors the *room's* actual roster, not the global
+    # agent registry. An idle agent that has not been invited into
+    # this room must not appear — otherwise the UI contradicts what
+    # `idle: true` claims. The room's `agents` list is the source of
+    # truth; display info is looked up per-id.
+    muted = muted_set(room_id)
+    joined = joined_list(room_id)
+    by_id = list_agents_by_id()
+
+    Enum.map(joined, fn id ->
+      display = Map.get(by_id, id) || %{name: id}
+      agent_presence(id, display.name, muted)
+    end)
+  end
+
+  defp agent_presence(id, name, muted) do
+    %AgentPresence{
+      id: id,
+      name: name || id,
+      status: :idle,
+      muted?: MapSet.member?(muted, id)
+    }
+  end
+
+  defp joined_list(nil), do: []
+
+  defp joined_list(room_id) do
+    try do
+      case Egghead.Chat.Room.get_state(room_id) do
+        %{agents: list} when is_list(list) -> list
+        _ -> []
+      end
+    catch
+      _, _ -> []
+    end
+  end
+
+  defp list_agents_by_id do
+    try do
+      Egghead.list_agents() |> Map.new(&{&1.id, &1})
+    rescue
+      _ -> %{}
+    catch
+      _, _ -> %{}
     end
   end
 

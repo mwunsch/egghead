@@ -33,6 +33,7 @@ egghead-*.tar
 !/priv/static/
 !/priv/mcp/
 !/priv/eval/
+!/priv/agents/
 /zig-out/
 /.zig-cache/
 

@@ -136,8 +136,10 @@ You are Scout. ...
 
 Editing the file hot-reloads the running agent — the next
 message addressed to the agent uses the updated configuration —
-and deleting the file stops the process. The full surface lives
-in [Agents]({{< ref "agents" >}}).
+and deleting the file stops the process. The full surface,
+including the `quiet:` and `idle:` properties that change how
+the coordinator and the room treat the agent, lives in
+[Agents]({{< ref "agents" >}}).
 
 ## `skill`
 

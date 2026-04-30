@@ -297,6 +297,36 @@ defmodule Egghead.Record.AgentTest do
     end
   end
 
+  describe "quiet? / idle? properties" do
+    test "default to false when meta is empty" do
+      config = Projection.from(record(meta: %{}))
+
+      refute config.quiet?
+      refute config.idle?
+    end
+
+    test "true when set in frontmatter" do
+      config = Projection.from(record(meta: %{"quiet" => true, "idle" => true}))
+
+      assert config.quiet?
+      assert config.idle?
+    end
+
+    test "string \"true\" / \"false\" round-trip" do
+      config = Projection.from(record(meta: %{"quiet" => "true", "idle" => "false"}))
+
+      assert config.quiet?
+      refute config.idle?
+    end
+
+    test "garbage values default to false" do
+      config = Projection.from(record(meta: %{"quiet" => "yep", "idle" => 1}))
+
+      refute config.quiet?
+      refute config.idle?
+    end
+  end
+
   describe "valid_access?/1" do
     test "accepts r, w, rw (with casing and whitespace)" do
       assert Projection.valid_access?("r")

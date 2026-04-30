@@ -41,7 +41,9 @@ defmodule Egghead.Record.Agent do
           max_tokens: pos_integer(),
           temperature: float() | nil,
           context_threshold: float(),
-          context_window: pos_integer() | nil
+          context_window: pos_integer() | nil,
+          quiet?: boolean(),
+          idle?: boolean()
         }
 
   defstruct [
@@ -57,7 +59,9 @@ defmodule Egghead.Record.Agent do
     capabilities: [],
     tags: [],
     max_tokens: @default_max_tokens,
-    context_threshold: @default_context_threshold
+    context_threshold: @default_context_threshold,
+    quiet?: false,
+    idle?: false
   ]
 
   @doc """
@@ -79,7 +83,9 @@ defmodule Egghead.Record.Agent do
       max_tokens: meta_int(record, "max_tokens", @default_max_tokens),
       temperature: meta_float(record, "temperature", nil),
       context_threshold: meta_float(record, "context_threshold", @default_context_threshold),
-      context_window: meta_int(record, "context_window", nil)
+      context_window: meta_int(record, "context_window", nil),
+      quiet?: meta_bool(record, "quiet"),
+      idle?: meta_bool(record, "idle")
     }
   end
 
@@ -281,5 +287,15 @@ defmodule Egghead.Record.Agent do
     end
   rescue
     _ -> default
+  end
+
+  defp meta_bool(%Record{meta: meta}, key) do
+    case meta[key] do
+      true -> true
+      false -> false
+      "true" -> true
+      "false" -> false
+      _ -> false
+    end
   end
 end

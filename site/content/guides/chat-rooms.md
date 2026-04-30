@@ -143,19 +143,50 @@ to respond. It does this in two stages.
 
 The first stage is a structural filter that costs no API calls.
 It selects agents based on the addressing mode, removes any
-agents you have muted (where mute applies), and removes agents
-currently mid-handoff. For explicit addressing — `@researcher`,
-`@everyone`, `@jam` — this is the entire gate.
+agents you have muted (where mute applies), removes agents
+currently mid-handoff, and — on open messages only — removes
+any agent declared `quiet: true` in its frontmatter as long as
+a non-quiet agent is also present. For explicit addressing —
+`@researcher`, `@everyone`, `@jam` — quiet stops applying;
+those modes deliberately summon the whole room, including
+quiet agents. If a room ends up with only quiet agents, they
+are eligible on open messages too — silence is worse than
+infrastructure speaking up.
 
 The second stage runs only on open messages. The coordinator
 scores each remaining agent by
 [TF-IDF](https://en.wikipedia.org/wiki/Tf%E2%80%93idf) overlap
 between the message tokens and each agent's tags + disposition.
-The top scorer goes first; the rest follow in score order. The
-score does not gate eligibility on its own — every agent the
-structural filter let through is prompted. Score order
-determines who speaks first and gets to set the room's
-direction.
+The top scorer goes first; the rest follow in score order, with
+quiet agents placed last when they are eligible. The score does
+not gate eligibility on its own — every agent the structural
+filter let through is prompted. Score order determines who
+speaks first and gets to set the room's direction.
+
+## Roster membership
+
+A room's roster is the set of agents currently joined to it.
+By default, every running agent that is not declared
+`idle: true` joins every new room. Idle agents (the eval
+[Judge]({{< ref "eval" >}}#the-judge), or any agent you mark
+`idle: true` in frontmatter) stay out until you bring them in
+explicitly with `/invite`.
+
+`/invite` ensures the target agent's process is running and
+joins it to the current room. From code, the same operation is
+`Egghead.Chat.Room.join(room_id, agent_id)`, and
+`Egghead.create_room(agents: [...])` opens a room with a
+bespoke roster — useful when you want exactly the participants
+you specified and nothing else.
+
+`quiet: true` and `idle: true` are independent. An agent can
+be one, the other, both, or neither. A useful pattern: a
+specialist that you want kept on the bench but vocal once
+invited writes `idle: true` and leaves `quiet:` at its default;
+a meta-utility you want present everywhere but spoken only when
+addressed writes `quiet: true` and leaves `idle:` at its
+default. Both properties are documented on the
+[Agents]({{< ref "agents" >}}) page.
 
 ## Turn budget
 

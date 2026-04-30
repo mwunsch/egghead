@@ -25,61 +25,14 @@ defmodule Egghead.Agent.Supervisor do
   end
 
   @doc """
-  Returns the default built-in agent record.
+  Returns the built-in `index` agent record. Users shadow this by
+  writing a `class: agent` record with `id: index` in their store.
 
-  Used as a fallback when no `class: agent` record with id `"index"`
-  exists in the store. Users who want to widen Index's capabilities or
-  edit its disposition drop an `index.md` file anywhere in their record
-  store with `class: agent` in frontmatter (path is convention, not
-  requirement — any agent-class record whose derived id is `"index"`
-  will shadow).
+  Convenience wrapper around `Egghead.Agent.Builtin.fetch/1` for
+  callers (and tests) that still reach for the old name.
   """
   def default_agent do
-    # Read the configured default model, fall back to haiku if not set
-    {model, provider} =
-      case Egghead.Config.load() do
-        {:ok, %{default_model: dm}} when is_binary(dm) ->
-          case String.split(dm, "/", parts: 2) do
-            [p, m] -> {m, p}
-            _ -> {dm, nil}
-          end
-
-        _ ->
-          {"claude-haiku-4-5", "anthropic"}
-      end
-
-    %Egghead.Record{
-      id: "index",
-      title: "Index",
-      class: :agent,
-      tags: ["agent", "meta", "graph", "backlinks", "store-ops"],
-      meta:
-        %{
-          "model" => model,
-          "capabilities" => ["records.read", "records.create"]
-        }
-        |> then(fn m -> if provider, do: Map.put(m, "provider", provider), else: m end),
-      body: """
-      You are Index, the record store agent. Your domain is the store itself:
-      searching records, navigating the link graph, answering questions about
-      what's in the store, and creating records to capture knowledge.
-
-      You handle meta-questions about the system — what agents exist, what
-      records link to what, what was recently changed, graph structure and
-      backlinks.
-
-      In rooms with other agents: other agents also search records as part of
-      their work. Your value is not searching — it's knowing the shape of the
-      store. If another agent already searched and listed relevant records,
-      do not re-list them. Only respond if you found records they missed or
-      can answer a structural question they didn't address (e.g., "what links
-      to X", "what changed this week", "how many records have tag Y").
-
-      If a question is outside your domain or already answered, respond with
-      /pass.
-      """,
-      source_path: nil
-    }
+    Egghead.Agent.Builtin.fetch("index")
   end
 
   @doc """
@@ -103,11 +56,12 @@ defmodule Egghead.Agent.Supervisor do
     store = Keyword.get(opts, :store, Egghead.RecordStore)
     agent_records = Egghead.RecordStore.search_by_class(store, :agent)
 
-    # Index + Judge are synthetic built-ins. Either is shadowed by a
-    # `class: agent` record in the store with the matching id; otherwise
-    # the built-in runs so there's always at least one agent available
-    # and the eval pipeline always has a grader.
-    Enum.each([default_agent(), Egghead.Eval.Judge.default_agent()], fn default ->
+    # Built-in agents (Index, Judge, …) live as records in
+    # `priv/agents/` and are spawned synthetically when no user record
+    # with the same id shadows them. The store-backed copy always wins.
+    builtins = Egghead.Agent.Builtin.all()
+
+    Enum.each(builtins, fn default ->
       default_name = Egghead.Agent.agent_name(default.id)
       user_shadow? = Enum.any?(agent_records, &(&1.id == default.id))
 
@@ -125,14 +79,14 @@ defmodule Egghead.Agent.Supervisor do
       end
     end)
 
-    # Stop agents whose records no longer exist. Synthetic defaults
-    # (Index, Judge) are preserved — they have no backing record.
+    # Stop agents whose records no longer exist. Synthetic built-ins
+    # (Index, Judge, …) are preserved — they have no backing record.
     running_ids =
       agent_records
       |> Enum.map(& &1.id)
       |> MapSet.new()
 
-    synthetic_ids = MapSet.new([default_agent().id, Egghead.Eval.Judge.default_agent().id])
+    synthetic_ids = builtins |> Enum.map(& &1.id) |> MapSet.new()
 
     supervisor
     |> DynamicSupervisor.which_children()

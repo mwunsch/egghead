@@ -50,6 +50,8 @@ defmodule Egghead.Agent do
       :context_threshold,
       :context_window,
       tags: [],
+      quiet?: false,
+      idle?: false,
       # %{room_id | :default => session_pid}
       sessions: %{}
     ]
@@ -138,6 +140,46 @@ defmodule Egghead.Agent do
   end
 
   @doc """
+  Resolve an agent id to the record `/invite` should spawn. The store
+  is consulted first; on miss, the built-in registry (`priv/agents/`)
+  is consulted so `judge`, `index`, and any other built-in are
+  invitable without a shadowing record.
+
+  Returns `{:ok, %Record{}}` on success, `{:error, reason}` where
+  `reason` is a human-readable string suitable for surfacing as a
+  system notice in chat.
+  """
+  @spec resolve_for_invite(String.t()) :: {:ok, Egghead.Record.t()} | {:error, String.t()}
+  def resolve_for_invite(agent_id) when is_binary(agent_id) do
+    case safe_get_record(agent_id) do
+      {:ok, %{class: :agent} = record} ->
+        {:ok, record}
+
+      {:ok, _other_class} ->
+        {:error, "#{agent_id} is not an agent record"}
+
+      {:error, _reason} ->
+        # Store said no — either not found or unavailable. Either way,
+        # the built-in registry is the fallback so `judge`, `index`,
+        # and any other priv-shipped agent stay invitable.
+        case Egghead.Agent.Builtin.fetch(agent_id) do
+          %Egghead.Record{} = record -> {:ok, record}
+          _ -> {:error, "no agent record for #{agent_id}"}
+        end
+    end
+  end
+
+  defp safe_get_record(id) do
+    try do
+      Egghead.get_record(id)
+    rescue
+      _ -> {:error, :unavailable}
+    catch
+      _, _ -> {:error, :unavailable}
+    end
+  end
+
+  @doc """
   Lists all running agents.
   """
   @spec list_agents() :: [map()]
@@ -156,7 +198,7 @@ defmodule Egghead.Agent do
       Egghead.search_by_class(:agent)
       |> Enum.map(& &1.id)
 
-    all_ids = Enum.uniq(["index" | store_agents])
+    all_ids = Enum.uniq(Egghead.Agent.Builtin.ids() ++ store_agents)
 
     all_ids
     |> Enum.filter(fn id -> agent_name(id) |> GenServer.whereis() != nil end)
@@ -199,6 +241,8 @@ defmodule Egghead.Agent do
         tags: state.tags,
         disposition: state.disposition,
         model: state.model,
+        quiet?: state.quiet?,
+        idle?: state.idle?,
         usage: total_usage,
         session_tokens: total_session_tokens,
         current_context_tokens: max_current_context,
@@ -244,7 +288,9 @@ defmodule Egghead.Agent do
       max_tokens: config.max_tokens,
       temperature: config.temperature,
       context_threshold: config.context_threshold,
-      context_window: config.context_window
+      context_window: config.context_window,
+      quiet?: config.quiet?,
+      idle?: config.idle?
     }
 
     Logger.info(
@@ -298,7 +344,9 @@ defmodule Egghead.Agent do
       model: state.model,
       capabilities: state.capabilities,
       tags: state.tags,
-      disposition: state.disposition
+      disposition: state.disposition,
+      quiet?: state.quiet?,
+      idle?: state.idle?
     }
   end
 

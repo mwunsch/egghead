@@ -32,7 +32,16 @@ defmodule Egghead.Chat.Coordinator do
 
   defmodule AgentInfo do
     @moduledoc false
-    defstruct [:id, :name, :model, :capabilities, :tags, :disposition]
+    defstruct [
+      :id,
+      :name,
+      :model,
+      :capabilities,
+      :tags,
+      :disposition,
+      quiet?: false,
+      idle?: false
+    ]
   end
 
   defmodule State do
@@ -156,7 +165,9 @@ defmodule Egghead.Chat.Coordinator do
       model: metadata[:model],
       capabilities: metadata[:capabilities] || [],
       tags: metadata[:tags] || [],
-      disposition: metadata[:disposition] || ""
+      disposition: metadata[:disposition] || "",
+      quiet?: metadata[:quiet?] || false,
+      idle?: metadata[:idle?] || false
     }
 
     agents = Map.put(state.agents, agent_id, info)
@@ -229,14 +240,23 @@ defmodule Egghead.Chat.Coordinator do
   def handle_info({:agent_mentions, room_id, from_agent, mentioned_ids, _content}, state) do
     muted_set = room_muted_set(room_id)
 
-    # Peer-agent @-mentions do NOT bypass mute. The mute was the
-    # user's choice about what *they* want to hear; an agent
-    # referencing a muted peer in the transcript must not override
-    # that decision. Only a user's direct mention (handled in
-    # `activate/4`) wakes a muted agent.
+    # Peer-agent @-mentions are scoped to the *room*: an agent
+    # mentioning a peer can only summon agents who are actually joined
+    # to this room. Otherwise a mention of a kicked or never-invited
+    # agent would silently re-activate it, contradicting the kick or
+    # the `idle: true` opt-out. The candidate pool comes from
+    # `scope_to_room` for exactly this reason.
+    #
+    # Mute layers on top: even a mentioned peer who IS in the room
+    # stays silent if the user muted them. Mute is the user's
+    # preference about what *they* want to hear; agent-to-agent
+    # mentions must not override it. Only a user's direct mention
+    # (handled in `activate/4`) wakes a muted agent.
+    candidates = scope_to_room(state.agents, room_id)
+
     agents =
       mentioned_ids
-      |> Enum.flat_map(fn id -> find_agent(state.agents, id) end)
+      |> Enum.flat_map(fn id -> find_agent(candidates, id) end)
       |> Enum.reject(&MapSet.member?(muted_set, &1.id))
 
     if agents != [] do
@@ -545,19 +565,31 @@ defmodule Egghead.Chat.Coordinator do
 
   # Fire-and-forget room joins for a newly-promoted agent — one
   # task per watched room. Off-process so the Coordinator's mailbox
-  # doesn't block on Room.call latencies.
+  # doesn't block on Room.call latencies. Idle agents are skipped:
+  # they only enter a room via explicit `/invite`.
   defp join_in_watched_rooms(state, agent_id) do
-    for room_id <- state.rooms do
-      run_off_process(fn ->
-        try do
-          Room.join(room_id, agent_id)
-        catch
-          _, _ -> :ok
-        end
-      end)
-    end
+    if idle_agent?(state, agent_id) do
+      :ok
+    else
+      for room_id <- state.rooms do
+        run_off_process(fn ->
+          try do
+            Room.join(room_id, agent_id)
+          catch
+            _, _ -> :ok
+          end
+        end)
+      end
 
-    :ok
+      :ok
+    end
+  end
+
+  defp idle_agent?(state, agent_id) do
+    case Map.get(state.agents, agent_id) do
+      %AgentInfo{idle?: true} -> true
+      _ -> false
+    end
   end
 
   # For a rename: drop the old id, add the new id, only in rooms
@@ -604,7 +636,9 @@ defmodule Egghead.Chat.Coordinator do
       model: Map.get(payload, :model),
       capabilities: Map.get(payload, :capabilities) || [],
       tags: Map.get(payload, :tags) || [],
-      disposition: Map.get(payload, :disposition) || ""
+      disposition: Map.get(payload, :disposition) || "",
+      quiet?: Map.get(payload, :quiet?) || false,
+      idle?: Map.get(payload, :idle?) || false
     }
 
     agents = Map.put(state.agents, agent_id, info)
@@ -769,8 +803,8 @@ defmodule Egghead.Chat.Coordinator do
     mentions = msg.mentions || []
 
     cond do
-      # @everyone or @channel → huddle (serial, must respond) — includes Index
-      # @jam → cacophony (parallel, low threshold) — includes Index
+      # @everyone or @channel → huddle (serial, must respond) — includes quiet agents
+      # @jam → cacophony (parallel, low threshold) — includes quiet agents
       broadcast_mention?(mentions) ->
         Map.values(agents)
 
@@ -781,16 +815,17 @@ defmodule Egghead.Chat.Coordinator do
           find_agent(agents, name)
         end)
 
-      # Open message (no @-mention) → activate all specialists
-      # Index is infrastructure — excluded when specialists are available
-      # TF-IDF scoring in activate/4 determines activation order
+      # Open message (no @-mention) → activate non-quiet agents.
+      # Quiet agents (e.g. Index) are infrastructure — included only as
+      # fallback when no non-quiet agent is in the room. TF-IDF scoring
+      # in activate/4 determines activation order.
       true ->
-        specialists = agents |> Map.values() |> Enum.reject(&(&1.id == "index"))
+        specialists = agents |> Map.values() |> Enum.reject(& &1.quiet?)
         if specialists != [], do: specialists, else: Map.values(agents)
     end
   end
 
-  # Mentions that trigger room-wide activation (all agents including Index).
+  # Mentions that trigger room-wide activation (all agents, including quiet).
   defp broadcast_mention?(mentions) do
     Enum.any?(mentions, &(&1 in ["everyone", "channel", "jam"]))
   end
@@ -876,7 +911,7 @@ defmodule Egghead.Chat.Coordinator do
     mode = activation_mode(mentions)
 
     # Filter out agents mid-handoff and muted, order by TF-IDF relevance
-    # score (highest first). Index is always last when present:
+    # score (highest first). Quiet agents are always last when present:
     # infrastructure rounds out the room after specialists, never leads.
     scores = Egghead.Chat.Relevance.score(msg.content, state.corpus)
 
@@ -909,8 +944,8 @@ defmodule Egghead.Chat.Coordinator do
         handoff? or (muted? and not summoned?)
       end)
       |> Enum.sort_by(fn info ->
-        index_rank = if info.id == "index", do: 1, else: 0
-        {index_rank, -(scores[info.id] || 0), info.id}
+        quiet_rank = if info.quiet?, do: 1, else: 0
+        {quiet_rank, -(scores[info.id] || 0), info.id}
       end)
 
     agent_names = Enum.map_join(agents_to_prompt, ", ", & &1.id)
@@ -1378,7 +1413,9 @@ defmodule Egghead.Chat.Coordinator do
             model: Map.get(s, :model),
             capabilities: caps,
             tags: tags,
-            disposition: disp
+            disposition: disp,
+            quiet?: Map.get(s, :quiet?) || false,
+            idle?: Map.get(s, :idle?) || false
           }
 
         _ ->

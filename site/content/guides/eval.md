@@ -138,14 +138,24 @@ your configured `default_model`, and it grades transcripts
 against milestone lists with prompts ported verbatim from
 MARBLE's `evaluator_prompts.json`.
 
+Judge is declared `quiet: true, idle: true` in its frontmatter,
+so it does not crowd ordinary chat rooms. An eval run invites
+Judge into the ephemeral room it opens for the run, where it
+sits silently while the user roster works the task; once the
+turns finish, the runner prompts Judge directly to produce the
+JSON verdict. The two properties — quiet and idle — are
+documented on the [Agents]({{< ref "agents" >}}#quiet-and-idle-agents)
+page; the eval pipeline is the canonical example of why both
+exist.
+
 To use a different model for the Judge in a single run:
 
 ```bash
 egghead eval run research/profile-1 --judge anthropic/claude-opus-4-7
 ```
 
-To override the Judge's disposition or capabilities entirely,
-write a record with `id: judge` and `class: agent`:
+To override the Judge's disposition, model, or capabilities
+entirely, write a record with `id: judge` and `class: agent`:
 
 ```yaml
 ---
@@ -153,6 +163,8 @@ id: judge
 class: agent
 model: anthropic/claude-sonnet-4-6
 capabilities: [records.read]
+quiet: true
+idle: true
 tags: [eval, judge]
 ---
 
@@ -160,7 +172,10 @@ You are the Judge. You grade multi-agent transcripts...
 ```
 
 As soon as that record exists, the built-in Judge steps aside
-and yours runs in its place.
+and yours runs in its place. Keep `quiet: true` and
+`idle: true` unless you actually want your Judge participating
+in regular rooms — they are what keep the grader off the
+floor.
 
 ## Writing your own task
 

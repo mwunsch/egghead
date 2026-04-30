@@ -70,6 +70,8 @@ the frontmatter. Everything else has a sensible default.
 | `context_threshold` | float (0..1)| 0.70    | Triggers a handoff suggestion when session usage exceeds this fraction of the model's window. |
 | `context_window`    | int         | registry value | Override the registry-reported window. |
 | `disposition`       | string      | body    | Optional override; defaults to the record body. |
+| `quiet`             | bool        | `false` | Skip activation on open messages when other agents are present. See [Quiet and idle agents](#quiet-and-idle-agents). |
+| `idle`              | bool        | `false` | Stay out of rooms until explicitly invited. See [Quiet and idle agents](#quiet-and-idle-agents). |
 
 The minimum viable agent is one frontmatter line plus a body.
 Save this file as `agents/newbie.md`:
@@ -170,16 +172,62 @@ records. The matching list of *tools* each capability unlocks —
 including how to extend the catalog with MCP servers — is in
 [Tools]({{< ref "tools" >}}).
 
+## Quiet and idle agents
+
+Two boolean properties on an agent record change how the
+coordinator and the room treat that agent. Both default to
+`false`, both can be combined, and both apply equally to
+built-in and user-defined agents.
+
+`quiet: true`
+
+The agent does not participate in open messages when any
+non-quiet agent is also in the room. It still responds to a
+direct `@-mention`, to `@everyone`/`@channel` huddles, and to
+`@jam` cacophony — those modes deliberately summon the whole
+room. Quiet is for agents whose value is structural or
+infrastructural rather than conversational: agents that should
+be reachable, but should not crowd the floor on every message.
+
+`idle: true`
+
+The agent is not auto-joined to rooms. It exists as a running
+process — addressable via `Egghead.prompt/3` and over MCP — but
+a chat room does not include it in its roster unless someone
+invites it (`/invite <agent>` from the TUI, the `agents:`
+option to `Egghead.create_room/1`, or `Egghead.Chat.Room.join/2`
+directly). Idle is for agents that have a specific job at a
+specific moment and would otherwise be noise.
+
+A user-written agent can adopt either property by setting
+`quiet: true` or `idle: true` in its frontmatter. The two
+built-in agents below use them to define their behaviour.
+
 ## The built-in `index` agent
 
 Every Egghead install ships with a built-in agent named
-`index`. It holds `[records.read]` and exists so a fresh
-install always has someone to talk to. The built-in is
-process-only; there is no record for it in your store.
+`index`. It holds `[records.read, records.create]`, is
+`quiet: true`, and exists so a fresh install always has
+someone to talk to and so meta-questions about the store
+have a default responder. There is no file for it in your
+records directory; it is a synthetic record loaded from the
+application's resources.
 
 To customize, write a record with `id: index` and
 `class: agent`. As soon as that record exists, the built-in
-steps aside and yours runs in its place.
+steps aside and yours runs in its place — including any
+`quiet:` value you set or omit.
+
+## The built-in `judge` agent
+
+Egghead also ships with a `judge` agent used by the
+[eval pipeline]({{< ref "eval" >}}) to grade transcripts
+against milestone checklists. Judge is `quiet: true` and
+`idle: true`: it stays out of every room by default, and an
+eval run invites it into the room it just opened so the run
+record can attribute grading to a real participant. Judge
+respects shadowing the same way `index` does — write a record
+with `id: judge` and your version takes over.
 
 ## Sessions
 

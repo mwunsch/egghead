@@ -206,7 +206,10 @@ defmodule Egghead do
         joinable =
           case Keyword.get(opts, :agents) do
             nil ->
-              list_agents()
+              # Idle agents (e.g. the built-in Judge) are not auto-joined
+              # to rooms. They enter only via explicit `/invite` or via
+              # the `agents:` opt below.
+              list_agents() |> Enum.reject(&Map.get(&1, :idle?, false))
 
             ids when is_list(ids) ->
               resolved =
@@ -474,7 +477,9 @@ defmodule Egghead do
             capabilities: state.capabilities,
             tags: state.tags,
             disposition: state.disposition,
-            model: state.model
+            model: state.model,
+            quiet?: state.quiet?,
+            idle?: state.idle?
           }
         catch
           _, _ -> nil

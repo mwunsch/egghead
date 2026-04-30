@@ -1570,28 +1570,7 @@ defmodule Egghead.TUI.Chat.Update do
     {Model.append_entry(Model.clear_input(model), Entry.system(text)), :none}
   end
 
-  # Resolve an /invite target to the record we'll start an agent from.
-  # "index" without a shadowing record falls back to the synthetic
-  # Egghead.Agent.Supervisor.default_agent/0.
-  defp resolve_invite_record(agent_id) do
-    case safe_get_record(agent_id) do
-      {:ok, %{class: :agent} = record} ->
-        {:ok, record}
-
-      {:ok, _other_class} ->
-        {:error, "#{agent_id} is not an agent record"}
-
-      {:error, :not_found} ->
-        if agent_id == "index" do
-          {:ok, Egghead.Agent.Supervisor.default_agent()}
-        else
-          {:error, "no agent record for #{agent_id}"}
-        end
-
-      {:error, reason} ->
-        {:error, "could not load #{agent_id}: #{inspect(reason)}"}
-    end
-  end
+  defp resolve_invite_record(agent_id), do: Egghead.Agent.resolve_for_invite(agent_id)
 
   defp ensure_agent_started(record) do
     name = Egghead.Agent.agent_name(record.id)
@@ -1665,10 +1644,10 @@ defmodule Egghead.TUI.Chat.Update do
         {:ok, agent_id}
 
       {:error, :not_found} ->
-        if agent_id == "index", do: :builtin, else: :missing
+        if Egghead.Agent.Builtin.fetch(agent_id), do: :builtin, else: :missing
 
       _ ->
-        if agent_id == "index", do: :builtin, else: :missing
+        if Egghead.Agent.Builtin.fetch(agent_id), do: :builtin, else: :missing
     end
   end
 

@@ -115,9 +115,13 @@ defmodule Egghead.Eval.Runner do
   # ---- roster resolution -------------------------------------------------
 
   defp resolve_roster(%Task{} = _task, :user, _on_event) do
+    # Idle agents (Judge, plus any user agent that opts in to
+    # `idle: true`) are not regular peers — they only enter rooms via
+    # explicit invitation. Filter them out of the user roster here so
+    # the eval grades the room as a real user would experience it.
     roster =
       Egghead.search_by_class(:agent)
-      |> Enum.reject(&(&1.id == Judge.id()))
+      |> Enum.reject(&idle_agent_record?/1)
 
     {:ok, [], roster}
   end
@@ -150,6 +154,14 @@ defmodule Egghead.Eval.Runner do
 
       {:error, {:missing, missing}} ->
         {:error, {:missing_personas, missing}}
+    end
+  end
+
+  defp idle_agent_record?(record) do
+    case record.meta do
+      %{"idle" => true} -> true
+      %{"idle" => "true"} -> true
+      _ -> false
     end
   end
 
@@ -188,6 +200,15 @@ defmodule Egghead.Eval.Runner do
 
     case Egghead.create_room(room_opts) do
       {:ok, ^room_id} ->
+        # Judge is `quiet: true, idle: true` — it sits silently in the
+        # room while the user roster works the task, and gets prompted
+        # post-hoc by Scorer.grade/3 to produce the JSON verdict.
+        try do
+          Room.join(room_id, Judge.id())
+        catch
+          _, _ -> :ok
+        end
+
         # Verify the Room actually has agents joined. If it's empty,
         # the Coordinator has nothing to scope to and the prompt will
         # drop into silence until the idle timeout. Surface this loudly.

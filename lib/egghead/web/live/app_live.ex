@@ -1330,25 +1330,7 @@ defmodule Egghead.Web.AppLive do
     end
   end
 
-  defp resolve_invite_record(agent_id) do
-    case Egghead.get_record(agent_id) do
-      {:ok, %{class: :agent} = record} ->
-        {:ok, record}
-
-      {:ok, _other_class} ->
-        {:error, "#{agent_id} is not an agent record"}
-
-      {:error, :not_found} ->
-        if agent_id == "index" do
-          {:ok, Egghead.Agent.Supervisor.default_agent()}
-        else
-          {:error, "no agent record for #{agent_id}"}
-        end
-
-      {:error, reason} ->
-        {:error, "could not load #{agent_id}: #{inspect(reason)}"}
-    end
-  end
+  defp resolve_invite_record(agent_id), do: Egghead.Agent.resolve_for_invite(agent_id)
 
   defp ensure_agent_started(record) do
     name = Egghead.Agent.agent_name(record.id)

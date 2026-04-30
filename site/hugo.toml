@@ -16,3 +16,22 @@ title = "Egghead"
 [params]
   description = "A notebook that writes back. Your notes plus a chat room full of AI friends."
   githubURL = "https://github.com/mwunsch/egghead"
+  ogImage = "assets/img/og-banner.png"
+  ogImageAlt = "An apple atop the open cranium of a classical bust, surrounded by books, a globe, a CRT computer, a floppy disk, a flask, a molecular model, and a film strip."
+
+# oEmbed discovery: per-page JSON document advertised via <link rel="alternate">.
+# Lets Discord, Slack, and other oEmbed-aware consumers fetch a structured
+# preview alongside (or instead of) the Open Graph tags.
+[mediaTypes."application/json+oembed"]
+  suffixes = ["json"]
+
+[outputFormats.oembed]
+  mediaType   = "application/json+oembed"
+  baseName    = "oembed"
+  isPlainText = true
+  notAlternative = false
+
+[outputs]
+  home    = ["HTML", "RSS", "oembed"]
+  page    = ["HTML", "oembed"]
+  section = ["HTML", "RSS"]

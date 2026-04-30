@@ -1,0 +1,14 @@
+{{- $img := absURL (.Site.Params.ogImage | default "assets/img/og-banner.png") -}}
+{
+  "version": "1.0",
+  "type": "link",
+  "provider_name": {{ .Site.Title | jsonify }},
+  "provider_url": {{ .Site.BaseURL | jsonify }},
+  "title": {{ .Site.Title | jsonify }},
+  "author_name": {{ .Site.Title | jsonify }},
+  "author_url": {{ .Site.BaseURL | jsonify }},
+  "thumbnail_url": {{ $img | jsonify }},
+  "thumbnail_width": 1200,
+  "thumbnail_height": 630,
+  "description": {{ .Site.Params.description | jsonify }}
+}

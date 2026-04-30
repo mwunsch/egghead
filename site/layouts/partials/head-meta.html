@@ -1,0 +1,38 @@
+{{- /*
+  Social previews, favicons, and oEmbed discovery.
+  Open Graph + Twitter Card cover Discord/Slack/iMessage/X/LinkedIn;
+  oEmbed link is picked up by Discord and other RSS-style consumers.
+*/ -}}
+{{- $title := cond .IsHome .Site.Title (printf "%s — %s" .Title .Site.Title) -}}
+{{- $desc  := cond .IsHome .Site.Params.description (.Description | default .Summary | default .Site.Params.description) -}}
+{{- $img   := absURL (.Site.Params.ogImage | default "assets/img/og-banner.png") -}}
+{{- $imgAlt := .Site.Params.ogImageAlt | default .Site.Params.description -}}
+{{- $url   := .Permalink -}}
+
+<meta property="og:site_name" content="{{ .Site.Title }}">
+<meta property="og:type" content="{{ if .IsHome }}website{{ else }}article{{ end }}">
+<meta property="og:title" content="{{ $title }}">
+<meta property="og:description" content="{{ $desc | plainify }}">
+<meta property="og:url" content="{{ $url }}">
+<meta property="og:image" content="{{ $img }}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="{{ $imgAlt }}">
+<meta property="og:locale" content="en_US">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ $title }}">
+<meta name="twitter:description" content="{{ $desc | plainify }}">
+<meta name="twitter:image" content="{{ $img }}">
+<meta name="twitter:image:alt" content="{{ $imgAlt }}">
+
+<meta name="theme-color" content="#F4F1EA">
+
+<link rel="icon" type="image/png" sizes="32x32" href="{{ "favicon-32.png" | relURL }}">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ "favicon-16.png" | relURL }}">
+<link rel="apple-touch-icon" sizes="180x180" href="{{ "apple-touch-icon.png" | relURL }}">
+<link rel="manifest" href="{{ "site.webmanifest" | relURL }}">
+
+{{- with .OutputFormats.Get "oembed" }}
+<link rel="alternate" type="application/json+oembed" href="{{ .Permalink }}" title="{{ $title }}">
+{{- end }}

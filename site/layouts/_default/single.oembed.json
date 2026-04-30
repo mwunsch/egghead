@@ -1,0 +1,16 @@
+{{- $img := absURL (.Site.Params.ogImage | default "assets/img/og-banner.png") -}}
+{{- $title := cond .IsHome .Site.Title (printf "%s — %s" .Title .Site.Title) -}}
+{{- $desc  := cond .IsHome .Site.Params.description (.Description | default .Summary | default .Site.Params.description) -}}
+{
+  "version": "1.0",
+  "type": "link",
+  "provider_name": {{ .Site.Title | jsonify }},
+  "provider_url": {{ .Site.BaseURL | jsonify }},
+  "title": {{ $title | jsonify }},
+  "author_name": {{ .Site.Title | jsonify }},
+  "author_url": {{ .Site.BaseURL | jsonify }},
+  "thumbnail_url": {{ $img | jsonify }},
+  "thumbnail_width": 1200,
+  "thumbnail_height": 630,
+  "description": {{ $desc | plainify | jsonify }}
+}

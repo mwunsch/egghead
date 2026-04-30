@@ -1,0 +1,13 @@
+{
+  "name": "Egghead",
+  "short_name": "Egghead",
+  "description": "A notebook that writes back. Your notes plus a chat room full of AI friends.",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "theme_color": "#F4F1EA",
+  "background_color": "#F4F1EA",
+  "display": "browser",
+  "start_url": "/"
+}

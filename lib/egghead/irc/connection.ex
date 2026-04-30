@@ -408,6 +408,12 @@ defmodule Egghead.IRC.Connection do
       "MUTE" -> require_registered(state, fn -> handle_mute(msg, state) end)
       "UNMUTE" -> require_registered(state, fn -> handle_unmute(msg, state) end)
       "CONTEXT" -> require_registered(state, fn -> handle_context(msg, state) end)
+      "KICK" -> require_registered(state, fn -> handle_kick(msg, state) end)
+      "INVITE" -> require_registered(state, fn -> handle_invite(msg, state) end)
+      "WHOIS" -> require_registered(state, fn -> handle_whois(msg, state) end)
+      "MOTD" -> require_registered(state, fn -> handle_motd(msg, state) end)
+      "VERSION" -> require_registered(state, fn -> handle_version(msg, state) end)
+      "TIME" -> require_registered(state, fn -> handle_time(msg, state) end)
       _ -> handle_unknown(msg, state)
     end
   end
@@ -1154,7 +1160,7 @@ defmodule Egghead.IRC.Connection do
         ["No agents in this room."]
 
       ids ->
-        all = Egghead.Agent.list_agents()
+        all = safe_list_agents()
         roster = Enum.filter(all, fn a -> a.id in ids end)
 
         max_nick =
@@ -1299,6 +1305,283 @@ defmodule Egghead.IRC.Connection do
       socket,
       Protocol.encode(prefix: server, command: "NOTICE", params: [nick], trailing: text)
     )
+  end
+
+  # --- KICK / INVITE ---
+  #
+  # KICK and INVITE map to Room.leave/2 and Room.join/2 respectively.
+  # We deliberately don't model channel ops (no +o flag, no 482
+  # ERR_CHANOPRIVSNEEDED gate) — Egghead rooms are flat and any
+  # participant can shape the roster, parallel to TUI semantics.
+
+  defp handle_kick(msg, state) do
+    case Protocol.Message.args(msg) do
+      [channel, nick | _] ->
+        case target_to_room_id(state, channel) do
+          nil ->
+            reply(state, Numerics.no_such_nick(state.server, state.nick, channel))
+            {:continue, state}
+
+          room_id ->
+            unless MapSet.member?(state.channels, room_id) do
+              reply(state, Numerics.not_on_channel(state.server, state.nick, channel))
+            end
+
+            case resolve_agent_in_room(nick, room_id) do
+              {:ok, agent_id} ->
+                Room.leave(room_id, agent_id)
+
+              :not_found ->
+                reply(state, Numerics.no_such_nick(state.server, state.nick, nick))
+            end
+
+            {:continue, state}
+        end
+
+      _ ->
+        reply(state, Numerics.need_more_params(state.server, state.nick, "KICK"))
+        {:continue, state}
+    end
+  end
+
+  defp handle_invite(msg, state) do
+    # IRC convention is `INVITE <nick> <channel>` — note the order
+    # differs from KICK. Some clients accept the reverse; tolerate both.
+    case Protocol.Message.args(msg) do
+      [a, b | _] ->
+        {nick, channel} =
+          cond do
+            String.starts_with?(a, "#") -> {b, a}
+            String.starts_with?(b, "#") -> {a, b}
+            true -> {a, b}
+          end
+
+        do_invite(nick, channel, state)
+
+      _ ->
+        reply(state, Numerics.need_more_params(state.server, state.nick, "INVITE"))
+        {:continue, state}
+    end
+  end
+
+  defp do_invite(nick, channel, state) do
+    case target_to_room_id(state, channel) do
+      nil ->
+        reply(state, Numerics.no_such_nick(state.server, state.nick, channel))
+        {:continue, state}
+
+      room_id ->
+        case resolve_agent_anywhere(nick) do
+          {:ok, agent_id} ->
+            already? =
+              Room.exists?(room_id) and
+                case Room.get_state(room_id) do
+                  %{agents: agents} -> agent_id in agents
+                  _ -> false
+                end
+
+            if already? do
+              reply(state, Numerics.user_on_channel(state.server, state.nick, nick, channel))
+            else
+              Room.join(room_id, agent_id)
+              reply(state, Numerics.inviting(state.server, state.nick, nick, channel))
+            end
+
+          :not_found ->
+            # M3 only invites agents. Inviting another connected human
+            # is M4 (needs to forward an INVITE message to their
+            # connection process via Egghead.IRC.Registry.whereis/1).
+            reply(state, Numerics.no_such_nick(state.server, state.nick, nick))
+        end
+
+        {:continue, state}
+    end
+  end
+
+  # Find an agent by IRC nick across the whole agent registry (not
+  # scoped to a room). Used by INVITE — KICK / MUTE / UNMUTE use
+  # `resolve_agent_in_room/2` instead since they only operate on the
+  # current roster.
+  defp resolve_agent_anywhere(nick) do
+    case Enum.find(safe_list_agents(), fn a -> NickMap.id_to_nick(a.id) == nick end) do
+      nil -> :not_found
+      agent -> {:ok, agent.id}
+    end
+  end
+
+  # `Egghead.Agent.list_agents/0` requires the record store to be up.
+  # In test (and degraded headless modes) it isn't, and would crash the
+  # connection. Wrap so resolution / WHOIS gracefully report "no such
+  # nick" instead of dropping the socket.
+  defp safe_list_agents do
+    try do
+      Egghead.Agent.list_agents()
+    catch
+      _, _ -> []
+    end
+  end
+
+  # --- WHOIS ---
+  #
+  # WHOIS for an agent populates 311 with model + disposition, 319 with
+  # current room memberships, and a few 320 RPL_WHOISSPECIAL lines for
+  # context-window utilization and capabilities. WHOIS for a connected
+  # human shows their connection prefix and joined channels (M4 will
+  # extend the latter when we track per-conn room memberships).
+
+  defp handle_whois(msg, state) do
+    case Protocol.Message.args(msg) do
+      [target | _] ->
+        agent_match =
+          Enum.find(safe_list_agents(), fn a -> NickMap.id_to_nick(a.id) == target end)
+
+        cond do
+          agent_match -> whois_agent(target, agent_match, state)
+          Registry.whereis(target) != nil -> whois_human(target, state)
+          true -> reply(state, Numerics.no_such_nick(state.server, state.nick, target))
+        end
+
+        reply(state, Numerics.end_of_whois(state.server, state.nick, target))
+        {:continue, state}
+
+      [] ->
+        reply(state, Numerics.need_more_params(state.server, state.nick, "WHOIS"))
+        {:continue, state}
+    end
+  end
+
+  defp whois_agent(nick, agent, state) do
+    realname = "#{agent.name} · #{agent.model || "no model"}"
+
+    reply(
+      state,
+      Numerics.whois_user(state.server, state.nick, nick, "agent", state.server, realname)
+    )
+
+    reply(
+      state,
+      Numerics.whois_server(
+        state.server,
+        state.nick,
+        nick,
+        state.server,
+        "Egghead agent · #{agent.id}"
+      )
+    )
+
+    channels = agent_channels(agent.id)
+
+    if channels != [] do
+      reply(state, Numerics.whois_channels(state.server, state.nick, nick, channels))
+    end
+
+    ctx = agent.current_context_tokens || 0
+    window = agent.context_window || 0
+    pct = if window > 0, do: round(ctx / window * 100), else: 0
+
+    reply(
+      state,
+      Numerics.whois_special(
+        state.server,
+        state.nick,
+        nick,
+        "Context: #{pct}% (#{format_int(ctx)} / #{format_int(window)})"
+      )
+    )
+
+    if agent.disposition && agent.disposition != "" do
+      reply(
+        state,
+        Numerics.whois_special(
+          state.server,
+          state.nick,
+          nick,
+          "Disposition: #{agent.disposition}"
+        )
+      )
+    end
+
+    if agent.capabilities && agent.capabilities != [] do
+      caps =
+        agent.capabilities
+        |> Enum.map(fn
+          %{resource: r, verb: v} -> "#{r}.#{v}"
+          other -> inspect(other)
+        end)
+        |> Enum.join(", ")
+
+      reply(
+        state,
+        Numerics.whois_special(state.server, state.nick, nick, "Capabilities: #{caps}")
+      )
+    end
+  end
+
+  defp whois_human(nick, state) do
+    reply(
+      state,
+      Numerics.whois_user(state.server, state.nick, nick, "user", state.server, nick)
+    )
+
+    reply(
+      state,
+      Numerics.whois_server(state.server, state.nick, nick, state.server, "Egghead human user")
+    )
+  end
+
+  defp agent_channels(agent_id) do
+    Room.list_ids()
+    |> Enum.filter(fn room_id ->
+      Room.exists?(room_id) and
+        case Room.get_state(room_id) do
+          %{agents: agents} -> agent_id in agents
+          _ -> false
+        end
+    end)
+    |> Enum.map(&NickMap.room_to_channel/1)
+  end
+
+  # --- MOTD / VERSION / TIME ---
+
+  @motd [
+    "Welcome to Egghead — record-store-first multi-agent system.",
+    "",
+    "Try /list to see active rooms.",
+    "Try /context for a snapshot of agent context windows.",
+    "Mention @everyone to address all agents at once,",
+    "or @<agent> for a single one.",
+    "",
+    "Source: https://github.com/mwunsch/egghead"
+  ]
+
+  defp handle_motd(_msg, state) do
+    reply(state, Numerics.motd_start(state.server, state.nick))
+    Enum.each(@motd, fn line -> reply(state, Numerics.motd(state.server, state.nick, line)) end)
+    reply(state, Numerics.end_of_motd(state.server, state.nick))
+    {:continue, state}
+  end
+
+  defp handle_version(_msg, state) do
+    reply(
+      state,
+      Numerics.version_reply(
+        state.server,
+        state.nick,
+        state.version,
+        "Egghead IRC — record store + agents on tap"
+      )
+    )
+
+    {:continue, state}
+  end
+
+  defp handle_time(_msg, state) do
+    reply(
+      state,
+      Numerics.time_reply(state.server, state.nick, DateTime.utc_now() |> DateTime.to_iso8601())
+    )
+
+    {:continue, state}
   end
 
   # --- QUIT ---

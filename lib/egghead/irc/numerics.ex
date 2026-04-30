@@ -99,6 +99,131 @@ defmodule Egghead.IRC.Numerics do
     }
   end
 
+  @doc "311 RPL_WHOISUSER — nick / user / host / realname for a WHOIS reply."
+  def whois_user(server, asker, nick, user, host, realname) do
+    %Message{
+      prefix: server,
+      command: "311",
+      params: [asker, nick, user, host, "*"],
+      trailing: realname
+    }
+  end
+
+  @doc "312 RPL_WHOISSERVER — server name + info for a WHOIS reply."
+  def whois_server(server, asker, nick, server_name, info) do
+    %Message{
+      prefix: server,
+      command: "312",
+      params: [asker, nick, server_name],
+      trailing: info
+    }
+  end
+
+  @doc "317 RPL_WHOISIDLE — idle seconds + signon timestamp."
+  def whois_idle(server, asker, nick, idle_seconds, signon_epoch) do
+    %Message{
+      prefix: server,
+      command: "317",
+      params: [asker, nick, Integer.to_string(idle_seconds), Integer.to_string(signon_epoch)],
+      trailing: "seconds idle, signon time"
+    }
+  end
+
+  @doc "318 RPL_ENDOFWHOIS — terminates a WHOIS burst."
+  def end_of_whois(server, asker, nick) do
+    %Message{
+      prefix: server,
+      command: "318",
+      params: [asker, nick],
+      trailing: "End of WHOIS list"
+    }
+  end
+
+  @doc "319 RPL_WHOISCHANNELS — list of channels the nick is in."
+  def whois_channels(server, asker, nick, channels) when is_list(channels) do
+    %Message{
+      prefix: server,
+      command: "319",
+      params: [asker, nick],
+      trailing: Enum.join(channels, " ")
+    }
+  end
+
+  @doc "320 RPL_WHOISSPECIAL — free-form additional WHOIS info (one line per call)."
+  def whois_special(server, asker, nick, line) do
+    %Message{prefix: server, command: "320", params: [asker, nick], trailing: line}
+  end
+
+  @doc "341 RPL_INVITING — confirms an INVITE was sent."
+  def inviting(server, asker, target_nick, channel) do
+    %Message{prefix: server, command: "341", params: [asker, target_nick, channel]}
+  end
+
+  @doc "351 RPL_VERSION — server version string."
+  def version_reply(server, asker, version, comments) do
+    %Message{
+      prefix: server,
+      command: "351",
+      params: [asker, version, server],
+      trailing: comments
+    }
+  end
+
+  @doc "372 RPL_MOTD — one line of the MOTD (server convention prefixes `- `)."
+  def motd(server, nick, line) do
+    %Message{prefix: server, command: "372", params: [nick], trailing: "- " <> line}
+  end
+
+  @doc "375 RPL_MOTDSTART — header for the MOTD burst."
+  def motd_start(server, nick) do
+    %Message{
+      prefix: server,
+      command: "375",
+      params: [nick],
+      trailing: "- #{server} Message of the day -"
+    }
+  end
+
+  @doc "376 RPL_ENDOFMOTD — terminator for MOTD burst."
+  def end_of_motd(server, nick) do
+    %Message{prefix: server, command: "376", params: [nick], trailing: "End of /MOTD command"}
+  end
+
+  @doc "391 RPL_TIME — server local time."
+  def time_reply(server, nick, time_string) do
+    %Message{prefix: server, command: "391", params: [nick, server], trailing: time_string}
+  end
+
+  @doc "401 ERR_NOSUCHNICK — nick (or channel) doesn't exist."
+  def no_such_nick(server, asker, target) do
+    %Message{
+      prefix: server,
+      command: "401",
+      params: [asker, target],
+      trailing: "No such nick/channel"
+    }
+  end
+
+  @doc "442 ERR_NOTONCHANNEL — issuer isn't on the target channel."
+  def not_on_channel(server, asker, channel) do
+    %Message{
+      prefix: server,
+      command: "442",
+      params: [asker, channel],
+      trailing: "You're not on that channel"
+    }
+  end
+
+  @doc "443 ERR_USERONCHANNEL — INVITE target is already in the channel."
+  def user_on_channel(server, asker, target_nick, channel) do
+    %Message{
+      prefix: server,
+      command: "443",
+      params: [asker, target_nick, channel],
+      trailing: "is already on channel"
+    }
+  end
+
   @doc "221 RPL_UMODEIS — user's current mode flags (we expose none)."
   def user_mode_is(server, nick) do
     %Message{prefix: server, command: "221", params: [nick, "+"]}

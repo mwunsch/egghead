@@ -175,12 +175,14 @@ defmodule Egghead.IRC.Connection do
   end
 
   # Roster change — emit synthetic JOIN/PART so the IRC client's
-  # nicklist updates live without needing a fresh /NAMES query.
+  # nicklist updates live without needing a fresh /NAMES query, then
+  # push a TOPIC update so the channel header reflects the new count.
   defp handle_room_event({:agent_joined, agent_id}, room_id, socket, state) do
     nick = NickMap.id_to_nick(agent_id)
     channel = display_channel(state, room_id)
     line = Protocol.encode(prefix: agent_prefix(nick, state), command: "JOIN", params: [channel])
     send_line(socket, line)
+    push_topic_update(socket, state, room_id)
     state
   end
 
@@ -189,6 +191,7 @@ defmodule Egghead.IRC.Connection do
     channel = display_channel(state, room_id)
     line = Protocol.encode(prefix: agent_prefix(nick, state), command: "PART", params: [channel])
     send_line(socket, line)
+    push_topic_update(socket, state, room_id)
     state
   end
 
@@ -395,6 +398,16 @@ defmodule Egghead.IRC.Connection do
       "NAMES" -> require_registered(state, fn -> handle_names(msg, state) end)
       "MODE" -> require_registered(state, fn -> handle_mode(msg, state) end)
       "LIST" -> require_registered(state, fn -> handle_list(msg, state) end)
+      # Egghead verbs — TUI slash-command palette over the IRC wire.
+      # ERC's `/handoff scout` sends `HANDOFF scout`; users get the
+      # exact muscle memory they have in the TUI.
+      "HANDOFF" -> require_registered(state, fn -> handle_handoff(msg, state) end)
+      "SAVE" -> require_registered(state, fn -> handle_save(msg, state) end)
+      "CONTINUE" -> require_registered(state, fn -> handle_continue_cmd(msg, state) end)
+      "HALT" -> require_registered(state, fn -> handle_halt(msg, state) end)
+      "MUTE" -> require_registered(state, fn -> handle_mute(msg, state) end)
+      "UNMUTE" -> require_registered(state, fn -> handle_unmute(msg, state) end)
+      "CONTEXT" -> require_registered(state, fn -> handle_context(msg, state) end)
       _ -> handle_unknown(msg, state)
     end
   end
@@ -666,10 +679,47 @@ defmodule Egghead.IRC.Connection do
             )
           )
 
+          # Topic before NAMES — common server ordering and keeps `366`
+          # (end-of-names) as the final marker of the JOIN burst.
+          send_topic(state, room_id)
           send_names(display, room_id, state)
           state
         end
     end
+  end
+
+  # Synthesized channel topic — currently just an agent count. Lives in
+  # the channel header in most clients; cheap signal for "is this room
+  # active." Re-emitted whenever the roster changes (`:agent_joined` /
+  # `:agent_left`).
+  defp send_topic(state, room_id) do
+    channel = display_channel(state, room_id)
+    text = topic_text(room_id)
+
+    reply(state, Numerics.topic_reply(state.server, state.nick, channel, text))
+
+    reply(
+      state,
+      Numerics.topic_who_time(state.server, state.nick, channel, "egghead", epoch_now())
+    )
+  end
+
+  # Pushed-update form (no nick prefix in 332/333; sent as a top-level
+  # TOPIC line so connected clients refresh their header bar).
+  defp push_topic_update(socket, state, room_id) do
+    channel = display_channel(state, room_id)
+    text = topic_text(room_id)
+
+    send_line(
+      socket,
+      Protocol.encode(prefix: state.server, command: "TOPIC", params: [channel], trailing: text)
+    )
+  end
+
+  defp topic_text(room_id) do
+    n = room_member_count(room_id)
+    plural = if n == 1, do: "agent", else: "agents"
+    "#{n} #{plural}"
   end
 
   # Returns `{canonical_channel, alias_or_nil}`. `#default` becomes
@@ -992,6 +1042,263 @@ defmodule Egghead.IRC.Connection do
     else
       0
     end
+  end
+
+  # --- Egghead verbs (TUI slash-command palette over IRC) ---
+  #
+  # IRC commands don't carry a "current channel" on the wire — when the
+  # user types `/save` in their #foo buffer, ERC sends a bare `SAVE`.
+  # Each verb resolves the target room via `resolve_room_arg/2`:
+  # explicit `#channel` first arg wins; otherwise default to the user's
+  # only joined channel; otherwise 461 NEEDMOREPARAMS.
+
+  defp handle_save(msg, state) do
+    with_room(msg, state, fn _args, room_id ->
+      case Room.save_transcript(room_id) do
+        {:ok, record_id} ->
+          reply_notice(state, "Saved transcript as #{record_id}")
+          {:continue, state}
+
+        {:error, reason} ->
+          reply_notice(state, "Save failed: #{inspect(reason)}")
+          {:continue, state}
+      end
+    end)
+  end
+
+  defp handle_continue_cmd(msg, state) do
+    with_room(msg, state, fn _args, room_id ->
+      Room.continue(room_id)
+      {:continue, state}
+    end)
+  end
+
+  defp handle_halt(msg, state) do
+    with_room(msg, state, fn _args, room_id ->
+      Room.halt(room_id)
+      {:continue, state}
+    end)
+  end
+
+  defp handle_mute(msg, state) do
+    with_room_and_agent(msg, state, "MUTE", fn _room_arg, _agent_arg, room_id, agent_id ->
+      Room.mute(room_id, agent_id)
+      {:continue, state}
+    end)
+  end
+
+  defp handle_unmute(msg, state) do
+    with_room_and_agent(msg, state, "UNMUTE", fn _room_arg, _agent_arg, room_id, agent_id ->
+      Room.unmute(room_id, agent_id)
+      {:continue, state}
+    end)
+  end
+
+  # HANDOFF runs an LLM summarization call (multi-second). Spawn it so
+  # the connection stays responsive; report completion via NOTICE.
+  defp handle_handoff(msg, state) do
+    with_room_and_agent(msg, state, "HANDOFF", fn _room_arg, agent_arg, _room_id, agent_id ->
+      socket = state.__socket__
+      server = state.server
+      nick = state.nick
+
+      Task.start(fn ->
+        case Egghead.handoff(agent_id, []) do
+          {:ok, _summary} ->
+            send_notice_direct(
+              socket,
+              server,
+              nick,
+              "#{agent_arg}: handoff complete (context cleared, summary saved)"
+            )
+
+          {:error, reason} ->
+            send_notice_direct(
+              socket,
+              server,
+              nick,
+              "#{agent_arg}: handoff failed (#{inspect(reason)})"
+            )
+        end
+      end)
+
+      reply_notice(state, "Handing off #{agent_arg}…")
+      {:continue, state}
+    end)
+  end
+
+  # /context — Claude Code-style snapshot. Shows each agent's current
+  # context-window utilization in the room as a NOTICE block. Compact:
+  # one line per agent, percentage bar + raw counts.
+  defp handle_context(msg, state) do
+    with_room(msg, state, fn _args, room_id ->
+      lines = context_report(room_id)
+      Enum.each(lines, fn line -> reply_notice(state, line) end)
+      {:continue, state}
+    end)
+  end
+
+  defp context_report(room_id) do
+    room_agent_ids =
+      if Room.exists?(room_id) do
+        case Room.get_state(room_id) do
+          %{agents: agents} -> Enum.into(agents, [])
+          _ -> []
+        end
+      else
+        []
+      end
+
+    case room_agent_ids do
+      [] ->
+        ["No agents in this room."]
+
+      ids ->
+        all = Egghead.Agent.list_agents()
+        roster = Enum.filter(all, fn a -> a.id in ids end)
+
+        max_nick =
+          roster |> Enum.map(&String.length(NickMap.id_to_nick(&1.id))) |> Enum.max(fn -> 0 end)
+
+        ["Context windows:"] ++
+          Enum.map(roster, fn agent ->
+            nick = NickMap.id_to_nick(agent.id)
+            ctx = agent.current_context_tokens || 0
+            window = agent.context_window || 0
+            pct = if window > 0, do: round(ctx / window * 100), else: 0
+            bar = context_bar(pct)
+
+            "  #{String.pad_trailing(nick, max_nick)}  #{bar}  #{String.pad_leading("#{pct}%", 4)}  " <>
+              "(#{format_int(ctx)} / #{format_int(window)})"
+          end)
+    end
+  end
+
+  defp context_bar(pct) do
+    width = 16
+    filled = round(pct / 100 * width)
+    String.duplicate("▓", filled) <> String.duplicate("░", width - filled)
+  end
+
+  defp format_int(n) when is_integer(n) do
+    n
+    |> Integer.to_string()
+    |> String.reverse()
+    |> String.graphemes()
+    |> Enum.chunk_every(3)
+    |> Enum.map(&Enum.join/1)
+    |> Enum.join(",")
+    |> String.reverse()
+  end
+
+  defp format_int(_), do: "?"
+
+  # --- Verb argument resolution ---
+
+  # Pulls a channel arg or falls back to the user's only joined channel.
+  # Calls `fun.(remaining_args, room_id)` on success; emits 461 if no
+  # channel can be inferred.
+  defp with_room(msg, state, fun) do
+    args = Protocol.Message.args(msg)
+    cmd = msg.command
+
+    case resolve_room_arg(args, state) do
+      {:ok, room_id, rest} ->
+        fun.(rest, room_id)
+
+      {:error, :no_channel} ->
+        reply(state, Numerics.need_more_params(state.server, state.nick, cmd))
+        {:continue, state}
+
+      {:error, :ambiguous} ->
+        reply_notice(
+          state,
+          "You're in multiple channels — specify one (#room) as the first argument."
+        )
+
+        {:continue, state}
+
+      {:error, :unknown_channel} ->
+        reply(state, Numerics.need_more_params(state.server, state.nick, cmd))
+        {:continue, state}
+    end
+  end
+
+  # Like `with_room/3` but also expects an agent nick in the args.
+  # Resolves nick → agent_id by looking up the basename in the room's
+  # roster (since IRC nicks drop the `agents/` namespace).
+  defp with_room_and_agent(msg, state, cmd, fun) do
+    with_room(msg, state, fn rest, room_id ->
+      case rest do
+        [agent_nick | _] ->
+          case resolve_agent_in_room(agent_nick, room_id) do
+            {:ok, agent_id} ->
+              fun.(nil, agent_nick, room_id, agent_id)
+
+            :not_found ->
+              reply(
+                state,
+                %Protocol.Message{
+                  prefix: state.server,
+                  command: "401",
+                  params: [state.nick, agent_nick],
+                  trailing: "No such nick in this room"
+                }
+              )
+
+              {:continue, state}
+          end
+
+        [] ->
+          reply(state, Numerics.need_more_params(state.server, state.nick, cmd))
+          {:continue, state}
+      end
+    end)
+  end
+
+  defp resolve_room_arg(args, state) do
+    case args do
+      ["#" <> _ = channel | rest] ->
+        case target_to_room_id(state, channel) do
+          nil -> {:error, :unknown_channel}
+          room_id -> {:ok, room_id, rest}
+        end
+
+      _ ->
+        case MapSet.to_list(state.channels) do
+          [] -> {:error, :no_channel}
+          [room_id] -> {:ok, room_id, args}
+          _ -> {:error, :ambiguous}
+        end
+    end
+  end
+
+  defp resolve_agent_in_room(nick, room_id) do
+    if Room.exists?(room_id) do
+      case Room.get_state(room_id) do
+        %{agents: agents} ->
+          case Enum.find(agents, fn id -> NickMap.id_to_nick(id) == nick end) do
+            nil -> :not_found
+            id -> {:ok, id}
+          end
+
+        _ ->
+          :not_found
+      end
+    else
+      :not_found
+    end
+  end
+
+  defp reply_notice(state, text) do
+    send_notice_direct(state.__socket__, state.server, state.nick, text)
+  end
+
+  defp send_notice_direct(socket, server, nick, text) do
+    send_line(
+      socket,
+      Protocol.encode(prefix: server, command: "NOTICE", params: [nick], trailing: text)
+    )
   end
 
   # --- QUIT ---

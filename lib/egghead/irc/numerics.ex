@@ -104,6 +104,25 @@ defmodule Egghead.IRC.Numerics do
     %Message{prefix: server, command: "221", params: [nick, "+"]}
   end
 
+  @doc "331 RPL_NOTOPIC — channel exists but has no topic set."
+  def no_topic(server, nick, channel) do
+    %Message{prefix: server, command: "331", params: [nick, channel], trailing: "No topic is set"}
+  end
+
+  @doc "332 RPL_TOPIC — current topic of the channel."
+  def topic_reply(server, nick, channel, topic) do
+    %Message{prefix: server, command: "332", params: [nick, channel], trailing: topic}
+  end
+
+  @doc "333 RPL_TOPICWHOTIME — non-RFC-2812 but widely supported: who set the topic and when."
+  def topic_who_time(server, nick, channel, setter, epoch) do
+    %Message{
+      prefix: server,
+      command: "333",
+      params: [nick, channel, setter, Integer.to_string(epoch)]
+    }
+  end
+
   @doc """
   321 RPL_LISTSTART — header line for a LIST reply burst. Most modern
   clients ignore this and only consume RPL_LIST entries, but RFC 2812

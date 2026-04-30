@@ -3,6 +3,7 @@ defmodule Egghead.TUI.MarkdownCacheTest do
 
   alias Egghead.OpenTUI.Markdown
   alias Egghead.TUI.MarkdownCache
+  alias Egghead.TUI.OrgRender
 
   setup do
     case GenServer.whereis(MarkdownCache) do
@@ -60,5 +61,23 @@ defmodule Egghead.TUI.MarkdownCacheTest do
 
     # Restore for the rest of the suite.
     {:ok, _} = MarkdownCache.start_link([])
+  end
+
+  test "format: :org routes to OrgRender" do
+    text = "* TODO Stuff\n\nSome /italics/."
+
+    cached = MarkdownCache.render(text, 80, format: :org)
+    direct = OrgRender.render(text, 80)
+
+    assert cached == direct
+  end
+
+  test "same text with different formats is cached separately" do
+    text = "* heading"
+
+    _ = MarkdownCache.render(text, 80, format: :markdown)
+    _ = MarkdownCache.render(text, 80, format: :org)
+
+    assert MarkdownCache.size() == 2
   end
 end

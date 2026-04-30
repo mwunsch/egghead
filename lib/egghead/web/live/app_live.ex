@@ -9,6 +9,7 @@ defmodule Egghead.Web.AppLive do
 
   import Egghead.Web.Components.Window
   alias Egghead.Web.MarkdownHTML
+  alias Egghead.Web.OrgHTML
   alias Egghead.TUI.Records.Slug
 
   @impl true
@@ -605,11 +606,7 @@ defmodule Egghead.Web.AppLive do
       id ->
         case Egghead.get_record(id) do
           {:ok, record} ->
-            html =
-              MarkdownHTML.render(record.body || "",
-                link_fn: &"/records/#{&1}",
-                exists_fn: &record_exists?/1
-              )
+            html = render_record_body(record)
 
             backlinks = Egghead.find_backlinks(id)
 
@@ -642,6 +639,23 @@ defmodule Egghead.Web.AppLive do
       {:ok, _} -> true
       _ -> false
     end
+  end
+
+  # Dispatch on the record's on-disk format. Org records use `OrgHTML` so the
+  # rendered output preserves headline stars, TODO keywords, drawer entries,
+  # and `#+BEGIN_SRC` markers — what an emacs user expects to see.
+  defp render_record_body(%{format: :org, body: body}) do
+    OrgHTML.render(body || "",
+      link_fn: &"/records/#{&1}",
+      exists_fn: &record_exists?/1
+    )
+  end
+
+  defp render_record_body(%{body: body}) do
+    MarkdownHTML.render(body || "",
+      link_fn: &"/records/#{&1}",
+      exists_fn: &record_exists?/1
+    )
   end
 
   defp build_file_tree(records) do
@@ -2055,7 +2069,8 @@ defmodule Egghead.Web.AppLive do
                 phx-hook="YjsEditor"
                 phx-update="ignore"
                 data-record-id={@selected_record.id}
-                class="record-editor"
+                data-format={to_string(@selected_record.format)}
+                class={"record-editor record-editor-#{@selected_record.format}"}
               >
               </div>
             </div>

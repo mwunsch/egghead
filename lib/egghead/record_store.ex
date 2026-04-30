@@ -21,6 +21,7 @@ defmodule Egghead.RecordStore do
 
   alias Egghead.Index
   alias Egghead.Record
+  alias Egghead.Record.OrgWriter
   alias Egghead.Record.Parser
 
   # ETS table caching hydrated records by source_path, value
@@ -77,7 +78,11 @@ defmodule Egghead.RecordStore do
   end
 
   @doc """
-  Creates a new record by writing a Markdown file to the records directory.
+  Creates a new record by writing a file to the records directory.
+
+  Pass `format: :org` to write a `.org` file with org-mode preamble; the
+  default is `:markdown` (`.md` with YAML frontmatter). The default can
+  also be set globally via `default_format:` in `config.yml`.
 
   Returns `{:ok, record}` or `{:error, reason}`.
   """
@@ -244,6 +249,7 @@ defmodule Egghead.RecordStore do
   def handle_call({:create_record, attrs}, _from, state) do
     id = Map.get(attrs, :id) || Map.get(attrs, "id") || generate_id()
     attrs = normalize_attrs(attrs, id)
+    format = resolve_format(attrs["format"])
 
     # Check if already exists in index
     case Index.get_record_meta(state.index, id) do
@@ -251,8 +257,8 @@ defmodule Egghead.RecordStore do
         {:reply, {:error, :already_exists}, state}
 
       {:error, :not_found} ->
-        content = render_markdown(attrs)
-        filename = "#{id}.md"
+        content = render_record(attrs, format)
+        filename = "#{id}#{format_extension(format)}"
         path = Path.join(state.records_dir, filename)
 
         if File.exists?(path) do
@@ -289,11 +295,16 @@ defmodule Egghead.RecordStore do
             normalized = normalize_attrs(attrs, id)
 
             content =
-              if body_only_update?(normalized) do
-                splice_body(path, normalized["body"])
-              else
-                merged = merge_record_attrs(existing, normalized)
-                render_markdown(merged)
+              cond do
+                body_only_update?(normalized) ->
+                  splice_body(path, normalized["body"], existing.format)
+
+                existing.format == :org ->
+                  splice_org_metadata(path, normalized)
+
+                true ->
+                  merged = merge_record_attrs(existing, normalized)
+                  render_markdown(merged)
               end
 
             File.write!(path, content)
@@ -897,7 +908,16 @@ defmodule Egghead.RecordStore do
 
   # Replace just the body portion of a file, preserving the raw
   # frontmatter exactly as written on disk.
-  defp splice_body(path, new_body) do
+  #
+  # For org records there is no separate frontmatter — `#+`-keywords and
+  # property drawers are part of the document. A "body-only" update on
+  # an org record overwrites the whole file with the new body, since
+  # `record.body` *is* the file content.
+  defp splice_body(_path, new_body, :org) do
+    String.trim_trailing(new_body || "") <> "\n"
+  end
+
+  defp splice_body(path, new_body, _format) do
     raw = File.read!(path)
 
     case Parser.split_raw(raw) do
@@ -909,6 +929,34 @@ defmodule Egghead.RecordStore do
         String.trim_trailing(new_body || "") <> "\n"
     end
   end
+
+  # Targeted line-splice for an org file's metadata. Reads the file, applies
+  # the attr changes via OrgWriter — which mutates only the affected
+  # `#+`-keyword lines and properties-drawer entries — and returns the new
+  # content. The user's casing, ordering, comments, and unrelated drawer
+  # entries are preserved byte-for-byte.
+  defp splice_org_metadata(path, attrs) do
+    raw = File.read!(path)
+    OrgWriter.splice_metadata(raw, attrs)
+  end
+
+  # Resolve the requested format. Accepts :org, :markdown, "org", "markdown",
+  # or nil (falls back to the configured default). Defaults to :markdown.
+  defp resolve_format(nil) do
+    Application.get_env(:egghead, :default_format, :markdown)
+  end
+
+  defp resolve_format(:org), do: :org
+  defp resolve_format(:markdown), do: :markdown
+  defp resolve_format("org"), do: :org
+  defp resolve_format("markdown"), do: :markdown
+  defp resolve_format(_), do: :markdown
+
+  defp format_extension(:org), do: ".org"
+  defp format_extension(_), do: ".md"
+
+  defp render_record(attrs, :org), do: OrgWriter.new(attrs)
+  defp render_record(attrs, _), do: render_markdown(attrs)
 
   # Skip keys for the meta_lines pass. `updated` is filesystem-owned and
   # never written back. `created` is omitted from the explicit known-lines

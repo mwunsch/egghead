@@ -203,6 +203,66 @@ defmodule Egghead.Record.OrgParser do
   end
 
   @doc """
+  Returns the body of an org file with the file-level preamble stripped:
+  the contiguous block of `#+`-keywords and `#`-comments at the top, and
+  the first `:PROPERTIES:` drawer if it appears before any headline.
+
+  Used to project an org agent record's body into a system prompt: the
+  on-disk file keeps every `#+TITLE:` and drawer entry (those are the
+  document), but the prompt the model sees is the prose part starting
+  from the first real content.
+
+  This is a *projection*; the source file is unchanged.
+  """
+  @spec body_without_preamble(String.t()) :: String.t()
+  def body_without_preamble(content) when is_binary(content) do
+    lines = String.split(content, "\n")
+    {_skipped, rest} = drop_keyword_prefix(lines)
+    {_drawer, rest} = drop_leading_drawer(rest)
+
+    rest
+    |> Enum.drop_while(&blank?/1)
+    |> Enum.join("\n")
+    |> String.trim_trailing()
+  end
+
+  defp drop_keyword_prefix(lines) do
+    Enum.split_while(lines, fn line ->
+      Regex.match?(~r/^[ \t]*#\+\w+:/, line) or
+        Regex.match?(~r/^[ \t]*#[^+]/, line) or
+        blank?(line)
+    end)
+  end
+
+  # If the next non-blank line opens a properties drawer (and no headline
+  # has appeared), consume up to the matching :END:. Headline-attached
+  # drawers belong to that subtree and are left in place.
+  defp drop_leading_drawer(lines) do
+    {leading_blanks, rest} = Enum.split_while(lines, &blank?/1)
+
+    case rest do
+      [first | tail] ->
+        if Regex.match?(~r/^[ \t]*:PROPERTIES:[ \t]*$/, first) do
+          case Enum.split_while(tail, fn l -> not Regex.match?(~r/^[ \t]*:END:[ \t]*$/, l) end) do
+            {drawer_lines, [end_line | after_end]} ->
+              {[first | drawer_lines] ++ [end_line], after_end}
+
+            {_drawer_lines, []} ->
+              # Unterminated drawer — leave content alone.
+              {[], leading_blanks ++ rest}
+          end
+        else
+          {[], leading_blanks ++ rest}
+        end
+
+      [] ->
+        {[], leading_blanks}
+    end
+  end
+
+  defp blank?(line), do: Regex.match?(~r/^\s*$/, line)
+
+  @doc """
   Extracts all source blocks from the AST.
   """
   @spec extract_code_blocks(list()) :: [%{language: String.t() | nil, content: String.t()}]
@@ -264,7 +324,12 @@ defmodule Egghead.Record.OrgParser do
 
       true ->
         {para_lines, rest} = collect_paragraph([line | rest], [])
-        inline = parse_inline_text(Enum.join(para_lines, "\n"))
+        # Join with a single space so the inline parser (whose tokens
+        # exclude `\n`) sees one logical line. Org treats line breaks
+        # within a paragraph as soft — they render as spaces, like
+        # markdown — so collapsing is correct, and it lets bold/italic/
+        # link parsing work across visually-wrapped source lines.
+        inline = parse_inline_text(Enum.map_join(para_lines, " ", &String.trim_trailing/1))
         node = {:paragraph, %{}, inline}
         parse_lines(rest, [node | acc], state)
     end

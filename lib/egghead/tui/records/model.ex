@@ -281,7 +281,8 @@ defmodule Egghead.TUI.Records.Model do
     if model.preview_rendered != nil and model.preview_rendered_width == width do
       model
     else
-      body_rows = MarkdownCache.render(model.selected_body, width)
+      format = (model.selected_record && model.selected_record.format) || :markdown
+      body_rows = MarkdownCache.render(model.selected_body, width, format: format)
 
       forward_targets = forward_targets_for(model.selected_record)
       backlink_records = backlinks_for(model.selected_id)

@@ -28,6 +28,7 @@ defmodule Egghead.TUI.MarkdownCache do
   use GenServer
 
   alias Egghead.OpenTUI.Markdown
+  alias Egghead.TUI.OrgRender
 
   @table :egghead_markdown_cache
 
@@ -36,23 +37,31 @@ defmodule Egghead.TUI.MarkdownCache do
 
   @doc """
   Render `text` at `width` with `opts`, caching the result. On miss,
-  calls `Egghead.OpenTUI.Markdown.render/3`. On cache absence, falls
-  through without caching.
+  calls the renderer for the requested format
+  (`:format` opt, default `:markdown`). On cache absence, falls through
+  without caching.
+
+  The cache key includes the format, so a markdown body and an org
+  body with the same text don't collide.
   """
   @spec render(String.t(), pos_integer(), keyword()) :: Markdown.rendered()
   def render(text, width, opts \\ []) when is_binary(text) and is_integer(width) and width > 0 do
-    key = {text, width, opts}
+    format = Keyword.get(opts, :format, :markdown)
+    key = {format, text, width, Keyword.delete(opts, :format)}
 
     case lookup(key) do
       {:ok, rows} ->
         rows
 
       :miss ->
-        rows = Markdown.render(text, width, opts)
+        rows = render_for(format, text, width, Keyword.delete(opts, :format))
         put(key, rows)
         rows
     end
   end
+
+  defp render_for(:org, text, width, opts), do: OrgRender.render(text, width, opts)
+  defp render_for(_, text, width, opts), do: Markdown.render(text, width, opts)
 
   @doc "Empty the cache. Useful in tests and on explicit invalidation."
   @spec reset() :: :ok

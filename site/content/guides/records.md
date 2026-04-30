@@ -5,14 +5,16 @@ weight: 10
 summary: A record is a Markdown file in a directory you choose. Optional YAML frontmatter, wikilinks for graph structure, FTS5 for search.
 ---
 
-A record is a Markdown file (`.md`) or an org-mode file (`.org`)
-in your records directory. The default records directory is
-`~/.egghead`; you can change it by editing `records_dir` in
-`config.yml`. Every other thing Egghead knows about — agents,
-skills, saved chat transcripts, deliberation summaries — is also
-a record, distinguished by its `class:` frontmatter value. The
-full list of classes lives in
+A record is a Markdown file in your records directory. The default
+records directory is `~/.egghead`; you can change it by editing
+`records_dir` in `config.yml`. Every other thing Egghead knows
+about — agents, skills, saved chat transcripts, deliberation
+summaries — is also a record, distinguished by its `class:`
+frontmatter value. The full list of classes lives in
 [Record classes]({{< ref "record-classes" >}}).
+
+Records can also be org-mode files (`.org`); see
+[Org-mode]({{< ref "org-mode" >}}) if that's your workflow.
 
 Most multi-agent frameworks store their state in an internal
 database. Egghead does not. Your store is a folder you can open
@@ -51,9 +53,7 @@ Background worker that removes dead tuples from tables. See
 ```
 
 The YAML block is fenced by three dashes alone on a line, both
-at the top and the bottom. Org-mode files use a `:PROPERTIES:`
-... `:END:` drawer with the same field semantics; pick whichever
-format you prefer, since both can live in the same store.
+at the top and the bottom.
 
 ## Frontmatter keys
 

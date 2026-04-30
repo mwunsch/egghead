@@ -125,7 +125,7 @@ defmodule Egghead.MCP.Handler do
       %{
         name: "egghead_create",
         description:
-          "Create a new record. Writes a Markdown file to the records directory. Returns the created record.",
+          "Create a new record. Writes a Markdown (.md) or org-mode (.org) file to the records directory based on the `format` field (default: markdown, or whatever `default_format` is set to in config.yml). Returns the created record.",
         inputSchema: %{
           type: "object",
           properties: %{
@@ -146,7 +146,17 @@ defmodule Egghead.MCP.Handler do
               enum: ["durable", "inbox", "deliberation"],
               description: "Record class (default: durable)"
             },
-            body: %{type: "string", description: "Record body content (Markdown)"}
+            format: %{
+              type: "string",
+              enum: ["markdown", "org"],
+              description:
+                "On-disk format. `markdown` writes a `.md` file with YAML frontmatter; `org` writes a `.org` file with `#+`-keywords and a properties drawer. Defaults to the configured `default_format` (markdown if unset)."
+            },
+            body: %{
+              type: "string",
+              description:
+                "Record body content. Use Markdown for `.md` records or org syntax for `.org` records. For `.org`, the body is the full file content — `#+`-keywords and property drawers are part of the document."
+            }
           },
           required: ["title"]
         }
@@ -154,7 +164,7 @@ defmodule Egghead.MCP.Handler do
       %{
         name: "egghead_update",
         description:
-          "Update an existing record. Merges the given fields into the record. Omitted fields are left unchanged. To replace the body entirely, pass the full new body.",
+          "Update an existing record. Merges the given fields into the record. Omitted fields are left unchanged. The on-disk format is preserved — for `.org` files the change is line-spliced (the rest of the file stays byte-identical), so it's safe to update one field at a time without re-writing the whole document. To replace the body entirely, pass the full new body.",
         inputSchema: %{
           type: "object",
           properties: %{
@@ -170,7 +180,11 @@ defmodule Egghead.MCP.Handler do
               items: %{type: "string"},
               description: "New linked record ids (replaces existing links)"
             },
-            body: %{type: "string", description: "New body content (Markdown)"}
+            body: %{
+              type: "string",
+              description:
+                "New body content. For org records, this is the full file content — write back exactly what you read."
+            }
           },
           required: ["id"]
         }
@@ -321,7 +335,7 @@ defmodule Egghead.MCP.Handler do
   defp call_tool("egghead_create", args) do
     attrs =
       args
-      |> Map.take(["id", "title", "tags", "links", "class", "body"])
+      |> Map.take(["id", "title", "tags", "links", "class", "body", "format"])
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
 
@@ -530,6 +544,7 @@ defmodule Egghead.MCP.Handler do
         if(record.created, do: "created: #{record.created}"),
         if(record.updated, do: "updated: #{record.updated}"),
         "class: #{record.class}",
+        "format: #{record.format}",
         if(record.tags != [], do: "tags: #{Enum.join(record.tags, ", ")}"),
         references_line(record),
         if(record.meta != %{}, do: "meta: #{Jason.encode!(record.meta)}")

@@ -23,6 +23,7 @@ defmodule Egghead.Record.Agent do
   alias Egghead.Capability
   alias Egghead.LLM.Registry
   alias Egghead.Record
+  alias Egghead.Record.OrgParser
 
   @default_context_threshold 0.70
   @default_max_tokens 4096
@@ -73,7 +74,7 @@ defmodule Egghead.Record.Agent do
     %__MODULE__{
       id: record.id,
       name: record.title || record.id,
-      disposition: record.body || "",
+      disposition: disposition_from(record),
       model: resolve_model(record),
       provider: meta_string(record, "provider"),
       capabilities: parse_capabilities(record),
@@ -233,10 +234,24 @@ defmodule Egghead.Record.Agent do
 
   defp normalize_caps(nil), do: []
   defp normalize_caps(list) when is_list(list), do: list
-  defp normalize_caps(str) when is_binary(str), do: String.split(str, ~r/[,\s]+/, trim: true)
+  # Use the paren-aware tokenizer so textual scope syntax —
+  # `net.get(hosts=a,b)` — survives intact through to `Capability.parse/1`.
+  defp normalize_caps(str) when is_binary(str), do: Capability.tokenize(str)
   defp normalize_caps(_), do: []
 
   # --- Helpers ---
+
+  # The disposition is the prose body of the agent record — what gets
+  # injected into the model's system prompt. For markdown agents `body`
+  # is already post-frontmatter so we use it directly. For org agents
+  # `body` is the full file content (the org rule: file == document),
+  # so we strip the file-level keyword block and properties drawer for
+  # the prompt projection. The on-disk file is unchanged; this is just
+  # what the model sees.
+  defp disposition_from(%Record{format: :org, body: body}) when is_binary(body),
+    do: OrgParser.body_without_preamble(body)
+
+  defp disposition_from(%Record{body: body}), do: body || ""
 
   defp resolve_model(%Record{meta: meta}) do
     raw = meta_string_value(meta["model"])

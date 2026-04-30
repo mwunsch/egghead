@@ -14,18 +14,54 @@ defmodule Egghead.Record.Parser do
   @doc """
   Detects the format of a record file from its content.
 
-  Returns `:markdown` if the content starts with `---`,
-  `:org` if it starts with `:PROPERTIES:`, or `:unknown` otherwise.
+  Returns `:markdown` if the content begins with YAML frontmatter (`---`),
+  `:org` if it begins with org-mode markers (a property drawer, a
+  `#+`-keyword, or a top-level `*`-headline), or `:unknown` otherwise.
+
+  Pass `source_path:` in `opts` to use the filename extension as a tiebreaker
+  for content that has no obvious format markers — `.org` wins over the
+  default markdown fallback.
   """
-  @spec detect_format(String.t()) :: :markdown | :org | :unknown
-  def detect_format(content) do
+  @spec detect_format(String.t(), keyword()) :: :markdown | :org | :unknown
+  def detect_format(content, opts \\ []) do
     trimmed = String.trim_leading(content)
+    first_line = first_nonblank_line(trimmed)
 
     cond do
-      String.starts_with?(trimmed, "---") -> :markdown
-      String.starts_with?(trimmed, ":PROPERTIES:") -> :org
-      true -> :unknown
+      String.starts_with?(trimmed, "---") ->
+        :markdown
+
+      String.starts_with?(trimmed, ":PROPERTIES:") ->
+        :org
+
+      # File-level org keywords (`#+TITLE:`, `#+AUTHOR:`, etc.) are the
+      # most common org pattern and don't require a property drawer.
+      Regex.match?(~r/^#\+\w+:/, first_line) ->
+        :org
+
+      # Top-level org headlines (`* Heading`).
+      Regex.match?(~r/^\*+\s/, first_line) ->
+        :org
+
+      true ->
+        case Keyword.get(opts, :source_path) do
+          path when is_binary(path) ->
+            case Path.extname(path) do
+              ".org" -> :org
+              ".md" -> :markdown
+              _ -> :unknown
+            end
+
+          _ ->
+            :unknown
+        end
     end
+  end
+
+  defp first_nonblank_line(content) do
+    content
+    |> String.split("\n")
+    |> Enum.find("", &(String.trim(&1) != ""))
   end
 
   @doc """
@@ -38,7 +74,7 @@ defmodule Egghead.Record.Parser do
   """
   @spec parse(String.t(), keyword()) :: {:ok, Record.t()} | {:error, term()}
   def parse(content, opts \\ []) do
-    case detect_format(content) do
+    case detect_format(content, opts) do
       :markdown -> parse_markdown(content, opts)
       :org -> parse_org(content, opts)
       :unknown -> parse_markdown(content, opts)
@@ -73,19 +109,116 @@ defmodule Egghead.Record.Parser do
   end
 
   @doc """
-  Parses an org-mode file with a property drawer into a `Record` struct.
+  Parses an org-mode file into a `Record` struct.
+
+  Org records have no separate "frontmatter" concept — `#+`-keywords and
+  property drawers are part of the document. This parser extracts metadata
+  by scanning the AST for `#+TITLE`/`#+AUTHOR`/`#+FILETAGS`/`#+CLASS` etc.
+  and any property drawer that appears before the first headline, but the
+  returned `record.body` is the **entire input content**, byte-faithful.
+
+  Renderers and editors operate on `record.body` directly so what's on disk
+  is what the user sees and edits.
   """
   @spec parse_org(String.t(), keyword()) :: {:ok, Record.t()} | {:error, term()}
   def parse_org(content, opts \\ []) do
-    case split_property_drawer(content) do
-      {:ok, props, body} ->
-        org_title = extract_org_title(body)
-        meta = normalize_org_props(props) |> Map.put("title", org_title)
-        record = build_record(meta, extract_org_body(body), :org, opts)
-        {:ok, record}
+    body = String.trim_trailing(content)
+    meta = extract_org_metadata(body)
+    record = build_record(meta, body, :org, opts)
+    {:ok, record}
+  end
 
-      :error ->
-        {:error, :no_property_drawer}
+  @doc """
+  Extracts file-level metadata from raw org content.
+
+  Walks the OrgParser AST and collects:
+
+  - All `#+KEY:` keyword values (downcased keys), with the last value winning
+    if a key appears multiple times.
+  - Properties from the first property drawer that appears before any headline
+    (treated as file-level properties; drawers attached to headlines stay
+    headline-local and are not extracted here).
+
+  Known keyword aliases are normalized: `#+FILETAGS` and `#+TAGS` both map to
+  `tags` (parsed as space- or colon-separated when given as a string), and
+  the property drawer's `:ID:` maps to `id`. Returns a flat string-keyed map
+  ready to feed `build_record/4`.
+  """
+  @spec extract_org_metadata(String.t()) :: map()
+  def extract_org_metadata(content) do
+    {:ok, ast} = Egghead.Record.OrgParser.parse(content)
+
+    keywords = collect_org_keywords(ast)
+    drawer_props = collect_first_file_drawer(ast)
+
+    keywords
+    |> Map.merge(drawer_props)
+    |> normalize_org_metadata()
+  end
+
+  defp collect_org_keywords(ast) do
+    Enum.reduce(ast, %{}, fn
+      {:keyword, %{key: key, value: value}, _}, acc ->
+        Map.put(acc, String.downcase(key), value)
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  # Only the FIRST property drawer encountered before any headline is treated
+  # as file-level. Drawers attached to headlines belong to that subtree and
+  # are not promoted to record metadata.
+  defp collect_first_file_drawer(ast) do
+    Enum.reduce_while(ast, %{}, fn
+      {:property_drawer, _, props}, _acc ->
+        map = Map.new(props, fn {k, v} -> {String.downcase(k), v} end)
+        {:halt, map}
+
+      {:headline, _, _}, _acc ->
+        {:halt, %{}}
+
+      _, acc ->
+        {:cont, acc}
+    end)
+  end
+
+  # Map org-flavored keys to record-frontmatter keys + parse list-y values.
+  # Org `#+FILETAGS: :foo:bar:` and `#+TAGS: foo bar` both feed `tags`;
+  # property drawers can use `:TAGS:` and `:LINKS:` with space-separated
+  # values for parity with the existing record convention.
+  defp normalize_org_metadata(meta) do
+    meta
+    |> rename_key("filetags", "tags")
+    |> Map.update("tags", [], &parse_org_tags_value/1)
+    |> Map.update("links", [], &parse_space_separated/1)
+  end
+
+  defp rename_key(map, from, to) do
+    case Map.pop(map, from) do
+      {nil, m} ->
+        m
+
+      {value, m} ->
+        # Caller-set canonical key wins if both are present.
+        if Map.has_key?(m, to), do: m, else: Map.put(m, to, value)
+    end
+  end
+
+  # Org tags can be `:foo:bar:` (FILETAGS form), `foo bar` (TAGS form),
+  # or already a list (drawer parsing returned a string we treat as
+  # space-separated). Normalize all to a list of strings.
+  defp parse_org_tags_value(nil), do: []
+  defp parse_org_tags_value([]), do: []
+  defp parse_org_tags_value(list) when is_list(list), do: Enum.map(list, &to_string/1)
+
+  defp parse_org_tags_value(str) when is_binary(str) do
+    trimmed = String.trim(str)
+
+    cond do
+      trimmed == "" -> []
+      String.starts_with?(trimmed, ":") -> trimmed |> String.split(":", trim: true)
+      true -> parse_space_separated(trimmed)
     end
   end
 
@@ -148,71 +281,13 @@ defmodule Egghead.Record.Parser do
     end
   end
 
-  defp split_property_drawer(content) do
-    trimmed = String.trim_leading(content)
-
-    if String.starts_with?(trimmed, ":PROPERTIES:") do
-      case String.split(trimmed, ":END:", parts: 2) do
-        [drawer, rest] ->
-          props = parse_drawer_properties(drawer)
-          {:ok, props, String.trim(rest)}
-
-        _ ->
-          :error
-      end
-    else
-      :error
-    end
-  end
-
-  defp parse_drawer_properties(drawer) do
-    drawer
-    |> String.split("\n")
-    |> Enum.reject(&(&1 =~ ~r/^\s*:PROPERTIES:\s*$/))
-    |> Enum.reduce(%{}, fn line, acc ->
-      case Regex.run(~r/^\s*:(\w+):\s*(.*)$/, String.trim(line)) do
-        [_, key, value] ->
-          Map.put(acc, String.downcase(key), String.trim(value))
-
-        _ ->
-          acc
-      end
-    end)
-  end
-
-  defp normalize_org_props(props) do
-    # Start with all properties (preserves arbitrary keys)
-    # Then override known keys that need special handling
-    props
-    |> Map.put("tags", parse_space_separated(Map.get(props, "tags", "")))
-    |> Map.put("links", parse_space_separated(Map.get(props, "links", "")))
-  end
-
   defp parse_space_separated(nil), do: []
+  defp parse_space_separated([]), do: []
+  defp parse_space_separated(list) when is_list(list), do: Enum.map(list, &to_string/1)
   defp parse_space_separated(""), do: []
 
-  defp parse_space_separated(str) do
+  defp parse_space_separated(str) when is_binary(str) do
     str |> String.split(~r/\s+/, trim: true)
-  end
-
-  defp extract_org_title(text) do
-    text
-    |> String.split("\n")
-    |> Enum.find_value(fn line ->
-      case Regex.run(~r/^\s*#\+TITLE:\s*(.+)$/i, line) do
-        [_, title] -> String.trim(title)
-        _ -> nil
-      end
-    end)
-  end
-
-  defp extract_org_body(text) do
-    lines = String.split(text, "\n")
-
-    lines
-    |> Enum.reject(&String.match?(&1, ~r/^\s*#\+TITLE:/i))
-    |> Enum.join("\n")
-    |> String.trim()
   end
 
   @doc """

@@ -36,6 +36,7 @@ defmodule Egghead.Config do
             llm: [],
             default_model: nil,
             default_room: nil,
+            default_format: :markdown,
             theme: "terminal-dark",
             web: %{port: 4000, host: "localhost", bind: "127.0.0.1"},
             mcp_servers: [],
@@ -65,6 +66,7 @@ defmodule Egghead.Config do
           llm: [llm_entry()],
           default_model: String.t() | nil,
           default_room: String.t() | nil,
+          default_format: :markdown | :org,
           theme: String.t(),
           web: %{port: non_neg_integer(), host: String.t(), bind: String.t()},
           mcp_servers: [mcp_server()]
@@ -274,6 +276,7 @@ defmodule Egghead.Config do
       llm: parse_llm(data["llm"]),
       default_model: data["default_model"],
       default_room: data["default_room"],
+      default_format: parse_format(data["default_format"]),
       theme: data["theme"] || "terminal-dark",
       web: parse_web(data["web"]),
       mcp_servers: parse_mcp_servers(data["mcp_servers"]),
@@ -320,6 +323,14 @@ defmodule Egghead.Config do
   end
 
   defp parse_mcp_server(_), do: :error
+
+  # Default record format. `org` enables full org-mode treatment for newly
+  # created records; existing files keep their on-disk format regardless.
+  defp parse_format("org"), do: :org
+  defp parse_format(:org), do: :org
+  defp parse_format("markdown"), do: :markdown
+  defp parse_format(:markdown), do: :markdown
+  defp parse_format(_), do: :markdown
 
   defp parse_transport("stdio"), do: :stdio
   defp parse_transport("http"), do: :http
@@ -414,6 +425,7 @@ defmodule Egghead.Config do
       emit_llm(config.llm),
       emit_field("default_model", config.default_model),
       emit_field("default_room", config.default_room),
+      emit_format(config.default_format),
       emit_field("theme", config.theme),
       emit_web(config.web),
       emit_mcp_servers(config.mcp_servers)
@@ -492,6 +504,11 @@ defmodule Egghead.Config do
 
   defp emit_field(_key, nil), do: nil
   defp emit_field(key, value), do: "#{key}: #{yaml_escape(value)}"
+
+  # Markdown is the implicit default; only emit when the user has opted into
+  # org. Keeps untouched config files clean.
+  defp emit_format(:org), do: "default_format: org"
+  defp emit_format(_), do: nil
 
   defp emit_llm([]), do: nil
 

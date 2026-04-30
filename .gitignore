@@ -22,9 +22,6 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 egghead-*.tar
 
-/records/**/*.md
-/records/**/*.org
-
 # SQLite index (derived, rebuildable from files)
 .egghead/
 

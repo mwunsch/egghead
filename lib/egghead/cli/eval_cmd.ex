@@ -5,7 +5,7 @@ defmodule Egghead.CLI.EvalCmd do
   Posts a task prompt to an ephemeral chat room, waits for convergence,
   grades the transcript with a synthetic Judge agent, and writes a
   durable run record. Inspired by MultiAgentBench (Zhu et al., ACL 2025).
-  See `records/design/eval.md` in the record store for the full design.
+  See `design/eval.md` in the record store for the full design.
   """
 
   alias Egghead.CLI.Widgets
@@ -518,7 +518,7 @@ defmodule Egghead.CLI.EvalCmd do
       $ egghead eval compare 2026-04-20-a3f2 2026-04-20-b7c1
 
     SEE ALSO
-      records/design/eval.md (in your records store) — full design
+      design/eval.md (in your records store) — full design
     """)
   end
 end

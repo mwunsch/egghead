@@ -1,8 +1,8 @@
 defmodule Egghead.Eval do
   @moduledoc """
   Public API for Egghead's eval interface — inspired by MultiAgentBench
-  (MARBLE). See `records/design/eval.md` (in the user's record store)
-  for the full design.
+  (MARBLE). See `design/eval.md` in the user's record store for the
+  full design.
 
   Peer to TUI / CLI / Web / MCP: runs multi-agent tasks against the
   agents defined in the user's record store (or against personas

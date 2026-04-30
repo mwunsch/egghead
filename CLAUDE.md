@@ -1,12 +1,16 @@
 # Egghead
 
-Record-store-first multi-agent system on Elixir/OTP. Plain markdown records
-under are the substrate; agents are participants in the graph,
-not owners of it. Design docs live in the store — Use egghead's own MCP tools or  browse via `egghead` (TUI).
+Record-store-first multi-agent system on Elixir/OTP. Plain markdown
+records under `~/.egghead/` are the substrate; agents are participants
+in the graph, not owners of it. Design docs live in the store — use
+egghead's own MCP tools or browse via `egghead` (TUI).
 
 ## Rules (read first)
 
-- **Don't commit `records/`** unless explicitly told. It's a live data store.
+- **The user's record store lives outside the project tree** at
+  `~/.egghead/` (configurable via `records_dir` in `config.yml`). It
+  is a live data store. Never write to it except when explicitly
+  asked, and never commit anything from it into the project repo.
 - **Don't commit `CLAUDE.md`** unless explicitly told.
 - **Don't patch `native/bridge/`** without understanding the Zig NIF
   build. The bridge links against `libopentui.dylib` at compile time.
@@ -126,8 +130,8 @@ Log routing happens before the supervision tree starts.
   relevance gating. Default activation is serial (each agent reads
   peers' output before speaking). Three dialogue modes: open messages
   (serial, strict `/pass`), `@everyone` huddle (serial, must-respond),
-  `@jam` (parallel cacophony). See `records/design/coordinator.md` and
-  `records/research/multi-agent-topology-patterns.md`.
+  `@jam` (parallel cacophony). See `design/coordinator` and
+  `research/multi-agent-topology-patterns` in the record store.
 - **Capability-based mutation control.** Reads are free; writes follow a
   graduated spectrum enforced at the infrastructure level.
 
@@ -177,8 +181,8 @@ library embedding. Prefer reusing these over reinventing.
 
 `bin/egghead` is a thin wrapper that calls `mix egghead` (which bridges
 to `Egghead.CLI.main/1`). All CLI logic lives in `lib/egghead/cli/`
-as regular modules — no Mix tasks. See `records/design/cli.md` for
-the full CLI design document.
+as regular modules — no Mix tasks. See `design/cli` in the record
+store for the full CLI design document.
 
 ### Interactive widgets (`Egghead.CLI.Widgets`)
 
@@ -358,10 +362,10 @@ macOS ships `xz` and uses native FSEvents — nothing to install.
 
 ### See also
 
-`records/design/cli.md` "Burrito gotchas" section for the war stories
-behind these conventions (cache trap, MIX_ENV=prod requirement,
-phx.digest, build_dot_zig / Zig 0.15 incompatibility, `-noshell`,
-`Burrito.Util.Args.argv()` vs `System.argv()`).
+`design/cli` "Burrito gotchas" section in the record store for the
+war stories behind these conventions (cache trap, MIX_ENV=prod
+requirement, phx.digest, build_dot_zig / Zig 0.15 incompatibility,
+`-noshell`, `Burrito.Util.Args.argv()` vs `System.argv()`).
 
 ## Conventions
 
@@ -378,11 +382,18 @@ phx.digest, build_dot_zig / Zig 0.15 incompatibility, `-noshell`,
 
 ## Key files (start here when picking up work)
 
+Records (in the user's store at `~/.egghead/`):
+
+| Record id | Purpose |
+|---|---|
+| `meta/session-log` | What's been done, commit hashes, what's next |
+| `design/egghead-overview` | The full design picture |
+| `design/cli` | CLI design and architecture |
+
+Source files:
+
 | File | Purpose |
 |---|---|
-| `records/meta/session-log.md` | What's been done, commit hashes, what's next |
-| `records/design/egghead-overview.md` | The full design picture |
-| `records/design/cli.md` | CLI design and architecture |
 | `lib/egghead.ex` | Public API surface |
 | `lib/egghead/config.ex` | Config loading/saving (XDG paths) |
 | `lib/egghead/agent/agent.ex` | Agent GenServer, identity, session spawner |

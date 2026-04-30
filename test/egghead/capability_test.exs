@@ -62,6 +62,49 @@ defmodule Egghead.CapabilityTest do
     test "accepts comma/space separated string" do
       assert [_, _] = Capability.parse("records.read agent.create")
     end
+
+    test "parses compact spec form for a single-host scope" do
+      grants = Capability.parse("net.get{hosts=[api.openai.com]}")
+      assert [%Grant{resource: :net, verb: :get, scope: %{hosts: ["api.openai.com"]}}] = grants
+    end
+
+    test "parses compact spec form with multiple hosts" do
+      grants = Capability.parse("net.get{hosts=[*.github.com,api.openai.com]}")
+
+      assert [%Grant{resource: :net, verb: :get, scope: %{hosts: hosts}}] = grants
+      assert "*.github.com" in hosts
+      assert "api.openai.com" in hosts
+    end
+
+    test "parses compact spec form with multiple scope keys" do
+      grants = Capability.parse("proc.exec{cmds=[rg,jq],in=~/Work}")
+
+      assert [%Grant{resource: :proc, verb: :exec, scope: scope}] = grants
+      assert scope.cmds == ["rg", "jq"]
+      assert scope.in == "~/Work"
+    end
+
+    test "tokenizer respects {} and [] (commas inside don't split tokens)" do
+      grants = Capability.parse("records.read net.get{hosts=[a,b,c]} agent.create")
+      kinds = Enum.map(grants, &{&1.resource, &1.verb})
+      assert {:records, :read} in kinds
+      assert {:agent, :create} in kinds
+
+      [net_grant] = Enum.filter(grants, fn g -> g.resource == :net end)
+      assert net_grant.scope.hosts == ["a", "b", "c"]
+    end
+
+    test "merges compact-spec and map-style grants for the same resource.verb" do
+      grants =
+        Capability.parse([
+          "net.get{hosts=[*.github.com]}",
+          %{"net.get" => %{"hosts" => ["api.openai.com"]}}
+        ])
+
+      assert [%Grant{resource: :net, verb: :get, scope: %{hosts: hosts}}] = grants
+      assert "*.github.com" in hosts
+      assert "api.openai.com" in hosts
+    end
   end
 
   describe "check/3 — capability_absent" do

@@ -589,7 +589,7 @@ function lingerPluginFor(provider) {
 
 // --- Editor factory ---
 
-export function createEditor(element, recordId, { navigate } = {}) {
+export function createEditor(element, recordId, { navigate, format } = {}) {
   const ydoc = new Y.Doc();
   const ytext = ydoc.getText("content");
 
@@ -603,10 +603,16 @@ export function createEditor(element, recordId, { navigate } = {}) {
     window.location.href = `/records/${target}`;
   });
 
+  // Org records skip the markdown grammar — its `*` heading rule would
+  // mis-bold every org headline and its inline-code rule would chew up
+  // org `~code~`/`=verbatim=`/`#+KEYWORD:` syntax. Wikilink + URL
+  // highlighters still work since they're pattern-based, format-agnostic
+  // overlays on the underlying text.
+  const isOrg = format === "org";
+
   const extensions = [
     proseTheme,
-    markdown(),
-    syntaxHighlighting(markdownHighlight),
+    ...(isOrg ? [] : [markdown(), syntaxHighlighting(markdownHighlight)]),
     wikilinkHighlighter,
     urlHighlighter,
     mdLinkField,

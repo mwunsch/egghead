@@ -184,6 +184,41 @@ defmodule Egghead.MCP.HandlerTest do
       assert response.result.isError == false
     end
 
+    test "egghead_create with format: org writes a .org file" do
+      response =
+        Handler.handle(%{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "egghead_create",
+            "arguments" => %{
+              "id" => "mcp-org-test",
+              "title" => "Org via MCP",
+              "format" => "org",
+              "body" => "Org body."
+            }
+          }
+        })
+
+      assert response.result.isError == false
+      assert File.exists?(Path.join(@tmp_dir, "mcp-org-test.org"))
+      refute File.exists?(Path.join(@tmp_dir, "mcp-org-test.md"))
+
+      Process.sleep(300)
+
+      get_response =
+        Handler.handle(%{
+          "jsonrpc" => "2.0",
+          "id" => 2,
+          "method" => "tools/call",
+          "params" => %{"name" => "egghead_get", "arguments" => %{"id" => "mcp-org-test"}}
+        })
+
+      text = hd(get_response.result.content).text
+      assert text =~ "format: org"
+    end
+
     test "egghead_search returns results" do
       response =
         Handler.handle(%{

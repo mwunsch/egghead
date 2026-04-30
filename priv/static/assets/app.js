@@ -962,7 +962,9 @@ Hooks.YjsEditor = {
   async mounted() {
     const { createEditor } = await import("./editor.js");
     const recordId = this.el.dataset.recordId;
+    const format = this.el.dataset.format;
     this._editor = createEditor(this.el, recordId, {
+      format,
       navigate: (target) => {
         window.liveSocket.redirect(`/records/${target}`);
       },

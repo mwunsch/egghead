@@ -606,16 +606,22 @@ defmodule Egghead.OpenTUI.Markdown do
 
   # ---- span-aware word wrap ----------------------------------------------
 
-  # Wrap a list of spans into rows of <= width columns. Hard
-  # newlines (from <br> and embedded "\n") force a row break;
-  # everything else is greedy-fill at word boundaries.
-  defp wrap_spans(spans, width) when width > 0 do
+  @doc """
+  Wrap a list of spans into rows of `<= width` columns. Hard newlines
+  (from `<br>` or embedded `"\n"`) force a row break; everything else is
+  greedy-fill at word boundaries.
+
+  Public so any other renderer producing the same span shape can reuse
+  the same wrap behavior.
+  """
+  @spec wrap_spans([span()], pos_integer()) :: rendered()
+  def wrap_spans(spans, width) when width > 0 do
     spans
     |> tokenize()
     |> fill_rows(width)
   end
 
-  defp wrap_spans(_spans, _width), do: [[]]
+  def wrap_spans(_spans, _width), do: [[]]
 
   # Convert spans to a flat token stream of:
   #   {:word, span}    — non-whitespace run, atomic

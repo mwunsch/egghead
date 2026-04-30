@@ -1461,6 +1461,158 @@ details[open] > .properties-summary::before { content: "▾"; }
   content: "~~"; color: var(--syntax); font-family: var(--font-mono); font-size: 0.8em;
 }
 
+/* ---- Org-mode body ---- */
+/* Mirrors .markdown-body in tone but preserves org-specific artifacts —
+   headline stars, TODO/DONE keywords, property drawers, #+BEGIN_SRC
+   markers — so org-mode users see their files the way they expect. */
+
+.org-body {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--fg);
+}
+
+.org-body .org-headline {
+  font-family: var(--font-display);
+  color: var(--heading);
+  line-height: 1.3;
+  margin: 1.4em 0 0.4em;
+}
+.org-body .org-headline[data-level="1"] { font-size: 24px; font-weight: 300; }
+.org-body .org-headline[data-level="2"] { font-size: 20px; font-weight: 300; }
+.org-body .org-headline[data-level="3"] { font-size: 18px; font-weight: 400; }
+.org-body .org-headline[data-level="4"] { font-size: 16px; font-weight: 400; }
+
+.org-body .org-stars {
+  color: var(--syntax);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 0.7em;
+  margin-right: 0.3em;
+}
+
+.org-body .org-todo {
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  font-weight: 600;
+  padding: 1px 6px;
+  margin-right: 0.4em;
+  background: var(--code-bg);
+  letter-spacing: 0.04em;
+}
+.org-body .org-todo-todo { color: var(--wikilink); }
+.org-body .org-todo-done { color: var(--muted); text-decoration: line-through; }
+.org-body .org-todo-next { color: var(--wikilink); }
+.org-body .org-todo-waiting { color: var(--muted); }
+.org-body .org-todo-cancelled { color: var(--muted); text-decoration: line-through; }
+.org-body .org-todo-hold { color: var(--muted); }
+
+.org-body .org-priority {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  font-weight: 600;
+  margin-right: 0.4em;
+}
+
+.org-body .org-tags { margin-left: 0.6em; }
+.org-body .org-tag {
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  color: var(--muted);
+  background: var(--code-bg);
+  padding: 1px 5px;
+  margin-left: 4px;
+}
+
+.org-body .org-keyword {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  margin: 0.2em 0;
+}
+.org-body .org-keyword-key { color: var(--syntax); }
+.org-body .org-keyword-value { color: var(--fg); }
+
+.org-body .org-property-drawer {
+  border-left: 2px solid var(--chrome-lo);
+  background: var(--code-bg);
+  padding: 6px 10px;
+  margin: 0.6em 0;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--muted);
+}
+.org-body .org-drawer-marker { color: var(--syntax); }
+.org-body .org-property-key { color: var(--syntax); }
+.org-body .org-property-value { color: var(--fg); }
+.org-body .org-property { display: block; }
+
+.org-body .org-src-block {
+  margin: 0.8em 0;
+}
+.org-body .org-block-marker {
+  color: var(--syntax);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.org-body pre.org-src,
+.org-body pre.org-example {
+  background: var(--code-bg);
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0;
+  box-shadow:
+    inset 1px 1px 0 var(--chrome-lo),
+    inset -1px -1px 0 var(--chrome-hi);
+}
+.org-body pre.org-src code,
+.org-body pre.org-example code {
+  background: none;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  font-family: var(--font-mono);
+}
+
+.org-body .org-paragraph { margin-bottom: 0.8em; }
+
+.org-body .org-list { margin: 0.5em 0 0.8em 1.5em; }
+.org-body .org-list-item { margin-bottom: 0.2em; }
+.org-body .org-task input { margin-right: 6px; }
+.org-body .org-task-done { color: var(--muted); }
+
+.org-body code.org-code,
+.org-body code.org-verbatim {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  color: var(--code-bg);
+  background: var(--fg);
+  padding: 0 3px;
+}
+.org-body code.org-code { background: var(--code-bg); color: var(--fg); }
+.org-body code.org-verbatim { background: var(--code-bg); color: var(--fg); }
+
+.org-body .org-underline { text-decoration: underline; }
+
+.org-body a.org-link {
+  color: var(--wikilink);
+  text-decoration: none;
+  font-weight: 500;
+}
+.org-body a.org-link:hover { text-decoration: underline; }
+.org-body a.org-link.wikilink::before { content: "[["; color: var(--wikilink); font-family: var(--font-mono); font-weight: 400; font-size: 0.8em; }
+.org-body a.org-link.wikilink::after { content: "]]"; color: var(--wikilink); font-family: var(--font-mono); font-weight: 400; font-size: 0.8em; }
+.org-body a.org-link.missing { color: var(--danger); }
+
+.org-body time.org-ts {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.org-body time.org-ts-active { color: var(--wikilink); }
+.org-body time.org-ts-inactive { color: var(--muted); }
+
 /* ---- CodeMirror editor (record body) ---- */
 
 .record-editor {

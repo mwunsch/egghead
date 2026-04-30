@@ -196,6 +196,7 @@ defmodule Egghead.Application do
         Application.put_env(:egghead, :records_dir, Egghead.Config.records_dir(config))
         Application.put_env(:egghead, :skills_dir, Egghead.Config.skills_dir(config))
         Application.put_env(:egghead, :mcp_servers, config.mcp_servers)
+        Application.put_env(:egghead, :default_format, config.default_format || :markdown)
 
         if config.server do
           Application.put_env(:egghead, :server, config.server)

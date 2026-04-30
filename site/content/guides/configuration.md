@@ -85,6 +85,12 @@ default_model: anthropic/claude-sonnet-4-6
 # Default chat-room id. Created on demand.
 default_room: default
 
+# Format for newly created records — `markdown` (the default) or `org`.
+# Existing files keep their on-disk format regardless. Setting this to
+# `org` only changes the extension and writer used when Egghead creates
+# a new file. See [Org-mode]({{< ref "org-mode" >}}).
+default_format: markdown
+
 # Web server and MCP HTTP endpoint.
 web:
   port: 4000

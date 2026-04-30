@@ -37,9 +37,13 @@ defmodule Egghead.Capability do
   Parses a frontmatter `capabilities:` value into a list of grants.
 
   Accepts:
-  - A list of strings: `["records.read", "agent.create"]`
-  - A list mixing strings and maps (scoped): `["records.read", %{"net.get" => %{"hosts" => [...]}}]`
-  - A comma/space-separated string: `"records.read agent.create"`
+  - A list of strings: `["records.read", "agent.create"]`.
+  - A list mixing strings and maps (scoped): `["records.read", %{"net.get" => %{"hosts" => [...]}}]`.
+  - A comma/space-separated string: `"records.read agent.create"`.
+  - Tokens in the same compact spec form `egghead agent grant` accepts:
+    `"net.get{hosts=[*.github.com]} records.read"`. Useful in contexts
+    where the YAML nested-map form isn't available — org property
+    drawers, CLI input, environment variables.
 
   Unknown strings are logged and dropped (forward-compat for skills
   referencing future capability names).
@@ -55,7 +59,7 @@ defmodule Egghead.Capability do
 
   def parse(str) when is_binary(str) do
     str
-    |> String.split(~r/[,\s]+/, trim: true)
+    |> tokenize()
     |> parse()
   end
 
@@ -64,10 +68,54 @@ defmodule Egghead.Capability do
     []
   end
 
+  @doc """
+  Split a capabilities string into tokens, respecting `{...}` scope
+  bodies. Whitespace and commas separate top-level tokens; commas inside
+  a scope body are part of its value list, not a token boundary.
+
+  Public so other layers (the agent record projection) can pre-tokenize
+  consistently when their input is also a flat string.
+  """
+  @spec tokenize(String.t()) :: [String.t()]
+  def tokenize(str) do
+    {tokens, current, depth} =
+      str
+      |> String.graphemes()
+      |> Enum.reduce({[], "", 0}, fn
+        c, {acc, cur, d} when c in ["{", "["] ->
+          {acc, cur <> c, d + 1}
+
+        c, {acc, cur, d} when c in ["}", "]"] ->
+          {acc, cur <> c, max(d - 1, 0)}
+
+        ch, {acc, cur, 0} when ch in [" ", "\t", "\n", ","] ->
+          if cur == "", do: {acc, "", 0}, else: {[cur | acc], "", 0}
+
+        ch, {acc, cur, d} ->
+          {acc, cur <> ch, d}
+      end)
+
+    tokens = if current == "", do: tokens, else: [current | tokens]
+
+    if depth > 0,
+      do: Logger.warning("Capability.parse: unbalanced brackets in #{inspect(str)}")
+
+    Enum.reverse(tokens)
+  end
+
   defp parse_one(str) when is_binary(str) do
-    case split_resource_verb(str) do
-      {:ok, resource, verb} -> [%Grant{resource: resource, verb: verb, scope: %{}}]
-      :error -> warn_drop(str)
+    case parse_grant_spec(str) do
+      {:ok, bare} when is_binary(bare) ->
+        case split_resource_verb(bare) do
+          {:ok, resource, verb} -> [%Grant{resource: resource, verb: verb, scope: %{}}]
+          :error -> warn_drop(str)
+        end
+
+      {:ok, %{} = scoped_map} ->
+        parse_one(scoped_map)
+
+      {:error, _} ->
+        warn_drop(str)
     end
   end
 

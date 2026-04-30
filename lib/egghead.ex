@@ -22,6 +22,9 @@ defmodule Egghead do
     * `:class` — `:durable`, `:inbox`, `:deliberation`, `:transcript`,
       `:agent`, or `:skill` (default: `:durable`)
     * `:body` — the record body text
+    * `:format` — `:markdown` (default) or `:org`. Determines the on-disk
+      format and the file extension (`.md` or `.org`). The system default
+      can be overridden via `default_format:` in `config.yml`.
   """
   @spec create_record(map()) :: {:ok, Record.t()} | {:error, term()}
   defdelegate create_record(attrs), to: RecordStore

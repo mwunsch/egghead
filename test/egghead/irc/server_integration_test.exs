@@ -246,7 +246,7 @@ defmodule Egghead.IRC.ServerIntegrationTest do
   end
 
   describe "#default alias" do
-    test "JOIN #default routes to the actual default room", ctx do
+    setup do
       room_id = "alias-default-#{:erlang.unique_integer([:positive])}"
       {:ok, _} = Room.start_link(id: room_id)
 
@@ -257,26 +257,83 @@ defmodule Egghead.IRC.ServerIntegrationTest do
         if saved,
           do: :persistent_term.put(:egghead_default_room, saved),
           else: :persistent_term.erase(:egghead_default_room)
+
+        if Room.exists?(room_id), do: Room.stop(room_id)
       end)
 
+      {:ok, room_id: room_id}
+    end
+
+    test "JOIN #default echoes the alias name (so strict clients open the right buffer)", ctx do
       sock = connect(ctx.port)
       register(sock, "aliaser")
 
       send_line(sock, "JOIN #default")
-
-      # Echoed JOIN must use the canonical channel name (post-alias) so
-      # the client's membership state matches the room we actually
-      # subscribed it to. Otherwise PRIVMSGs from #<canonical> arrive on
-      # a channel the client doesn't think it joined.
       lines = recv_until(sock, "366 aliaser", 2000)
 
+      # Strict clients (ERC) only open a channel buffer when the JOIN
+      # echo references the channel they asked for. Echoing the
+      # canonical name silently fails — the buffer is never created.
       assert Enum.any?(lines, fn l ->
-               l =~ ~r/^:aliaser![^ ]+ JOIN ##{room_id}/
+               l =~ ~r/^:aliaser![^ ]+ JOIN #default/
              end),
-             "JOIN echo should use canonical room id, not #default. got: #{inspect(lines)}"
+             "JOIN echo must use #default (the typed name), not canonical. got: #{inspect(lines)}"
+
+      assert Enum.any?(lines, &String.contains?(&1, "353 aliaser = #default")),
+             "NAMES reply must reference #default too"
 
       :gen_tcp.close(sock)
-      Room.stop(room_id)
+    end
+
+    test "PRIVMSG #default routes to the canonical room", ctx do
+      sock = connect(ctx.port)
+      register(sock, "talker")
+
+      send_line(sock, "JOIN #default")
+      _ = recv_until(sock, "366 talker", 2000)
+
+      Phoenix.PubSub.subscribe(Egghead.PubSub, Room.topic(ctx.room_id))
+
+      send_line(sock, "PRIVMSG #default :hello via alias")
+
+      assert_receive {:user_message, msg}, 2000
+      assert msg.content == "hello via alias"
+      assert msg.room_id == ctx.room_id
+
+      :gen_tcp.close(sock)
+    end
+
+    test "agent events on the canonical room arrive as #default", ctx do
+      sock = connect(ctx.port)
+      register(sock, "watcher")
+
+      send_line(sock, "JOIN #default")
+      _ = recv_until(sock, "366 watcher", 2000)
+
+      Phoenix.PubSub.broadcast(
+        Egghead.PubSub,
+        Room.topic(ctx.room_id),
+        {:agent_passed, "agents/scout"}
+      )
+
+      {:ok, line} = :gen_tcp.recv(sock, 0, 2000)
+      assert String.trim_trailing(line, "\r\n") =~ "PRIVMSG #default :"
+
+      :gen_tcp.close(sock)
+    end
+
+    test "PART #default echoes #default and tears down the alias", ctx do
+      sock = connect(ctx.port)
+      register(sock, "leaver")
+
+      send_line(sock, "JOIN #default")
+      _ = recv_until(sock, "366 leaver", 2000)
+
+      send_line(sock, "PART #default")
+      {:ok, line} = :gen_tcp.recv(sock, 0, 2000)
+      assert String.trim_trailing(line, "\r\n") =~ ~r/^:leaver![^ ]+ PART #default/
+
+      :gen_tcp.close(sock)
     end
   end
 

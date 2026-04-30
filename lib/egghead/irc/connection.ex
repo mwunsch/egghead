@@ -56,7 +56,14 @@ defmodule Egghead.IRC.Connection do
       # already emitted so we can mid-stream flush completed paragraphs
       # as PRIVMSGs and emit the unflushed tail on the final
       # :agent_message without doubling content.
-      streams: %{}
+      streams: %{},
+      # Per-connection channel-name aliases. When a user joins via
+      # `#default` we route to the canonical room id but echo JOIN /
+      # NAMES / PRIVMSG / actions back with the alias the client typed
+      # — strict clients (ERC) won't open a buffer when the JOIN echo
+      # references a different channel name than the request. Map shape:
+      # `%{room_id => "#alias-they-typed"}`.
+      aliases: %{}
     }
 
     {:continue, state}
@@ -171,7 +178,7 @@ defmodule Egghead.IRC.Connection do
   # nicklist updates live without needing a fresh /NAMES query.
   defp handle_room_event({:agent_joined, agent_id}, room_id, socket, state) do
     nick = NickMap.id_to_nick(agent_id)
-    channel = NickMap.room_to_channel(room_id)
+    channel = display_channel(state, room_id)
     line = Protocol.encode(prefix: agent_prefix(nick, state), command: "JOIN", params: [channel])
     send_line(socket, line)
     state
@@ -179,7 +186,7 @@ defmodule Egghead.IRC.Connection do
 
   defp handle_room_event({:agent_left, agent_id}, room_id, socket, state) do
     nick = NickMap.id_to_nick(agent_id)
-    channel = NickMap.room_to_channel(room_id)
+    channel = display_channel(state, room_id)
     line = Protocol.encode(prefix: agent_prefix(nick, state), command: "PART", params: [channel])
     send_line(socket, line)
     state
@@ -332,7 +339,7 @@ defmodule Egghead.IRC.Connection do
       Protocol.encode(
         prefix: nick,
         command: "PRIVMSG",
-        params: [NickMap.room_to_channel(room_id)],
+        params: [display_channel(state, room_id)],
         trailing: <<1>> <> "ACTION " <> text <> <<1>>
       )
     )
@@ -341,6 +348,8 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp send_notice(socket, state, room_id, text) do
+    channel = display_channel(state, room_id)
+
     text
     |> String.split(~r/\r?\n/)
     |> Enum.reject(&(&1 == ""))
@@ -350,7 +359,7 @@ defmodule Egghead.IRC.Connection do
         Protocol.encode(
           prefix: state.server,
           command: "NOTICE",
-          params: [NickMap.room_to_channel(room_id)],
+          params: [channel],
           trailing: line
         )
       )
@@ -611,14 +620,15 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp do_join(channel, state) do
-    # `#default` is an alias for the configured default room (or the
-    # auto-created dated fallback). Resolve before routing so the rest
-    # of the path operates on the real room id and the client's JOIN
-    # echo / membership tracking matches what subsequent PRIVMSGs and
-    # NAMES will reference.
-    canonical = resolve_default_alias(channel)
+    # `#default` is a per-connection alias for the configured default
+    # room (or the auto-created dated fallback). Resolve to canonical
+    # room id internally, but remember the alias name so every wire
+    # echo for this connection (JOIN, NAMES, PRIVMSG, actions) uses
+    # the channel name the user actually typed. Strict clients (ERC)
+    # only open a buffer when the JOIN echo matches the request.
+    {canonical_channel, alias_name} = resolve_alias(channel)
 
-    case NickMap.channel_to_room(canonical) do
+    case NickMap.channel_to_room(canonical_channel) do
       nil ->
         reply(
           state,
@@ -638,34 +648,64 @@ defmodule Egghead.IRC.Connection do
         if MapSet.member?(state.channels, room_id) do
           state
         else
-          state = subscribe_room(state, room_id)
+          state =
+            state
+            |> subscribe_room(room_id)
+            |> put_alias(room_id, alias_name)
 
-          # Echo JOIN with the canonical channel name (post-alias) so
-          # the client's membership state matches what we actually
-          # subscribed it to.
+          display = display_channel(state, room_id)
+
+          # Echo JOIN with the user's typed channel name — that's how
+          # the client knows the JOIN succeeded for *that* request.
           send_line(
             state.__socket__,
             Protocol.encode(
               prefix: prefix_for(state.nick, state.user, state.server),
               command: "JOIN",
-              params: [canonical]
+              params: [display]
             )
           )
 
-          send_names(canonical, room_id, state)
+          send_names(display, room_id, state)
           state
         end
     end
   end
 
-  defp resolve_default_alias("#default") do
+  # Returns `{canonical_channel, alias_or_nil}`. `#default` becomes
+  # `{"#chat-...", "#default"}`; everything else is `{channel, nil}`.
+  defp resolve_alias("#default") do
     case Egghead.default_room() do
-      nil -> "#default"
-      room_id -> NickMap.room_to_channel(room_id)
+      nil -> {"#default", nil}
+      room_id -> {NickMap.room_to_channel(room_id), "#default"}
     end
   end
 
-  defp resolve_default_alias(other), do: other
+  defp resolve_alias(other), do: {other, nil}
+
+  defp put_alias(state, _room_id, nil), do: state
+
+  defp put_alias(state, room_id, alias_name) do
+    %{state | aliases: Map.put(state.aliases, room_id, alias_name)}
+  end
+
+  # Channel name to use when this connection emits anything for `room_id`
+  # back over the wire. Falls through to the canonical name when no
+  # alias is set.
+  defp display_channel(state, room_id) do
+    Map.get(state.aliases, room_id) || NickMap.room_to_channel(room_id)
+  end
+
+  # Reverse lookup for inbound traffic. Client sends `PRIVMSG #default :hi`
+  # — `#default` isn't a room id, but we have an alias entry pointing it
+  # at the canonical room. Returns the room id, or nil if the channel
+  # name doesn't resolve to anything we know.
+  defp target_to_room_id(state, channel) do
+    case Enum.find(state.aliases, fn {_room_id, alias_name} -> alias_name == channel end) do
+      {room_id, _alias} -> room_id
+      nil -> NickMap.channel_to_room(channel)
+    end
+  end
 
   # Spawn a forwarder Task that subscribes to the room's PubSub topic
   # and re-sends each message tagged with the room_id. Linked to the
@@ -705,7 +745,8 @@ defmodule Egghead.IRC.Connection do
       state
       | channels: MapSet.delete(state.channels, room_id),
         routers: Map.delete(state.routers, room_id),
-        streams: drop_room_streams(state.streams, room_id)
+        streams: drop_room_streams(state.streams, room_id),
+        aliases: Map.delete(state.aliases, room_id)
     }
   end
 
@@ -734,12 +775,15 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp do_part(channel, _reason, state) do
-    case NickMap.channel_to_room(channel) do
+    case target_to_room_id(state, channel) do
       nil ->
         state
 
       room_id ->
         if MapSet.member?(state.channels, room_id) do
+          # Echo PART with the channel name the user typed (which may
+          # be an alias) — same shape as the JOIN echo so the client's
+          # buffer-close logic recognizes it.
           send_line(
             state.__socket__,
             Protocol.encode(
@@ -769,7 +813,7 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp do_privmsg(target, body, state) do
-    case NickMap.channel_to_room(target) do
+    case target_to_room_id(state, target) do
       nil ->
         # DM to a nick — M1 just NOTICE-replies that DMs aren't wired yet.
         # M3 will route to `Egghead.prompt/3`.
@@ -805,7 +849,7 @@ defmodule Egghead.IRC.Connection do
         channels
         |> String.split(",", trim: true)
         |> Enum.each(fn ch ->
-          case NickMap.channel_to_room(ch) do
+          case target_to_room_id(state, ch) do
             nil -> :ok
             room_id -> send_names(ch, room_id, state)
           end
@@ -855,7 +899,7 @@ defmodule Egghead.IRC.Connection do
           target == state.nick ->
             reply(state, Numerics.user_mode_is(state.server, state.nick))
 
-          NickMap.channel_to_room(target) != nil ->
+          target_to_room_id(state, target) != nil ->
             reply(state, Numerics.channel_mode_is(state.server, state.nick, target))
             reply(state, Numerics.creation_time(state.server, state.nick, target, epoch_now()))
 
@@ -907,7 +951,13 @@ defmodule Egghead.IRC.Connection do
 
       reply(
         state,
-        Numerics.list_entry(state.server, state.nick, NickMap.room_to_channel(room_id), 0, topic)
+        Numerics.list_entry(
+          state.server,
+          state.nick,
+          NickMap.room_to_channel(room_id),
+          room_member_count(room_id),
+          topic
+        )
       )
     end)
 
@@ -916,6 +966,25 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp epoch_now, do: System.system_time(:second)
+
+  # Member count for LIST. Counts agents currently joined to the room.
+  # Many IRC clients (ERC, weechat) hide 0-user channels in list-mode
+  # by default, treating them as inactive — reporting an honest count
+  # keeps active rooms visible. Connected humans aren't counted yet
+  # (M4 will index IRC connections by room via the Registry).
+  defp room_member_count(room_id) do
+    if Room.exists?(room_id) do
+      case Room.get_state(room_id) do
+        # `agents` may arrive as a MapSet (live state) or a plain list
+        # (newly-started room with default state); `Enum.count/1` covers
+        # both without forcing one shape.
+        %{agents: agents} -> Enum.count(agents)
+        _ -> 0
+      end
+    else
+      0
+    end
+  end
 
   # --- QUIT ---
 
@@ -971,8 +1040,8 @@ defmodule Egghead.IRC.Connection do
     :ok
   end
 
-  defp send_privmsg(socket, _state, from_nick, room_id, content) do
-    channel = NickMap.room_to_channel(room_id)
+  defp send_privmsg(socket, state, from_nick, room_id, content) do
+    channel = display_channel(state, room_id)
 
     # IRC PRIVMSG is one line per message; agents (and the future
     # streaming buffer) will need to split on `\n` upstream. For now

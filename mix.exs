@@ -276,6 +276,7 @@ defmodule Egghead.MixProject do
       {:jason, "~> 1.4"},
       {:phoenix_pubsub, "~> 2.1"},
       {:bandit, "~> 1.6"},
+      {:thousand_island, "~> 1.3"},
       {:plug, "~> 1.16"},
       {:req, "~> 0.5"},
       {:phoenix, "~> 1.7"},

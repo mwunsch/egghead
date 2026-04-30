@@ -925,20 +925,28 @@ defmodule Egghead.IRC.Connection do
   # walk that makes this honest.
 
   defp handle_list(msg, state) do
-    requested =
-      case Protocol.Message.args(msg) do
-        [list | _] -> String.split(list, ",", trim: true)
-        [] -> :all
-      end
+    # ERC (and some other clients) send `LIST :` with an empty trailing
+    # param when the user types `/list` with no filter — args/1 then
+    # returns `[""]`, not `[]`. Flatten + reject empties so any of
+    # `LIST`, `LIST :`, `LIST ""`, `LIST #foo,#bar` collapse to either
+    # an empty filter list (= match everything) or a real channel set.
+    filters =
+      msg
+      |> Protocol.Message.args()
+      |> Enum.flat_map(&String.split(&1, ",", trim: true))
 
     rooms = Room.list_ids()
     default = Egghead.default_room()
 
     matching =
-      case requested do
-        :all -> rooms
-        names -> Enum.filter(rooms, fn r -> ("#" <> r) in names end)
-      end
+      if filters == [],
+        do: rooms,
+        else: Enum.filter(rooms, fn r -> ("#" <> r) in filters end)
+
+    Logger.debug(fn ->
+      "IRC LIST  filters=#{inspect(filters)}  rooms=#{inspect(rooms)}  " <>
+        "matching=#{inspect(matching)}  default=#{inspect(default)}"
+    end)
 
     reply(state, Numerics.list_start(state.server, state.nick))
 

@@ -193,6 +193,30 @@ defmodule Egghead.IRC.ServerIntegrationTest do
   end
 
   describe "LIST" do
+    test "LIST with an empty trailing param (ERC's `/list`) returns all rooms", ctx do
+      # Regression: ERC and some other clients send `LIST :` (LIST with
+      # a `:`-introduced empty trailing param) when the user types
+      # /list with no filter. The parser puts that in `trailing` as ""
+      # and `Message.args/1` returns `[""]` — not `[]`. Earlier the
+      # handler treated `[""]` as a filter set and matched zero rooms.
+      room_id = "list-empty-trail-#{:erlang.unique_integer([:positive])}"
+      {:ok, _} = Room.start_link(id: room_id)
+
+      sock = connect(ctx.port)
+      register(sock, "ercer")
+
+      # Note the `:` — that's the empty trailing param ERC actually sends.
+      send_line(sock, "LIST :")
+
+      lines = recv_until(sock, " 323 ercer", 2000)
+
+      assert Enum.any?(lines, &String.contains?(&1, " 322 ercer ##{room_id}")),
+             "LIST : should match all rooms (got: #{inspect(lines)})"
+
+      :gen_tcp.close(sock)
+      Room.stop(room_id)
+    end
+
     test "LIST returns all running rooms", ctx do
       # Suffix is a fixed string (not the unique-integer counter) so the
       # room id can never accidentally contain a numeric like "323" that

@@ -146,6 +146,13 @@ defmodule Egghead.NodeTest do
 
   describe "discover_server/0 precedence" do
     test "EGGHEAD_SERVER pointing at unreachable host returns :none within timeout" do
+      # Regression: this test used to flake on dev boxes that already had
+      # `egghead serve` running locally. The old `with` chain fell through
+      # from a failed env probe to the local epmd lookup, silently grabbing
+      # the running local node — wrong instance, wrong host, wrong answer.
+      # Now `EGGHEAD_SERVER` is treated as an absolute directive: if set,
+      # only that target is consulted. Unreachable → `:none`, never the
+      # local fallback.
       System.put_env("EGGHEAD_SERVER", "egghead-test-nonexistent.invalid")
 
       # The timeout in discover_from_epmd is 2s. Allow some slack.
@@ -153,6 +160,15 @@ defmodule Egghead.NodeTest do
 
       assert result == :none
       assert time_us < 5_000_000, "discover_server hung for #{div(time_us, 1000)}ms"
+    end
+
+    test "EGGHEAD_SERVER set wins over a locally-registered egghead_server" do
+      # Even if the dev box has `egghead serve` running (so epmd would find
+      # `egghead_server@localhost`), an explicit env directive must short-
+      # circuit the discovery — never silently swap to a different node.
+      System.put_env("EGGHEAD_SERVER", "egghead-test-also-nonexistent.invalid")
+
+      assert ENode.discover_server() == :none
     end
 
     test "explicit server.node config wins over local epmd lookup" do

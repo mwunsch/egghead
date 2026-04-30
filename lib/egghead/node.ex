@@ -188,29 +188,31 @@ defmodule Egghead.Node do
 
   @doc false
   # Public for tests. Resolves the highest-precedence server target.
+  #
+  # `EGGHEAD_SERVER` is treated as an absolute directive: if the user
+  # set it, only that target is consulted, and an unreachable host
+  # returns `:none` — never falls through to the local-epmd probe.
+  # Otherwise that fallthrough would silently attach to a *different*
+  # server (the one running on this box) than the operator named, which
+  # is actively wrong for cross-host attachment.
   def discover_server do
-    with :none <- discover_from_env(),
-         :none <- discover_from_config(),
-         :none <- discover_from_epmd(~c"localhost", :shortnames) do
-      :none
+    case env_target() do
+      {:ok, host} ->
+        discover_from_epmd(to_charlist(host), :longnames, host)
+
+      :none ->
+        with :none <- discover_from_config(),
+             :none <- discover_from_epmd(~c"localhost", :shortnames) do
+          :none
+        end
     end
   end
 
-  defp discover_from_env do
+  defp env_target do
     case System.get_env("EGGHEAD_SERVER") do
-      nil ->
-        :none
-
-      "" ->
-        :none
-
-      host ->
-        # EGGHEAD_SERVER points at a remote host. Probe epmd there;
-        # if `egghead_server` is registered, return its longname.
-        # Falling through to :none lets the caller drop to standalone
-        # rather than hang indefinitely on an unreachable host.
-        host = String.trim(host)
-        discover_from_epmd(to_charlist(host), :longnames, host)
+      nil -> :none
+      "" -> :none
+      host -> {:ok, String.trim(host)}
     end
   end
 

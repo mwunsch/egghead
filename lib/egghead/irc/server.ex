@@ -59,8 +59,21 @@ defmodule Egghead.IRC.Server do
 
     children = [
       Registry,
-      {ThousandIsland,
-       port: port, transport_options: [ip: bind], handler_module: Connection, handler_options: []}
+      {
+        ThousandIsland,
+        # ThousandIsland defaults to a 60s read_timeout — if no inbound
+        # bytes arrive in that window, it kills the connection without
+        # going through our `handle_close` callback. That fires before
+        # our 90s server-side keepalive even ticks, which is exactly
+        # the disconnect-every-minute behavior live IRC clients hit.
+        # Disable it; `Egghead.IRC.Connection`'s PING/PONG keepalive
+        # already detects dead clients on a tighter, observable cycle.
+        port: port,
+        transport_options: [ip: bind],
+        handler_module: Connection,
+        handler_options: [],
+        read_timeout: :infinity
+      }
     ]
 
     Logger.info("IRC server listening on #{format_addr(bind)}:#{port}")

@@ -66,6 +66,27 @@ defmodule Egghead.IRC.ServerIntegrationTest do
       :gen_tcp.close(sock)
     end
 
+    test "client PONG response clears server's awaiting_pong flag", ctx do
+      # Server-side keepalive: every @ping_interval the server sends
+      # PING; if the next tick fires while awaiting_pong is still true,
+      # the connection is closed. Sending PONG must clear that flag.
+      # Drives the dispatcher synchronously by sending a fake server
+      # PING token, then PONG'ing it back.
+      sock = connect(ctx.port)
+      register(sock, "pongtest")
+
+      # Send a PONG (as if responding to a server PING) — should be
+      # accepted and clear the flag without any reply.
+      send_line(sock, "PONG :test.irc.local")
+
+      # Connection should still be alive after handling PONG.
+      send_line(sock, "PING :alive-check")
+      [line] = recv_lines(sock, 1, 1000)
+      assert line =~ "PONG"
+
+      :gen_tcp.close(sock)
+    end
+
     test "duplicate NICK collides with 433 ERR_NICKNAMEINUSE", ctx do
       sock1 = connect(ctx.port)
       register(sock1, "carol")

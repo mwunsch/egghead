@@ -26,6 +26,14 @@ defmodule Egghead.IRC.Connection do
 
   @pubsub Egghead.PubSub
 
+  # Server-side keepalive. Every `@ping_interval` ms we send a fresh
+  # PING to the client; the client must PONG back before the *next*
+  # tick fires or we close the connection. Without this, an idle ERC
+  # session would silently drop after Thousand Island's default 60s
+  # read_timeout — clean close, no log, ERC re-establishes the
+  # socket every minute.
+  @ping_interval 90_000
+
   # --- ThousandIsland.Handler callbacks ---
 
   @impl ThousandIsland.Handler
@@ -63,7 +71,12 @@ defmodule Egghead.IRC.Connection do
       # — strict clients (ERC) won't open a buffer when the JOIN echo
       # references a different channel name than the request. Map shape:
       # `%{room_id => "#alias-they-typed"}`.
-      aliases: %{}
+      aliases: %{},
+      # Server-initiated keepalive state. `awaiting_pong?` is set when
+      # we send a PING and cleared when the matching PONG arrives.
+      # If the next tick fires while still awaiting, the connection
+      # is dead — close it.
+      awaiting_pong?: false
     }
 
     {:continue, state}
@@ -84,6 +97,7 @@ defmodule Egghead.IRC.Connection do
 
   @impl ThousandIsland.Handler
   def handle_close(_socket, state) do
+    Logger.info("IRC: connection closed (nick=#{state.nick || "*"})")
     cleanup(state)
     :ok
   end
@@ -100,8 +114,31 @@ defmodule Egghead.IRC.Connection do
     {:noreply, {socket, state}}
   end
 
+  # Keepalive tick. If the client never PONG'd back the previous PING,
+  # they're dead — close the socket. Otherwise send a fresh PING and
+  # re-arm.
+  def handle_info(:keepalive_tick, {socket, %{awaiting_pong?: true} = state}) do
+    Logger.info("IRC: dropping #{state.nick || "*"} — no PONG within #{@ping_interval}ms")
+    cleanup(state)
+    {:stop, :normal, {socket, state}}
+  end
+
+  def handle_info(:keepalive_tick, {socket, state}) do
+    send_line(
+      socket,
+      Protocol.encode(prefix: state.server, command: "PING", trailing: state.server)
+    )
+
+    schedule_keepalive()
+    {:noreply, {socket, %{state | awaiting_pong?: true}}}
+  end
+
   def handle_info(_other, {socket, state}) do
     {:noreply, {socket, state}}
+  end
+
+  defp schedule_keepalive do
+    Process.send_after(self(), :keepalive_tick, @ping_interval)
   end
 
   # --- Room event dispatch ---
@@ -390,7 +427,7 @@ defmodule Egghead.IRC.Connection do
       "NICK" -> handle_nick(msg, state)
       "USER" -> handle_user(msg, state)
       "PING" -> handle_ping(msg, state)
-      "PONG" -> {:continue, state}
+      "PONG" -> {:continue, %{state | awaiting_pong?: false}}
       "QUIT" -> handle_quit(msg, state)
       "JOIN" -> require_registered(state, fn -> handle_join(msg, state) end)
       "PART" -> require_registered(state, fn -> handle_part(msg, state) end)
@@ -596,6 +633,7 @@ defmodule Egghead.IRC.Connection do
       ])
     )
 
+    schedule_keepalive()
     %{state | registered: true}
   end
 

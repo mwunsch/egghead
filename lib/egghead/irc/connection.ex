@@ -34,6 +34,18 @@ defmodule Egghead.IRC.Connection do
   # socket every minute.
   @ping_interval 90_000
 
+  # IRCv3 capabilities the server advertises. `server-time` lets clients
+  # render messages at the timestamp the server emits (not "now"),
+  # which is what makes scrollback replay on JOIN feel like real
+  # history rather than a flood of fresh messages.
+  @supported_caps ["server-time"]
+
+  # How many recent transcript messages to replay into a client's
+  # scrollback when they JOIN a channel — only sent if the client
+  # negotiated `server-time`, otherwise the messages would render at
+  # "now" and look like a confusing burst of duplicates.
+  @history_replay_count 50
+
   # --- ThousandIsland.Handler callbacks ---
 
   @impl ThousandIsland.Handler
@@ -76,7 +88,11 @@ defmodule Egghead.IRC.Connection do
       # we send a PING and cleared when the matching PONG arrives.
       # If the next tick fires while still awaiting, the connection
       # is dead — close it.
-      awaiting_pong?: false
+      awaiting_pong?: false,
+      # IRCv3 capabilities the client has negotiated. Determines
+      # whether outbound messages get `@time=` tags and whether JOIN
+      # replays scrollback from the room transcript.
+      caps: MapSet.new()
     }
 
     {:continue, state}
@@ -291,7 +307,7 @@ defmodule Egghead.IRC.Connection do
   # Infrastructure-level events the IRC layer doesn't surface:
   # roster_changed (we synthesize JOIN/PART instead), agents_activated,
   # agent_mentions (coordinator-internal), reactivate, budget_exhausted,
-  # tool_denied/output (M3 may surface tool denials).
+  # tool_output (verbose, low signal).
   defp handle_room_event(_other, _room_id, _socket, state), do: state
 
   # --- Streaming buffer ---
@@ -394,6 +410,7 @@ defmodule Egghead.IRC.Connection do
     send_line(
       socket,
       Protocol.encode(
+        tags: time_tag(state),
         prefix: nick,
         command: "PRIVMSG",
         params: [display_channel(state, room_id)],
@@ -406,6 +423,7 @@ defmodule Egghead.IRC.Connection do
 
   defp send_notice(socket, state, room_id, text) do
     channel = display_channel(state, room_id)
+    tags = time_tag(state)
 
     text
     |> String.split(~r/\r?\n/)
@@ -414,6 +432,7 @@ defmodule Egghead.IRC.Connection do
       send_line(
         socket,
         Protocol.encode(
+          tags: tags,
           prefix: state.server,
           command: "NOTICE",
           params: [channel],
@@ -429,6 +448,19 @@ defmodule Egghead.IRC.Connection do
   # `nick!egghead@server` is recognizable, validates as a hostmask, and
   # makes it clear this isn't a human peer.
   defp agent_prefix(nick, state), do: "#{nick}!egghead@#{state.server}"
+
+  # IRCv3 `server-time` tag. Returns `%{}` if the client didn't
+  # negotiate the cap (so the encoder emits no tag prefix at all),
+  # else `%{"time" => ISO-8601}`. Pass an explicit `DateTime` for
+  # historical messages (scrollback replay); otherwise defaults to now.
+  defp time_tag(state, dt \\ nil) do
+    if MapSet.member?(state.caps, "server-time") do
+      iso = (dt || DateTime.utc_now()) |> DateTime.to_iso8601()
+      %{"time" => iso}
+    else
+      %{}
+    end
+  end
 
   # --- Command dispatch ---
 
@@ -484,33 +516,55 @@ defmodule Egghead.IRC.Connection do
   defp handle_cap(msg, state) do
     case Protocol.Message.args(msg) do
       ["LS" | _] ->
-        # No IRCv3 capabilities yet (M4 will add server-time). Reply with
-        # an empty list so clients waiting on CAP LS proceed.
+        # Advertise supported capabilities. Clients that don't care
+        # about CAP can ignore this; clients negotiating IRCv3 features
+        # will pick a subset and CAP REQ them.
         reply(
           state,
           %Protocol.Message{
             prefix: state.server,
             command: "CAP",
             params: [nick_or_star(state), "LS"],
-            trailing: ""
+            trailing: Enum.join(@supported_caps, " ")
           }
         )
 
         {:continue, %{state | cap_negotiating: true}}
 
-      ["REQ", caps] ->
-        # NAK everything — we don't grant any capabilities today.
-        reply(
-          state,
-          %Protocol.Message{
-            prefix: state.server,
-            command: "CAP",
-            params: [nick_or_star(state), "NAK"],
-            trailing: caps
-          }
-        )
+      ["REQ", req_caps] ->
+        requested = String.split(req_caps, " ", trim: true)
+        unsupported = Enum.reject(requested, &(&1 in @supported_caps))
 
-        {:continue, state}
+        if unsupported == [] do
+          new_caps =
+            Enum.reduce(requested, state.caps, fn cap, acc -> MapSet.put(acc, cap) end)
+
+          reply(
+            state,
+            %Protocol.Message{
+              prefix: state.server,
+              command: "CAP",
+              params: [nick_or_star(state), "ACK"],
+              trailing: req_caps
+            }
+          )
+
+          {:continue, %{state | caps: new_caps}}
+        else
+          # Per IRCv3, REQ is atomic: NAK the whole batch if any single
+          # cap is unsupported — partial acceptance breaks expectations.
+          reply(
+            state,
+            %Protocol.Message{
+              prefix: state.server,
+              command: "CAP",
+              params: [nick_or_star(state), "NAK"],
+              trailing: req_caps
+            }
+          )
+
+          {:continue, state}
+        end
 
       ["END" | _] ->
         {:continue, maybe_complete_registration(%{state | cap_negotiating: false})}
@@ -574,9 +628,10 @@ defmodule Egghead.IRC.Connection do
             state = %{state | nick: requested}
 
             if old && state.registered do
-              # NICK change after registration — broadcast to all channels
-              # we're in (for now, just echo to ourselves; M2 broadcasts
-              # to peers when other connections share a channel).
+              # NICK change after registration — echoed only to the
+              # changing connection. Cross-peer broadcast (so other
+              # humans in the same channel see the rename) requires a
+              # per-conn-room reverse index that doesn't exist yet.
               line =
                 Protocol.encode(
                   prefix: prefix_for(old, state.user, state.server),
@@ -744,9 +799,67 @@ defmodule Egghead.IRC.Connection do
           # (end-of-names) as the final marker of the JOIN burst.
           send_topic(state, room_id)
           send_names(display, room_id, state)
+          send_history(state.__socket__, state, room_id)
           state
         end
     end
+  end
+
+  # Replay the last `@history_replay_count` transcript messages into the
+  # client's scrollback. Only fires if the client negotiated the
+  # `server-time` IRCv3 cap — without it, every replayed message
+  # would render at "now" and look like a duplicate flood. With it,
+  # each message carries its original timestamp as an `@time` tag and
+  # IRC clients (ERC, irssi, weechat) slot them into scrollback at
+  # the right historical moment.
+  defp send_history(socket, state, room_id) do
+    if MapSet.member?(state.caps, "server-time") and Room.exists?(room_id) do
+      transcript =
+        case Room.get_transcript(room_id) do
+          msgs when is_list(msgs) -> msgs
+          _ -> []
+        end
+
+      transcript
+      |> Enum.take(-@history_replay_count)
+      |> Enum.each(&send_history_message(socket, state, room_id, &1))
+    end
+  end
+
+  # Single transcript line as a backdated PRIVMSG. `/pass` markers
+  # (sender is :agent, content is "/pass") are skipped — they're a
+  # transcript convention, not text the user wants to see in scrollback.
+  defp send_history_message(_socket, _state, _room_id, %{
+         sender: %{type: :agent},
+         content: "/pass"
+       }),
+       do: :ok
+
+  defp send_history_message(socket, state, room_id, msg) do
+    nick =
+      case msg.sender.type do
+        :user -> msg.sender.name
+        :agent -> NickMap.id_to_nick(msg.sender.id)
+      end
+
+    channel = display_channel(state, room_id)
+    tags = time_tag(state, msg.timestamp)
+
+    msg.content
+    |> String.split(~r/\r?\n/)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.each(fn line ->
+      send_line(
+        socket,
+        Protocol.encode(
+          tags: tags,
+          prefix: nick,
+          command: "PRIVMSG",
+          params: [channel],
+          trailing: line
+        )
+      )
+    end)
   end
 
   # Synthesized channel topic — currently just an agent count. Lives in
@@ -938,22 +1051,24 @@ defmodule Egghead.IRC.Connection do
   # connection keep handling other commands.
   #
   # Human-to-human DM (target nick is another connected IRC client)
-  # is M4 — needs a way to forward the PRIVMSG to that connection's
-  # pid. For now, we 401 unknown nicks and NOTICE for known humans.
+  # isn't wired — would need to forward the PRIVMSG to the target
+  # connection's pid via Egghead.IRC.Registry.whereis/1 and a new
+  # handle_info clause on the receiving side. For now we 401 unknown
+  # nicks and NOTICE for known humans.
   defp do_dm(nick, body, state) do
     cond do
       match = Enum.find(safe_list_agents(), fn a -> NickMap.id_to_nick(a.id) == nick end) ->
         spawn_dm_prompt(match.id, nick, body, state)
 
       Registry.whereis(nick) != nil ->
-        # Connected human — M4 will route DMs across connections.
+        # Connected human — cross-connection DM routing not implemented.
         send_line(
           state.__socket__,
           Protocol.encode(
             prefix: state.server,
             command: "NOTICE",
             params: [state.nick],
-            trailing: "Human-to-human DMs are not wired yet (M4)"
+            trailing: "Human-to-human DMs are not wired"
           )
         )
 
@@ -1069,18 +1184,19 @@ defmodule Egghead.IRC.Connection do
         []
       end
 
-    # Just our own nick for human side in M1 — M4 will look up other
-    # connections in the same channel via the Registry.
+    # Only this connection's own nick on the human side — finding
+    # other connected humans in the same channel needs a per-conn-room
+    # reverse index in `Egghead.IRC.Registry` (only nick→pid today).
     [state.nick | agent_nicks]
   end
 
   # --- MODE ---
   #
   # Channel mode queries (`MODE #room`) get a flat "no modes set" reply;
-  # we don't expose channel modes today. User mode queries (`MODE nick`)
+  # we don't expose channel modes. User mode queries (`MODE nick`)
   # likewise return empty. Mode *changes* (e.g. `MODE #room +o foo`) are
-  # ignored silently — when M3 wires `+v` for muting agents, this stub
-  # gets replaced with a real handler.
+  # ignored silently — agent mute/unmute uses the dedicated MUTE/UNMUTE
+  # verbs rather than channel-mode `+v`/`-v`.
 
   defp handle_mode(msg, state) do
     case Protocol.Message.args(msg) do
@@ -1109,10 +1225,9 @@ defmodule Egghead.IRC.Connection do
   #
   # `LIST` with no args lists every running room. `LIST #foo,#bar` filters
   # to specific channels. We answer with a tiny envelope: 321 header,
-  # one 322 per channel (name, member-count placeholder, empty topic),
-  # 323 footer. Member counts are 0 for now because we don't track
-  # connected humans across channels yet — M4 brings the full Registry
-  # walk that makes this honest.
+  # one 322 per channel (name, member count from agent roster, topic),
+  # 323 footer. Connected humans aren't included in the count — that
+  # would need a per-conn-room reverse index in `Egghead.IRC.Registry`.
 
   defp handle_list(msg, state) do
     # ERC (and some other clients) send `LIST :` with an empty trailing
@@ -1168,8 +1283,8 @@ defmodule Egghead.IRC.Connection do
   # Member count for LIST. Counts agents currently joined to the room.
   # Many IRC clients (ERC, weechat) hide 0-user channels in list-mode
   # by default, treating them as inactive — reporting an honest count
-  # keeps active rooms visible. Connected humans aren't counted yet
-  # (M4 will index IRC connections by room via the Registry).
+  # keeps active rooms visible. Connected humans aren't counted —
+  # would need a per-conn-room reverse index in `Egghead.IRC.Registry`.
   defp room_member_count(room_id) do
     if Room.exists?(room_id) do
       case Room.get_state(room_id) do
@@ -1534,9 +1649,9 @@ defmodule Egghead.IRC.Connection do
             end
 
           :not_found ->
-            # M3 only invites agents. Inviting another connected human
-            # is M4 (needs to forward an INVITE message to their
-            # connection process via Egghead.IRC.Registry.whereis/1).
+            # Only agent invites are wired. Inviting another connected
+            # human would forward an INVITE message to their connection
+            # process via Egghead.IRC.Registry.whereis/1.
             reply(state, Numerics.no_such_nick(state.server, state.nick, nick))
         end
 
@@ -1569,11 +1684,12 @@ defmodule Egghead.IRC.Connection do
 
   # --- WHOIS ---
   #
-  # WHOIS for an agent populates 311 with model + disposition, 319 with
-  # current room memberships, and a few 320 RPL_WHOISSPECIAL lines for
-  # context-window utilization and capabilities. WHOIS for a connected
-  # human shows their connection prefix and joined channels (M4 will
-  # extend the latter when we track per-conn room memberships).
+  # WHOIS for an agent packs model + context % into 311's realname,
+  # tags + capabilities into 312's server-info, walks `Room.list_ids/0`
+  # for 319 channel membership, and emits 335 RPL_WHOISBOT to mark the
+  # nick as a bot in modern clients. WHOIS for a connected human
+  # returns 311 + 312 only — joined-channels for humans needs a
+  # per-conn-room reverse index in `Egghead.IRC.Registry`.
 
   defp handle_whois(msg, state) do
     case Protocol.Message.args(msg) do
@@ -1783,17 +1899,24 @@ defmodule Egghead.IRC.Connection do
 
   defp send_privmsg(socket, state, from_nick, room_id, content) do
     channel = display_channel(state, room_id)
+    tags = time_tag(state)
 
-    # IRC PRIVMSG is one line per message; agents (and the future
-    # streaming buffer) will need to split on `\n` upstream. For now
-    # we split here so multi-line user messages don't drop content.
+    # IRC PRIVMSG is one line per message; the streaming buffer splits
+    # on `\n\n` upstream, but multi-line user messages still need a
+    # split here so paragraphs don't drop content.
     content
     |> String.split(~r/\r?\n/)
     |> Enum.reject(&(&1 == ""))
     |> Enum.each(fn line ->
       send_line(
         socket,
-        Protocol.encode(prefix: from_nick, command: "PRIVMSG", params: [channel], trailing: line)
+        Protocol.encode(
+          tags: tags,
+          prefix: from_nick,
+          command: "PRIVMSG",
+          params: [channel],
+          trailing: line
+        )
       )
     end)
   end

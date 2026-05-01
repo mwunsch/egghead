@@ -5,10 +5,10 @@ defmodule Egghead.IRC.ServerIntegrationTest do
   connects via `:gen_tcp`, drives the protocol, and asserts on what
   comes back over the wire.
 
-  This is the M1 acceptance test — the protocol-only unit tests in
-  `protocol_test.exs` cover encoding/parsing, but only this test
-  proves the registration handshake, JOIN/PART, and PRIVMSG round-trip
-  through real sockets.
+  Acceptance test for the wire protocol layer — the unit tests in
+  `protocol_test.exs` cover encoding/parsing in isolation, but only
+  this test proves the registration handshake, JOIN/PART, and PRIVMSG
+  round-trip through real sockets.
   """
 
   use ExUnit.Case
@@ -159,7 +159,9 @@ defmodule Egghead.IRC.ServerIntegrationTest do
 
     test "PRIVMSG to channel is NOT echoed back to sender", ctx do
       # Sender's nick must match $USER for this to suppress (see
-      # `own_user_message?/2` in Connection — single-user M1 caveat).
+      # `own_user_message?/2` in Connection — single-user caveat:
+      # without per-conn user identity in transcripts, the only
+      # reliable "is this mine" signal is name-vs-nick).
       nick = System.get_env("USER") || "user"
       room_id = "no-echo-#{:erlang.unique_integer([:positive])}"
 

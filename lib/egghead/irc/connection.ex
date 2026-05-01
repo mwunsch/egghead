@@ -795,7 +795,7 @@ defmodule Egghead.IRC.Connection do
 
     Logger.info(
       "IRC: registered nick=#{n} caps=#{inspect(MapSet.to_list(state.caps))} " <>
-        "(history-replay-on-join #{if MapSet.member?(state.caps, "server-time"), do: "with @time tags", else: "with current timestamps"})"
+        "(history-replay-on-join: #{if MapSet.member?(state.caps, "server-time"), do: "yes", else: "no — needs server-time cap"})"
     )
 
     %{state | registered: true}
@@ -899,14 +899,14 @@ defmodule Egghead.IRC.Connection do
   end
 
   # Replay the last `@history_replay_count` transcript messages into the
-  # client's scrollback. Always fires when the room has a transcript —
-  # better to show a recap (even at current timestamps for clients
-  # that don't support server-time) than to silently drop history. If
-  # the client negotiated `server-time`, each message carries its
-  # original timestamp as an `@time` tag and IRC clients slot them
-  # into scrollback at the right historical moment.
+  # client's scrollback. Gated on `server-time` — without it, the
+  # replayed lines would render at the current timestamp, which is
+  # actively misleading for old content (looks like a duplicate flood
+  # of "live" messages from minutes-or-days ago). Clients without
+  # server-time can still pull history on demand via `CHATHISTORY` if
+  # they support that cap; clients without either get nothing on JOIN.
   defp send_history(socket, state, room_id) do
-    if Room.exists?(room_id) do
+    if MapSet.member?(state.caps, "server-time") and Room.exists?(room_id) do
       transcript =
         case Room.get_transcript(room_id) do
           msgs when is_list(msgs) -> msgs

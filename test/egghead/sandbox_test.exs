@@ -185,6 +185,40 @@ defmodule Egghead.SandboxTest do
       assert File.dir?(Path.join(ws, ".egghead-tmp"))
     end
 
+    test "positive: writing to /dev/null succeeds", %{workspace: ws} do
+      # Programs routinely discard output with `> /dev/null`. The sandbox must
+      # allow writes to /dev/null even though /dev is read-only by default.
+      profile = Profile.from_root(ws, net: false)
+
+      {:ok, port} =
+        Sandbox.spawn("/bin/sh", ["-c", "echo discard > /dev/null && echo ok"],
+          sandbox: profile,
+          cwd: ws
+        )
+
+      {code, buf} = collect(port)
+      Sandbox.cleanup(port)
+
+      assert code == 0, "exit #{code} — writing to /dev/null was denied: #{inspect(buf)}"
+      assert buf =~ "ok"
+    end
+
+    test "positive: reading from /dev/null returns empty", %{workspace: ws} do
+      profile = Profile.from_root(ws, net: false)
+
+      {:ok, port} =
+        Sandbox.spawn("/bin/sh", ["-c", "out=$(cat /dev/null); echo \"read:${#out}\""],
+          sandbox: profile,
+          cwd: ws
+        )
+
+      {code, buf} = collect(port)
+      Sandbox.cleanup(port)
+
+      assert code == 0, "exit #{code} — reading from /dev/null failed: #{inspect(buf)}"
+      assert buf =~ "read:0"
+    end
+
     test "negative: read outside workspace is denied", %{workspace: ws} do
       # /etc/hosts is readable by default, but not under our sandbox.
       profile = Profile.from_root(ws, net: false)

@@ -178,7 +178,10 @@ defmodule Egghead.Sandbox do
       # Specific /etc files that dyld / shell / libc tooling need.
       # Everything else under /etc remains denied.
       ~S|  (literal "/etc") (literal "/private/etc")|,
-      ~S|  (literal "/private/etc/localtime") (literal "/etc/localtime"))|
+      ~S|  (literal "/private/etc/localtime") (literal "/etc/localtime"))|,
+      # /dev/null is inside the read-allowed /dev subpath, but write access
+      # needs an explicit grant — programs routinely discard output to it.
+      ~S|(allow file-write* (literal "/dev/null"))|
     ]
 
     rw_paths =

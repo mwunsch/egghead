@@ -240,6 +240,22 @@ defmodule Egghead.IRC.Numerics do
     }
   end
 
+  @doc """
+  FAIL — IRCv3 standard replies extension. Used by CHATHISTORY (and
+  other modern verbs) to surface structured errors that older
+  numerics can't express. Format:
+
+      FAIL <command> <code> [<context>...] :<description>
+  """
+  def fail(server, command, code, context \\ [], description) do
+    %Message{
+      prefix: server,
+      command: "FAIL",
+      params: [command, code | context],
+      trailing: description
+    }
+  end
+
   @doc "221 RPL_UMODEIS — user's current mode flags (we expose none)."
   def user_mode_is(server, nick) do
     %Message{prefix: server, command: "221", params: [nick, "+"]}

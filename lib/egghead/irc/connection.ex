@@ -34,17 +34,28 @@ defmodule Egghead.IRC.Connection do
   # socket every minute.
   @ping_interval 90_000
 
-  # IRCv3 capabilities the server advertises. `server-time` lets clients
-  # render messages at the timestamp the server emits (not "now"),
-  # which is what makes scrollback replay on JOIN feel like real
-  # history rather than a flood of fresh messages.
-  @supported_caps ["server-time"]
+  # IRCv3 capabilities the server advertises.
+  #
+  # - `server-time` lets clients render messages at the timestamp the
+  #   server emits (not "now") — what makes scrollback feel real.
+  # - `batch` lets us wrap multi-message bursts (CHATHISTORY responses)
+  #   in a `BATCH +id chathistory ...` ... `BATCH -id` envelope so
+  #   clients distinguish history from live traffic.
+  # - `chathistory` advertises that the server understands the
+  #   `CHATHISTORY` verb (LATEST / BEFORE / AFTER / AROUND / BETWEEN).
+  @supported_caps ["server-time", "batch", "chathistory"]
 
   # How many recent transcript messages to replay into a client's
   # scrollback when they JOIN a channel — only sent if the client
   # negotiated `server-time`, otherwise the messages would render at
   # "now" and look like a confusing burst of duplicates.
   @history_replay_count 50
+
+  # Cap on the number of messages a single CHATHISTORY query may return.
+  # Advertised in ISUPPORT as `CHATHISTORY=<limit>`. Clients clamp
+  # their requests to this; we clamp again on the server side as
+  # defense in depth.
+  @chathistory_max 100
 
   # --- ThousandIsland.Handler callbacks ---
 
@@ -140,6 +151,8 @@ defmodule Egghead.IRC.Connection do
   end
 
   def handle_info(:keepalive_tick, {socket, state}) do
+    Logger.info("IRC: -> PING (#{state.nick || "*"})")
+
     send_line(
       socket,
       Protocol.encode(prefix: state.server, command: "PING", trailing: state.server)
@@ -471,36 +484,93 @@ defmodule Egghead.IRC.Connection do
 
   defp dispatch(%Protocol.Message{command: cmd} = msg, state) do
     case cmd do
-      "CAP" -> handle_cap(msg, state)
-      "PASS" -> handle_pass(msg, state)
-      "NICK" -> handle_nick(msg, state)
-      "USER" -> handle_user(msg, state)
-      "PING" -> handle_ping(msg, state)
-      "PONG" -> {:continue, %{state | awaiting_pong?: false}}
-      "QUIT" -> handle_quit(msg, state)
-      "JOIN" -> require_registered(state, fn -> handle_join(msg, state) end)
-      "PART" -> require_registered(state, fn -> handle_part(msg, state) end)
-      "PRIVMSG" -> require_registered(state, fn -> handle_privmsg(msg, state) end)
-      "NAMES" -> require_registered(state, fn -> handle_names(msg, state) end)
-      "MODE" -> require_registered(state, fn -> handle_mode(msg, state) end)
-      "LIST" -> require_registered(state, fn -> handle_list(msg, state) end)
+      "CAP" ->
+        handle_cap(msg, state)
+
+      "PASS" ->
+        handle_pass(msg, state)
+
+      "NICK" ->
+        handle_nick(msg, state)
+
+      "USER" ->
+        handle_user(msg, state)
+
+      "PING" ->
+        handle_ping(msg, state)
+
+      "PONG" ->
+        Logger.info("IRC: <- PONG (#{state.nick || "*"})")
+        {:continue, %{state | awaiting_pong?: false}}
+
+      "QUIT" ->
+        handle_quit(msg, state)
+
+      "JOIN" ->
+        require_registered(state, fn -> handle_join(msg, state) end)
+
+      "PART" ->
+        require_registered(state, fn -> handle_part(msg, state) end)
+
+      "PRIVMSG" ->
+        require_registered(state, fn -> handle_privmsg(msg, state) end)
+
+      "NAMES" ->
+        require_registered(state, fn -> handle_names(msg, state) end)
+
+      "MODE" ->
+        require_registered(state, fn -> handle_mode(msg, state) end)
+
+      "LIST" ->
+        require_registered(state, fn -> handle_list(msg, state) end)
+
       # Egghead verbs — TUI slash-command palette over the IRC wire.
       # ERC's `/handoff scout` sends `HANDOFF scout`; users get the
       # exact muscle memory they have in the TUI.
-      "HANDOFF" -> require_registered(state, fn -> handle_handoff(msg, state) end)
-      "SAVE" -> require_registered(state, fn -> handle_save(msg, state) end)
-      "CONTINUE" -> require_registered(state, fn -> handle_continue_cmd(msg, state) end)
-      "HALT" -> require_registered(state, fn -> handle_halt(msg, state) end)
-      "MUTE" -> require_registered(state, fn -> handle_mute(msg, state) end)
-      "UNMUTE" -> require_registered(state, fn -> handle_unmute(msg, state) end)
-      "CONTEXT" -> require_registered(state, fn -> handle_context(msg, state) end)
-      "KICK" -> require_registered(state, fn -> handle_kick(msg, state) end)
-      "INVITE" -> require_registered(state, fn -> handle_invite(msg, state) end)
-      "WHOIS" -> require_registered(state, fn -> handle_whois(msg, state) end)
-      "MOTD" -> require_registered(state, fn -> handle_motd(msg, state) end)
-      "VERSION" -> require_registered(state, fn -> handle_version(msg, state) end)
-      "TIME" -> require_registered(state, fn -> handle_time(msg, state) end)
-      _ -> handle_unknown(msg, state)
+      "HANDOFF" ->
+        require_registered(state, fn -> handle_handoff(msg, state) end)
+
+      "SAVE" ->
+        require_registered(state, fn -> handle_save(msg, state) end)
+
+      "CONTINUE" ->
+        require_registered(state, fn -> handle_continue_cmd(msg, state) end)
+
+      "HALT" ->
+        require_registered(state, fn -> handle_halt(msg, state) end)
+
+      "MUTE" ->
+        require_registered(state, fn -> handle_mute(msg, state) end)
+
+      "UNMUTE" ->
+        require_registered(state, fn -> handle_unmute(msg, state) end)
+
+      "CONTEXT" ->
+        require_registered(state, fn -> handle_context(msg, state) end)
+
+      "KICK" ->
+        require_registered(state, fn -> handle_kick(msg, state) end)
+
+      "INVITE" ->
+        require_registered(state, fn -> handle_invite(msg, state) end)
+
+      "WHOIS" ->
+        require_registered(state, fn -> handle_whois(msg, state) end)
+
+      "MOTD" ->
+        require_registered(state, fn -> handle_motd(msg, state) end)
+
+      "VERSION" ->
+        require_registered(state, fn -> handle_version(msg, state) end)
+
+      "TIME" ->
+        require_registered(state, fn -> handle_time(msg, state) end)
+
+      "CHATHISTORY" ->
+        require_registered(state, fn -> handle_chathistory(msg, state) end)
+
+      _ ->
+        handle_unknown(msg, state)
     end
   end
 
@@ -701,7 +771,8 @@ defmodule Egghead.IRC.Connection do
         "CHANTYPES=#",
         "PREFIX=(v)+",
         "NICKLEN=30",
-        "CASEMAPPING=ascii"
+        "CASEMAPPING=ascii",
+        "CHATHISTORY=#{@chathistory_max}"
       ])
     )
 
@@ -712,18 +783,19 @@ defmodule Egghead.IRC.Connection do
   # --- Liveness ---
 
   defp handle_ping(msg, state) do
+    # Inbound `PING [:]token` from the client — echo `:server PONG :token`
+    # back. Some IRC clients (ERC included) compare the trailing token
+    # to what they sent; packing the server name in middle params as
+    # well confuses the match. Keep the response shape minimal.
+    Logger.debug(fn -> "IRC: <- PING (#{state.nick || "*"})" end)
+
     pong =
       case Protocol.Message.args(msg) do
         [token | _] ->
-          %Protocol.Message{
-            prefix: state.server,
-            command: "PONG",
-            params: [state.server],
-            trailing: token
-          }
+          %Protocol.Message{prefix: state.server, command: "PONG", trailing: token}
 
         [] ->
-          %Protocol.Message{prefix: state.server, command: "PONG", params: [state.server]}
+          %Protocol.Message{prefix: state.server, command: "PONG", trailing: state.server}
       end
 
     reply(state, pong)
@@ -1841,6 +1913,256 @@ defmodule Egghead.IRC.Connection do
     )
 
     {:continue, state}
+  end
+
+  # --- CHATHISTORY ---
+  #
+  # IRCv3 chat history extension (https://ircv3.net/specs/extensions/chathistory).
+  # Five subcommands:
+  #
+  #   CHATHISTORY LATEST  <target> *                       <limit>
+  #   CHATHISTORY BEFORE  <target> timestamp=<iso>         <limit>
+  #   CHATHISTORY AFTER   <target> timestamp=<iso>         <limit>
+  #   CHATHISTORY AROUND  <target> timestamp=<iso>         <limit>
+  #   CHATHISTORY BETWEEN <target> timestamp=<iso> timestamp=<iso> <limit>
+  #
+  # Response: a `BATCH +<id> chathistory <target>` envelope wrapping
+  # one PRIVMSG per matching transcript message (each tagged with
+  # `@time=<iso>` and `@batch=<id>`), terminated by `BATCH -<id>`.
+  # Any failure surfaces as a `FAIL CHATHISTORY <code> :<desc>` line.
+
+  defp handle_chathistory(msg, state) do
+    case Protocol.Message.args(msg) do
+      [subcommand | rest] ->
+        do_chathistory(String.upcase(subcommand), rest, state)
+
+      [] ->
+        reply_chat_fail(state, "NEED_MORE_PARAMS", [], "CHATHISTORY needs a subcommand")
+    end
+
+    {:continue, state}
+  end
+
+  defp do_chathistory("LATEST", [target, _selector, limit_str | _], state) do
+    # Latest N messages overall, no filter.
+    chathistory_window(state, target, limit_str, fn _msg -> true end, :latest)
+  end
+
+  defp do_chathistory("BEFORE", [target, ts_arg, limit_str | _], state) do
+    case parse_chathistory_timestamp(ts_arg) do
+      {:ok, ts} ->
+        # Strictly earlier than `ts`; keep the latest matching N
+        # (closest to `ts` going backward in time).
+        chathistory_window(
+          state,
+          target,
+          limit_str,
+          fn msg -> DateTime.compare(msg.timestamp, ts) == :lt end,
+          :latest
+        )
+
+      :error ->
+        reply_chat_fail(state, "INVALID_PARAMS", [target], "BEFORE needs timestamp=<iso8601>")
+    end
+  end
+
+  defp do_chathistory("AFTER", [target, ts_arg, limit_str | _], state) do
+    case parse_chathistory_timestamp(ts_arg) do
+      {:ok, ts} ->
+        # Strictly after `ts`; keep the earliest matching N (closest
+        # to `ts` going forward in time).
+        chathistory_window(
+          state,
+          target,
+          limit_str,
+          fn msg -> DateTime.compare(msg.timestamp, ts) == :gt end,
+          :earliest
+        )
+
+      :error ->
+        reply_chat_fail(state, "INVALID_PARAMS", [target], "AFTER needs timestamp=<iso8601>")
+    end
+  end
+
+  defp do_chathistory("AROUND", [target, ts_arg, limit_str | _], state) do
+    case parse_chathistory_timestamp(ts_arg) do
+      {:ok, ts} ->
+        # Half before, half after — pivot on the timestamp.
+        limit = clamp_chathistory_limit(limit_str)
+        half = max(div(limit, 2), 1)
+
+        emit_chathistory(state, target, fn msgs ->
+          {before, after_} =
+            Enum.split_with(msgs, fn m -> DateTime.compare(m.timestamp, ts) != :gt end)
+
+          (Enum.take(before, -half) ++ Enum.take(after_, half))
+          |> Enum.take(limit)
+        end)
+
+      :error ->
+        reply_chat_fail(state, "INVALID_PARAMS", [target], "AROUND needs timestamp=<iso8601>")
+    end
+  end
+
+  defp do_chathistory("BETWEEN", [target, ts1_arg, ts2_arg, limit_str | _], state) do
+    with {:ok, ts1} <- parse_chathistory_timestamp(ts1_arg),
+         {:ok, ts2} <- parse_chathistory_timestamp(ts2_arg) do
+      {lo, hi} = if DateTime.compare(ts1, ts2) == :lt, do: {ts1, ts2}, else: {ts2, ts1}
+
+      chathistory_window(
+        state,
+        target,
+        limit_str,
+        fn msg ->
+          DateTime.compare(msg.timestamp, lo) != :lt and
+            DateTime.compare(msg.timestamp, hi) != :gt
+        end,
+        :earliest
+      )
+    else
+      _ ->
+        reply_chat_fail(
+          state,
+          "INVALID_PARAMS",
+          [target],
+          "BETWEEN needs two timestamp=<iso8601> args"
+        )
+    end
+  end
+
+  defp do_chathistory(sub, args, state) do
+    target = List.first(args, "*")
+
+    reply_chat_fail(
+      state,
+      "UNKNOWN_COMMAND",
+      [target],
+      "CHATHISTORY #{sub} is not supported"
+    )
+  end
+
+  # Filter the transcript and take a window. `which` is `:latest`
+  # (closest to "now" — Enum.take(-N)) or `:earliest` (closest to the
+  # filter's pivot — Enum.take(N)).
+  defp chathistory_window(state, target, limit_str, filter, which) do
+    limit = clamp_chathistory_limit(limit_str)
+
+    emit_chathistory(state, target, fn msgs ->
+      filtered = Enum.filter(msgs, filter)
+
+      case which do
+        :latest -> Enum.take(filtered, -limit)
+        :earliest -> Enum.take(filtered, limit)
+      end
+    end)
+  end
+
+  # Resolve target → room, fetch transcript, run selector, emit a
+  # BATCH-wrapped sequence of PRIVMSGs.
+  defp emit_chathistory(state, target, selector) do
+    case target_to_room_id(state, target) do
+      nil ->
+        reply_chat_fail(state, "INVALID_TARGET", [target], "Unknown channel")
+
+      room_id ->
+        if Room.exists?(room_id) do
+          transcript =
+            case Room.get_transcript(room_id) do
+              msgs when is_list(msgs) -> msgs
+              _ -> []
+            end
+
+          # /pass markers are a transcript convention, not chat content.
+          chat_only =
+            Enum.reject(transcript, fn m ->
+              m.sender.type == :agent and m.content == "/pass"
+            end)
+
+          selected = selector.(chat_only)
+          send_chathistory_batch(state, target, room_id, selected)
+        else
+          reply_chat_fail(state, "INVALID_TARGET", [target], "Channel does not exist")
+        end
+    end
+  end
+
+  defp send_chathistory_batch(state, target, room_id, msgs) do
+    socket = state.__socket__
+    batch_id = chathistory_batch_id()
+
+    # Open batch
+    send_line(
+      socket,
+      Protocol.encode(
+        prefix: state.server,
+        command: "BATCH",
+        params: ["+" <> batch_id, "chathistory", target]
+      )
+    )
+
+    Enum.each(msgs, fn msg -> send_chathistory_line(socket, state, room_id, batch_id, msg) end)
+
+    # Close batch
+    send_line(
+      socket,
+      Protocol.encode(prefix: state.server, command: "BATCH", params: ["-" <> batch_id])
+    )
+  end
+
+  defp send_chathistory_line(socket, state, room_id, batch_id, msg) do
+    nick =
+      case msg.sender.type do
+        :user -> msg.sender.name
+        :agent -> NickMap.id_to_nick(msg.sender.id)
+      end
+
+    channel = display_channel(state, room_id)
+
+    tags =
+      time_tag(state, msg.timestamp)
+      |> Map.put("batch", batch_id)
+
+    msg.content
+    |> String.split(~r/\r?\n/)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.each(fn line ->
+      send_line(
+        socket,
+        Protocol.encode(
+          tags: tags,
+          prefix: nick,
+          command: "PRIVMSG",
+          params: [channel],
+          trailing: line
+        )
+      )
+    end)
+  end
+
+  defp parse_chathistory_timestamp("timestamp=" <> iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _} -> {:ok, dt}
+      _ -> :error
+    end
+  end
+
+  defp parse_chathistory_timestamp(_), do: :error
+
+  defp clamp_chathistory_limit(str) when is_binary(str) do
+    case Integer.parse(str) do
+      {n, _} when n > 0 -> min(n, @chathistory_max)
+      _ -> @chathistory_max
+    end
+  end
+
+  defp clamp_chathistory_limit(_), do: @chathistory_max
+
+  defp chathistory_batch_id do
+    :crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false)
+  end
+
+  defp reply_chat_fail(state, code, context, description) do
+    reply(state, Numerics.fail(state.server, "CHATHISTORY", code, context, description))
   end
 
   # --- QUIT ---

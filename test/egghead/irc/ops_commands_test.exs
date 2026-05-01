@@ -1,8 +1,8 @@
-defmodule Egghead.IRC.M35ExtrasTest do
+defmodule Egghead.IRC.OpsCommandsTest do
   @moduledoc """
-  M3.5 — KICK, INVITE, WHOIS, MOTD, VERSION, TIME. The ops layer that
-  rounds out the IRC verb set so the server feels like a real IRC
-  network and not a toy.
+  KICK, INVITE, WHOIS, MOTD, VERSION, TIME — the ops layer that rounds
+  out the IRC verb set so the server feels like a real IRC network and
+  not a toy.
 
   KICK and INVITE map directly to Room.leave/2 and Room.join/2 — no
   channel-op gating since rooms are flat. WHOIS for an agent surfaces

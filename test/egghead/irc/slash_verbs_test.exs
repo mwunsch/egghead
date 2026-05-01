@@ -1,8 +1,8 @@
-defmodule Egghead.IRC.M3VerbsTest do
+defmodule Egghead.IRC.SlashVerbsTest do
   @moduledoc """
-  M3 — Egghead's slash-command palette as native IRC verbs (so ERC's
-  `/save`, `/handoff`, `/mute` etc. just work), plus the synthesized
-  channel topic and the `/context` snapshot command.
+  Egghead's slash-command palette exposed as native IRC verbs (so
+  ERC's `/save`, `/handoff`, `/mute` etc. just work), plus the
+  synthesized channel topic and the `/context` snapshot command.
 
   Most verbs accept either an explicit `#channel` first argument or
   default to the user's only joined channel. Both paths are covered.

@@ -61,7 +61,9 @@ defmodule Egghead.IRC.ServerIntegrationTest do
       sock = connect(ctx.port)
       send_line(sock, "PING :probe")
       [line] = recv_lines(sock, 1, 1000)
-      assert line =~ ~r/^:test\.irc\.local PONG test\.irc\.local :probe/
+      # Minimal PONG shape: server prefix + token in trailing.
+      # No middle params — some clients (ERC) match on trailing only.
+      assert line =~ ~r/^:test\.irc\.local PONG :probe/
 
       :gen_tcp.close(sock)
     end

@@ -1,9 +1,9 @@
-defmodule Egghead.IRC.M36DMTest do
+defmodule Egghead.IRC.DMTest do
   @moduledoc """
-  M3.6 — direct messages. `PRIVMSG <nick> :body` to an agent nick
-  becomes an ephemeral `Egghead.prompt/3` call; the response comes
-  back as a PRIVMSG from the agent to the asker. Human-to-human DMs
-  are still M4.
+  Direct messages. `PRIVMSG <nick> :body` to an agent nick becomes an
+  ephemeral `Egghead.prompt/3` call; the response comes back as a
+  PRIVMSG from the agent to the asker. Cross-connection human-to-human
+  DM routing isn't wired yet.
 
   Most assertions cover the dispatch path (unknown nick → 401, known
   human → "not wired" NOTICE, connection survives during the async
@@ -58,7 +58,7 @@ defmodule Egghead.IRC.M36DMTest do
       assert line =~ "401 asker ghost"
     end
 
-    test "PRIVMSG to another connected human nick returns the M4 not-wired NOTICE", %{
+    test "PRIVMSG to another connected human nick returns the not-wired NOTICE", %{
       sock: sock,
       port: port
     } do

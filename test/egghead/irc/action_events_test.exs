@@ -1,11 +1,12 @@
-defmodule Egghead.IRC.M2ActionsTest do
+defmodule Egghead.IRC.ActionEventsTest do
   @moduledoc """
-  M2 — agents *acting* over IRC. Each test drives the room directly via
-  PubSub broadcasts (the actual coordinator/agent path is too heavy to
-  spin up here) and asserts the IRC connection translates to the right
-  wire shape: CTCP ACTION for /pass and tool calls, NOTICE for system
-  notices and halt/continue, synthetic JOIN/PART for agent roster
-  changes, and paragraph-buffered PRIVMSG for mid-stream flushes.
+  Agent action events surfaced over IRC. Each test drives the room
+  directly via PubSub broadcasts (the actual coordinator/agent path is
+  too heavy to spin up here) and asserts the IRC connection translates
+  to the right wire shape: CTCP ACTION for /pass, tool calls, and tool
+  denials; NOTICE for system notices and halt/continue; synthetic
+  JOIN/PART for agent roster changes; paragraph-buffered PRIVMSG for
+  mid-stream flushes.
 
   Setup mirrors `server_integration_test.exs` — boot the IRC.Server on
   an OS-assigned port, connect via `:gen_tcp`, register, JOIN a room.

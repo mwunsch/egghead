@@ -876,21 +876,92 @@ defmodule Egghead.IRC.Connection do
     {:continue, state}
   end
 
-  defp do_privmsg(target, body, state) do
-    case target_to_room_id(state, target) do
-      nil ->
-        # DM to a nick — M1 just NOTICE-replies that DMs aren't wired yet.
-        # M3 will route to `Egghead.prompt/3`.
+  # PRIVMSG to a nick (not a channel) is a DM. For agent nicks we send
+  # an ephemeral 1:1 prompt via `Egghead.prompt/3` and return the
+  # response as a PRIVMSG from the agent back to the asker. The prompt
+  # is async (LLM call, multi-second) so we spawn a Task and let the
+  # connection keep handling other commands.
+  #
+  # Human-to-human DM (target nick is another connected IRC client)
+  # is M4 — needs a way to forward the PRIVMSG to that connection's
+  # pid. For now, we 401 unknown nicks and NOTICE for known humans.
+  defp do_dm(nick, body, state) do
+    cond do
+      match = Enum.find(safe_list_agents(), fn a -> NickMap.id_to_nick(a.id) == nick end) ->
+        spawn_dm_prompt(match.id, nick, body, state)
+
+      Registry.whereis(nick) != nil ->
+        # Connected human — M4 will route DMs across connections.
         send_line(
           state.__socket__,
           Protocol.encode(
             prefix: state.server,
             command: "NOTICE",
             params: [state.nick],
-            trailing: "DMs to agents are not wired yet (coming in M3)"
+            trailing: "Human-to-human DMs are not wired yet (M4)"
           )
         )
 
+      true ->
+        reply(state, Numerics.no_such_nick(state.server, state.nick, nick))
+    end
+  end
+
+  defp spawn_dm_prompt(agent_id, nick, body, state) do
+    socket = state.__socket__
+    asker = state.nick
+
+    Task.start(fn ->
+      case Egghead.prompt(agent_id, body) do
+        {:ok, %{text: text}} when is_binary(text) and text != "" ->
+          # PRIVMSG from the agent (prefix = agent's nick) to the asker
+          # — DMs in IRC are PRIVMSGs where the target is a nick rather
+          # than a channel. Split on newlines so multi-paragraph
+          # responses don't drop content.
+          text
+          |> String.split(~r/\r?\n/)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.each(fn line ->
+            send_line(
+              socket,
+              Protocol.encode(
+                prefix: nick,
+                command: "PRIVMSG",
+                params: [asker],
+                trailing: line
+              )
+            )
+          end)
+
+        {:ok, _} ->
+          send_line(
+            socket,
+            Protocol.encode(
+              prefix: nick,
+              command: "NOTICE",
+              params: [asker],
+              trailing: "(no response)"
+            )
+          )
+
+        {:error, reason} ->
+          send_line(
+            socket,
+            Protocol.encode(
+              prefix: nick,
+              command: "NOTICE",
+              params: [asker],
+              trailing: "DM failed: #{inspect(reason)}"
+            )
+          )
+      end
+    end)
+  end
+
+  defp do_privmsg(target, body, state) do
+    case target_to_room_id(state, target) do
+      nil ->
+        do_dm(target, body, state)
         {:continue, state}
 
       room_id ->

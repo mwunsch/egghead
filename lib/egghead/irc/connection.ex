@@ -21,7 +21,18 @@ defmodule Egghead.IRC.Connection do
 
   require Logger
 
-  alias Egghead.IRC.{Protocol, Numerics, NickMap, Registry, Server}
+  alias Egghead.IRC.{
+    Protocol,
+    Numerics,
+    NickMap,
+    Registry,
+    Server,
+    StreamBuffer,
+    Format,
+    Channels,
+    ChatHistory
+  }
+
   alias Egghead.Chat.Room
 
   @pubsub Egghead.PubSub
@@ -55,7 +66,7 @@ defmodule Egghead.IRC.Connection do
   # Advertised in ISUPPORT as `CHATHISTORY=<limit>`. Clients clamp
   # their requests to this; we clamp again on the server side as
   # defense in depth.
-  @chathistory_max 100
+  @chathistory_max ChatHistory.max()
 
   # --- ThousandIsland.Handler callbacks ---
 
@@ -249,7 +260,8 @@ defmodule Egghead.IRC.Connection do
   # goes out as a fresh PRIVMSG.
   defp handle_room_event({:agent_message, msg}, room_id, socket, state) do
     nick = NickMap.id_to_nick(msg.sender.id)
-    {tail, state} = take_stream_tail(state, room_id, msg.sender.id, msg.content)
+    {tail, streams} = StreamBuffer.take_tail(state.streams, room_id, msg.sender.id, msg.content)
+    state = %{state | streams: streams}
 
     if tail != "" do
       send_privmsg(socket, state, nick, room_id, tail)
@@ -264,7 +276,8 @@ defmodule Egghead.IRC.Connection do
   # final :agent_message.
   defp handle_room_event({:agent_streaming, _room_id, agent_id, delta}, room_id, socket, state) do
     nick = NickMap.id_to_nick(agent_id)
-    {to_emit, state} = absorb_stream_chunk(state, room_id, agent_id, delta)
+    {to_emit, streams} = StreamBuffer.absorb(state.streams, room_id, agent_id, delta)
+    state = %{state | streams: streams}
 
     if to_emit != "" do
       send_privmsg(socket, state, nick, room_id, to_emit)
@@ -293,7 +306,7 @@ defmodule Egghead.IRC.Connection do
          state
        ) do
     nick = NickMap.id_to_nick(agent_id)
-    summary = "uses #{name}#{format_tool_input(input)}"
+    summary = "uses #{name}#{Format.tool_input(input)}"
     send_action(socket, state, nick, room_id, summary)
     state
   end
@@ -380,98 +393,6 @@ defmodule Egghead.IRC.Connection do
   # agent_mentions (coordinator-internal), reactivate, budget_exhausted,
   # tool_output (verbose, low signal).
   defp handle_room_event(_other, _room_id, _socket, state), do: state
-
-  # --- Streaming buffer ---
-
-  # Append `delta` to the per-(room, agent) buffer and return any
-  # complete paragraphs ready to flush. Keeps the trailing partial
-  # buffered until either more text completes a paragraph or the final
-  # :agent_message arrives.
-  defp absorb_stream_chunk(state, room_id, agent_id, delta) do
-    key = {room_id, agent_id}
-    buffer = (state.streams[key] || %{buffer: "", emitted: 0}).buffer
-    combined = buffer <> delta
-
-    case last_paragraph_break(combined) do
-      nil ->
-        new_streams =
-          Map.put(state.streams, key, %{buffer: combined, emitted: stream_emitted(state, key)})
-
-        {"", %{state | streams: new_streams}}
-
-      cut ->
-        to_emit = binary_part(combined, 0, cut)
-        rest = binary_part(combined, cut + 2, byte_size(combined) - cut - 2)
-
-        emitted = stream_emitted(state, key) + cut + 2
-        new_streams = Map.put(state.streams, key, %{buffer: rest, emitted: emitted})
-        {to_emit, %{state | streams: new_streams}}
-    end
-  end
-
-  # On final :agent_message, return any text the streaming path didn't
-  # emit and clear the per-(room, agent) state. Idempotent — if there
-  # was no streaming for this turn, returns the entire content.
-  defp take_stream_tail(state, room_id, agent_id, full_content) do
-    key = {room_id, agent_id}
-
-    case Map.get(state.streams, key) do
-      nil ->
-        {full_content, state}
-
-      %{emitted: emitted} ->
-        tail =
-          if emitted < byte_size(full_content) do
-            binary_part(full_content, emitted, byte_size(full_content) - emitted)
-          else
-            ""
-          end
-
-        {tail, %{state | streams: Map.delete(state.streams, key)}}
-    end
-  end
-
-  defp stream_emitted(state, key) do
-    case Map.get(state.streams, key) do
-      nil -> 0
-      %{emitted: e} -> e
-    end
-  end
-
-  # Find the *last* "\n\n" boundary in a buffer — that's how far we can
-  # safely flush as completed paragraphs. Returns the byte offset of the
-  # first `\n` of the boundary, or nil if none found.
-  defp last_paragraph_break(text) do
-    case :binary.matches(text, "\n\n") do
-      [] -> nil
-      matches -> matches |> List.last() |> elem(0)
-    end
-  end
-
-  # --- Tool call formatting ---
-
-  # Mirror the TUI: "uses TOOL key=value key=value" with values
-  # truncated to keep lines short. Empty input → just the tool name.
-  defp format_tool_input(nil), do: ""
-  defp format_tool_input(input) when input == %{}, do: ""
-
-  defp format_tool_input(input) when is_map(input) do
-    pairs =
-      input
-      |> Enum.map(fn {k, v} -> "#{k}=#{truncate_tool_value(v)}" end)
-      |> Enum.join(" ")
-
-    if pairs == "", do: "", else: " " <> pairs
-  end
-
-  defp format_tool_input(_other), do: ""
-
-  defp truncate_tool_value(v) when is_binary(v) do
-    cleaned = v |> String.replace(~r/\s+/, " ") |> String.trim()
-    if String.length(cleaned) > 40, do: String.slice(cleaned, 0, 37) <> "...", else: cleaned
-  end
-
-  defp truncate_tool_value(v), do: v |> inspect() |> truncate_tool_value()
 
   # --- Wire helpers for actions / notices ---
 
@@ -893,7 +814,7 @@ defmodule Egghead.IRC.Connection do
     # echo for this connection (JOIN, NAMES, PRIVMSG, actions) uses
     # the channel name the user actually typed. Strict clients (ERC)
     # only open a buffer when the JOIN echo matches the request.
-    {canonical_channel, alias_name} = resolve_alias(channel)
+    {canonical_channel, alias_name} = Channels.resolve_alias(channel)
 
     case NickMap.channel_to_room(canonical_channel) do
       nil ->
@@ -918,7 +839,7 @@ defmodule Egghead.IRC.Connection do
           state =
             state
             |> subscribe_room(room_id)
-            |> put_alias(room_id, alias_name)
+            |> Map.update!(:aliases, &Channels.put_alias(&1, room_id, alias_name))
 
           display = display_channel(state, room_id)
 
@@ -1034,48 +955,10 @@ defmodule Egghead.IRC.Connection do
     "#{n} #{plural}"
   end
 
-  # Returns `{canonical_channel, alias_or_nil}`. `#default` becomes
-  # `{"#chat-...", "#default"}`; everything else is `{channel, nil}`.
-  defp resolve_alias("#default") do
-    case Egghead.default_room() do
-      nil -> {"#default", nil}
-      room_id -> {NickMap.room_to_channel(room_id), "#default"}
-    end
-  end
+  defp display_channel(state, room_id), do: Channels.display_channel(state.aliases, room_id)
 
-  defp resolve_alias(other), do: {other, nil}
-
-  defp put_alias(state, _room_id, nil), do: state
-
-  defp put_alias(state, room_id, alias_name) do
-    %{state | aliases: Map.put(state.aliases, room_id, alias_name)}
-  end
-
-  # Channel name to use when this connection emits anything for `room_id`
-  # back over the wire. Falls through to the canonical name when no
-  # alias is set.
-  defp display_channel(state, room_id) do
-    Map.get(state.aliases, room_id) || NickMap.room_to_channel(room_id)
-  end
-
-  # Reverse lookup for inbound traffic. Three layers:
-  # 1. Per-connection alias (set on JOIN #default → that room id)
-  # 2. Global `#default` alias (so KICK/INVITE work even without a JOIN)
-  # 3. Canonical: strip `#`/`&`/etc.
-  # Returns the room id, or nil if the channel name doesn't look like a
-  # channel at all.
-  defp target_to_room_id(state, channel) do
-    cond do
-      match = Enum.find(state.aliases, fn {_room_id, alias_name} -> alias_name == channel end) ->
-        elem(match, 0)
-
-      channel == "#default" ->
-        Egghead.default_room() || NickMap.channel_to_room(channel)
-
-      true ->
-        NickMap.channel_to_room(channel)
-    end
-  end
+  defp target_to_room_id(state, channel),
+    do: Channels.target_to_room_id(state.aliases, channel)
 
   # Spawn a forwarder Task that subscribes to the room's PubSub topic
   # and re-sends each message tagged with the room_id. Linked to the
@@ -1115,15 +998,9 @@ defmodule Egghead.IRC.Connection do
       state
       | channels: MapSet.delete(state.channels, room_id),
         routers: Map.delete(state.routers, room_id),
-        streams: drop_room_streams(state.streams, room_id),
+        streams: StreamBuffer.drop_room(state.streams, room_id),
         aliases: Map.delete(state.aliases, room_id)
     }
-  end
-
-  defp drop_room_streams(streams, room_id) do
-    streams
-    |> Enum.reject(fn {{rid, _agent_id}, _} -> rid == room_id end)
-    |> Map.new()
   end
 
   defp handle_part(msg, state) do
@@ -1559,32 +1436,13 @@ defmodule Egghead.IRC.Connection do
             ctx = agent.current_context_tokens || 0
             window = agent.context_window || 0
             pct = if window > 0, do: round(ctx / window * 100), else: 0
-            bar = context_bar(pct)
+            bar = Format.context_bar(pct)
 
             "  #{String.pad_trailing(nick, max_nick)}  #{bar}  #{String.pad_leading("#{pct}%", 4)}  " <>
-              "(#{format_int(ctx)} / #{format_int(window)})"
+              "(#{Format.int(ctx)} / #{Format.int(window)})"
           end)
     end
   end
-
-  defp context_bar(pct) do
-    width = 16
-    filled = round(pct / 100 * width)
-    String.duplicate("▓", filled) <> String.duplicate("░", width - filled)
-  end
-
-  defp format_int(n) when is_integer(n) do
-    n
-    |> Integer.to_string()
-    |> String.reverse()
-    |> String.graphemes()
-    |> Enum.chunk_every(3)
-    |> Enum.map(&Enum.join/1)
-    |> Enum.join(",")
-    |> String.reverse()
-  end
-
-  defp format_int(_), do: "?"
 
   # --- Verb argument resolution ---
 
@@ -1983,252 +1841,22 @@ defmodule Egghead.IRC.Connection do
 
   # --- CHATHISTORY ---
   #
-  # IRCv3 chat history extension (https://ircv3.net/specs/extensions/chathistory).
-  # Five subcommands:
-  #
-  #   CHATHISTORY LATEST  <target> *                       <limit>
-  #   CHATHISTORY BEFORE  <target> timestamp=<iso>         <limit>
-  #   CHATHISTORY AFTER   <target> timestamp=<iso>         <limit>
-  #   CHATHISTORY AROUND  <target> timestamp=<iso>         <limit>
-  #   CHATHISTORY BETWEEN <target> timestamp=<iso> timestamp=<iso> <limit>
-  #
-  # Response: a `BATCH +<id> chathistory <target>` envelope wrapping
-  # one PRIVMSG per matching transcript message (each tagged with
-  # `@time=<iso>` and `@batch=<id>`), terminated by `BATCH -<id>`.
-  # Any failure surfaces as a `FAIL CHATHISTORY <code> :<desc>` line.
+  # IRCv3 chat history extension. The subprotocol lives in
+  # `Egghead.IRC.ChatHistory`; this clause builds the small context
+  # bundle (server name, alias map, emit + time_tag callbacks) and
+  # delegates.
 
   defp handle_chathistory(msg, state) do
-    case Protocol.Message.args(msg) do
-      [subcommand | rest] ->
-        do_chathistory(String.upcase(subcommand), rest, state)
+    ctx = %{
+      server: state.server,
+      nick: state.nick,
+      aliases: state.aliases,
+      emit: fn iodata -> send_line(state.__socket__, iodata) end,
+      time_tag: &time_tag(state, &1)
+    }
 
-      [] ->
-        reply_chat_fail(state, "NEED_MORE_PARAMS", [], "CHATHISTORY needs a subcommand")
-    end
-
+    ChatHistory.handle(msg, ctx)
     {:continue, state}
-  end
-
-  defp do_chathistory("LATEST", [target, _selector, limit_str | _], state) do
-    # Latest N messages overall, no filter.
-    chathistory_window(state, target, limit_str, fn _msg -> true end, :latest)
-  end
-
-  defp do_chathistory("BEFORE", [target, ts_arg, limit_str | _], state) do
-    case parse_chathistory_timestamp(ts_arg) do
-      {:ok, ts} ->
-        # Strictly earlier than `ts`; keep the latest matching N
-        # (closest to `ts` going backward in time).
-        chathistory_window(
-          state,
-          target,
-          limit_str,
-          fn msg -> DateTime.compare(msg.timestamp, ts) == :lt end,
-          :latest
-        )
-
-      :error ->
-        reply_chat_fail(state, "INVALID_PARAMS", [target], "BEFORE needs timestamp=<iso8601>")
-    end
-  end
-
-  defp do_chathistory("AFTER", [target, ts_arg, limit_str | _], state) do
-    case parse_chathistory_timestamp(ts_arg) do
-      {:ok, ts} ->
-        # Strictly after `ts`; keep the earliest matching N (closest
-        # to `ts` going forward in time).
-        chathistory_window(
-          state,
-          target,
-          limit_str,
-          fn msg -> DateTime.compare(msg.timestamp, ts) == :gt end,
-          :earliest
-        )
-
-      :error ->
-        reply_chat_fail(state, "INVALID_PARAMS", [target], "AFTER needs timestamp=<iso8601>")
-    end
-  end
-
-  defp do_chathistory("AROUND", [target, ts_arg, limit_str | _], state) do
-    case parse_chathistory_timestamp(ts_arg) do
-      {:ok, ts} ->
-        # Half before, half after — pivot on the timestamp.
-        limit = clamp_chathistory_limit(limit_str)
-        half = max(div(limit, 2), 1)
-
-        emit_chathistory(state, target, fn msgs ->
-          {before, after_} =
-            Enum.split_with(msgs, fn m -> DateTime.compare(m.timestamp, ts) != :gt end)
-
-          (Enum.take(before, -half) ++ Enum.take(after_, half))
-          |> Enum.take(limit)
-        end)
-
-      :error ->
-        reply_chat_fail(state, "INVALID_PARAMS", [target], "AROUND needs timestamp=<iso8601>")
-    end
-  end
-
-  defp do_chathistory("BETWEEN", [target, ts1_arg, ts2_arg, limit_str | _], state) do
-    with {:ok, ts1} <- parse_chathistory_timestamp(ts1_arg),
-         {:ok, ts2} <- parse_chathistory_timestamp(ts2_arg) do
-      {lo, hi} = if DateTime.compare(ts1, ts2) == :lt, do: {ts1, ts2}, else: {ts2, ts1}
-
-      chathistory_window(
-        state,
-        target,
-        limit_str,
-        fn msg ->
-          DateTime.compare(msg.timestamp, lo) != :lt and
-            DateTime.compare(msg.timestamp, hi) != :gt
-        end,
-        :earliest
-      )
-    else
-      _ ->
-        reply_chat_fail(
-          state,
-          "INVALID_PARAMS",
-          [target],
-          "BETWEEN needs two timestamp=<iso8601> args"
-        )
-    end
-  end
-
-  defp do_chathistory(sub, args, state) do
-    target = List.first(args, "*")
-
-    reply_chat_fail(
-      state,
-      "UNKNOWN_COMMAND",
-      [target],
-      "CHATHISTORY #{sub} is not supported"
-    )
-  end
-
-  # Filter the transcript and take a window. `which` is `:latest`
-  # (closest to "now" — Enum.take(-N)) or `:earliest` (closest to the
-  # filter's pivot — Enum.take(N)).
-  defp chathistory_window(state, target, limit_str, filter, which) do
-    limit = clamp_chathistory_limit(limit_str)
-
-    emit_chathistory(state, target, fn msgs ->
-      filtered = Enum.filter(msgs, filter)
-
-      case which do
-        :latest -> Enum.take(filtered, -limit)
-        :earliest -> Enum.take(filtered, limit)
-      end
-    end)
-  end
-
-  # Resolve target → room, fetch transcript, run selector, emit a
-  # BATCH-wrapped sequence of PRIVMSGs.
-  defp emit_chathistory(state, target, selector) do
-    case target_to_room_id(state, target) do
-      nil ->
-        reply_chat_fail(state, "INVALID_TARGET", [target], "Unknown channel")
-
-      room_id ->
-        if Room.exists?(room_id) do
-          transcript =
-            case Room.get_transcript(room_id) do
-              msgs when is_list(msgs) -> msgs
-              _ -> []
-            end
-
-          # /pass markers are a transcript convention, not chat content.
-          chat_only =
-            Enum.reject(transcript, fn m ->
-              m.sender.type == :agent and m.content == "/pass"
-            end)
-
-          selected = selector.(chat_only)
-          send_chathistory_batch(state, target, room_id, selected)
-        else
-          reply_chat_fail(state, "INVALID_TARGET", [target], "Channel does not exist")
-        end
-    end
-  end
-
-  defp send_chathistory_batch(state, target, room_id, msgs) do
-    socket = state.__socket__
-    batch_id = chathistory_batch_id()
-
-    # Open batch
-    send_line(
-      socket,
-      Protocol.encode(
-        prefix: state.server,
-        command: "BATCH",
-        params: ["+" <> batch_id, "chathistory", target]
-      )
-    )
-
-    Enum.each(msgs, fn msg -> send_chathistory_line(socket, state, room_id, batch_id, msg) end)
-
-    # Close batch
-    send_line(
-      socket,
-      Protocol.encode(prefix: state.server, command: "BATCH", params: ["-" <> batch_id])
-    )
-  end
-
-  defp send_chathistory_line(socket, state, room_id, batch_id, msg) do
-    nick =
-      case msg.sender.type do
-        :user -> msg.sender.name
-        :agent -> NickMap.id_to_nick(msg.sender.id)
-      end
-
-    channel = display_channel(state, room_id)
-
-    tags =
-      time_tag(state, msg.timestamp)
-      |> Map.put("batch", batch_id)
-
-    msg.content
-    |> String.split(~r/\r?\n/)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.each(fn line ->
-      send_line(
-        socket,
-        Protocol.encode(
-          tags: tags,
-          prefix: nick,
-          command: "PRIVMSG",
-          params: [channel],
-          trailing: line
-        )
-      )
-    end)
-  end
-
-  defp parse_chathistory_timestamp("timestamp=" <> iso) do
-    case DateTime.from_iso8601(iso) do
-      {:ok, dt, _} -> {:ok, dt}
-      _ -> :error
-    end
-  end
-
-  defp parse_chathistory_timestamp(_), do: :error
-
-  defp clamp_chathistory_limit(str) when is_binary(str) do
-    case Integer.parse(str) do
-      {n, _} when n > 0 -> min(n, @chathistory_max)
-      _ -> @chathistory_max
-    end
-  end
-
-  defp clamp_chathistory_limit(_), do: @chathistory_max
-
-  defp chathistory_batch_id do
-    :crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false)
-  end
-
-  defp reply_chat_fail(state, code, context, description) do
-    reply(state, Numerics.fail(state.server, "CHATHISTORY", code, context, description))
   end
 
   # --- QUIT ---

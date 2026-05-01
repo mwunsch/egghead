@@ -103,11 +103,14 @@ defmodule Egghead.IRC.Connection do
       # references a different channel name than the request. Map shape:
       # `%{room_id => "#alias-they-typed"}`.
       aliases: %{},
-      # Server-initiated keepalive state. `awaiting_pong?` is set when
-      # we send a PING and cleared when the matching PONG arrives.
+      # Server-initiated keepalive state. `awaiting_pong_token` holds
+      # the unique token for the most recent PING we sent (nil when no
+      # PING is outstanding). `last_ping_sent_at` is the monotonic ms
+      # so we can report round-trip latency on the matching PONG.
       # If the next tick fires while still awaiting, the connection
       # is dead — close it.
-      awaiting_pong?: false,
+      awaiting_pong_token: nil,
+      last_ping_sent_at: nil,
       # IRCv3 capabilities the client has negotiated. Determines
       # whether outbound messages get `@time=` tags and whether JOIN
       # replays scrollback from the room transcript.
@@ -159,22 +162,31 @@ defmodule Egghead.IRC.Connection do
   # Keepalive tick. If the client never PONG'd back the previous PING,
   # they're dead — close the socket. Otherwise send a fresh PING and
   # re-arm.
-  def handle_info(:keepalive_tick, {socket, %{awaiting_pong?: true} = state}) do
-    Logger.info("IRC: dropping #{state.nick || "*"} — no PONG within #{@ping_interval}ms")
+  def handle_info(:keepalive_tick, {socket, %{awaiting_pong_token: tok} = state})
+      when is_binary(tok) do
+    waited = monotonic_ms() - (state.last_ping_sent_at || 0)
+
+    Logger.info(
+      "IRC: dropping #{state.nick || "*"} — no PONG for token=#{tok} within #{waited}ms"
+    )
+
     cleanup(state)
     {:stop, :normal, {socket, state}}
   end
 
   def handle_info(:keepalive_tick, {socket, state}) do
-    Logger.info("IRC: -> PING (#{state.nick || "*"})")
+    token = fresh_ping_token()
+
+    Logger.debug(fn -> "IRC: -> PING #{state.nick || "*"} token=#{token}" end)
 
     send_line(
       socket,
-      Protocol.encode(prefix: state.server, command: "PING", trailing: state.server)
+      Protocol.encode(prefix: state.server, command: "PING", trailing: token)
     )
 
     schedule_keepalive()
-    {:noreply, {socket, %{state | awaiting_pong?: true}}}
+
+    {:noreply, {socket, %{state | awaiting_pong_token: token, last_ping_sent_at: monotonic_ms()}}}
   end
 
   def handle_info(_other, {socket, state}) do
@@ -183,6 +195,37 @@ defmodule Egghead.IRC.Connection do
 
   defp schedule_keepalive do
     Process.send_after(self(), :keepalive_tick, @ping_interval)
+  end
+
+  # Short, unique tokens for server-initiated PINGs so we can match
+  # incoming PONGs to the correct outstanding request and report
+  # round-trip latency.
+  defp fresh_ping_token do
+    :crypto.strong_rand_bytes(4) |> Base.url_encode64(padding: false)
+  end
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
+
+  # Inbound PONG: log the round trip if we have a matching outstanding
+  # token, otherwise note the unsolicited PONG (e.g. client responding
+  # to its own clock or to a PING from a previous connection).
+  defp handle_pong_reply(msg, state) do
+    received = Protocol.Message.args(msg) |> List.first()
+    nick = state.nick || "*"
+
+    Logger.debug(fn ->
+      cond do
+        is_nil(state.awaiting_pong_token) ->
+          "IRC: <- PONG #{nick} token=#{inspect(received)} (unsolicited)"
+
+        received == state.awaiting_pong_token ->
+          rtt = monotonic_ms() - (state.last_ping_sent_at || 0)
+          "IRC: <- PONG #{nick} token=#{received} rtt=#{rtt}ms"
+
+        true ->
+          "IRC: <- PONG #{nick} token=#{inspect(received)} (expected #{state.awaiting_pong_token})"
+      end
+    end)
   end
 
   # --- Room event dispatch ---
@@ -515,8 +558,8 @@ defmodule Egghead.IRC.Connection do
         handle_ping(msg, state)
 
       "PONG" ->
-        Logger.info("IRC: <- PONG (#{state.nick || "*"})")
-        {:continue, %{state | awaiting_pong?: false}}
+        handle_pong_reply(msg, state)
+        {:continue, %{state | awaiting_pong_token: nil, last_ping_sent_at: nil}}
 
       "QUIT" ->
         handle_quit(msg, state)
@@ -808,18 +851,20 @@ defmodule Egghead.IRC.Connection do
     # back. Some IRC clients (ERC included) compare the trailing token
     # to what they sent; packing the server name in middle params as
     # well confuses the match. Keep the response shape minimal.
-    Logger.debug(fn -> "IRC: <- PING (#{state.nick || "*"})" end)
+    token = Protocol.Message.args(msg) |> List.first()
+    nick = state.nick || "*"
 
-    pong =
-      case Protocol.Message.args(msg) do
-        [token | _] ->
-          %Protocol.Message{prefix: state.server, command: "PONG", trailing: token}
+    Logger.debug(fn -> "IRC: <- PING #{nick} token=#{inspect(token)}" end)
 
-        [] ->
-          %Protocol.Message{prefix: state.server, command: "PONG", trailing: state.server}
-      end
+    response_token = token || state.server
+    Logger.debug(fn -> "IRC: -> PONG #{nick} token=#{response_token}" end)
 
-    reply(state, pong)
+    reply(state, %Protocol.Message{
+      prefix: state.server,
+      command: "PONG",
+      trailing: response_token
+    })
+
     {:continue, state}
   end
 

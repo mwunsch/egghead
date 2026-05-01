@@ -60,8 +60,16 @@ defmodule Egghead.IRC.Connection do
   # --- ThousandIsland.Handler callbacks ---
 
   @impl ThousandIsland.Handler
-  def handle_connection(_socket, _state) do
+  def handle_connection(socket, _state) do
     cfg = Server.config()
+
+    peer =
+      case ThousandIsland.Socket.peername(socket) do
+        {:ok, {ip, port}} -> "#{:inet.ntoa(ip)}:#{port}"
+        _ -> "?"
+      end
+
+    Logger.info("IRC: connection opened from #{peer}")
 
     state = %{
       server: cfg.hostname,
@@ -125,6 +133,13 @@ defmodule Egghead.IRC.Connection do
   @impl ThousandIsland.Handler
   def handle_close(_socket, state) do
     Logger.info("IRC: connection closed (nick=#{state.nick || "*"})")
+    cleanup(state)
+    :ok
+  end
+
+  @impl ThousandIsland.Handler
+  def handle_error(reason, _socket, state) do
+    Logger.info("IRC: connection error (nick=#{state.nick || "*"}, reason=#{inspect(reason)})")
     cleanup(state)
     :ok
   end
@@ -777,6 +792,12 @@ defmodule Egghead.IRC.Connection do
     )
 
     schedule_keepalive()
+
+    Logger.info(
+      "IRC: registered nick=#{n} caps=#{inspect(MapSet.to_list(state.caps))} " <>
+        "(history-replay-on-join #{if MapSet.member?(state.caps, "server-time"), do: "with @time tags", else: "with current timestamps"})"
+    )
+
     %{state | registered: true}
   end
 
@@ -878,14 +899,14 @@ defmodule Egghead.IRC.Connection do
   end
 
   # Replay the last `@history_replay_count` transcript messages into the
-  # client's scrollback. Only fires if the client negotiated the
-  # `server-time` IRCv3 cap — without it, every replayed message
-  # would render at "now" and look like a duplicate flood. With it,
-  # each message carries its original timestamp as an `@time` tag and
-  # IRC clients (ERC, irssi, weechat) slot them into scrollback at
-  # the right historical moment.
+  # client's scrollback. Always fires when the room has a transcript —
+  # better to show a recap (even at current timestamps for clients
+  # that don't support server-time) than to silently drop history. If
+  # the client negotiated `server-time`, each message carries its
+  # original timestamp as an `@time` tag and IRC clients slot them
+  # into scrollback at the right historical moment.
   defp send_history(socket, state, room_id) do
-    if MapSet.member?(state.caps, "server-time") and Room.exists?(room_id) do
+    if Room.exists?(room_id) do
       transcript =
         case Room.get_transcript(room_id) do
           msgs when is_list(msgs) -> msgs

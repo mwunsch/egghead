@@ -179,12 +179,18 @@ defmodule Egghead.IRC.ServerTimeTest do
       :gen_tcp.close(sock)
     end
 
-    test "JOIN without server-time does NOT replay scrollback", %{port: port} do
+    test "JOIN without server-time replays scrollback as fresh PRIVMSGs (no @time tags)", %{
+      port: port
+    } do
+      # When the client didn't negotiate server-time, replayed messages
+      # show up at the current timestamp — they're a recap rather than
+      # accurate history. Better than silently dropping the transcript;
+      # the user still sees what was said, just without the timing.
       room_id = "noscroll-#{:erlang.unique_integer([:positive])}"
       {:ok, _} = Room.start_link(id: room_id)
       on_exit(fn -> if Room.exists?(room_id), do: Room.stop(room_id) end)
 
-      Room.send_message(room_id, "would-be replayed")
+      Room.send_message(room_id, "recapped line")
 
       sock = open_plain(port, "noreplay")
       send_line(sock, "JOIN ##{room_id}")
@@ -192,8 +198,13 @@ defmodule Egghead.IRC.ServerTimeTest do
       :timer.sleep(150)
       lines = drain_all(sock, 500)
 
-      refute Enum.any?(lines, &String.contains?(&1, "would-be replayed")),
-             "scrollback must not appear when server-time wasn't negotiated"
+      assert Enum.any?(lines, &String.contains?(&1, "recapped line")),
+             "scrollback should still replay (untagged) for clients without server-time"
+
+      # No @time= tags on the replayed lines.
+      replay_lines = Enum.filter(lines, &String.contains?(&1, "recapped line"))
+      refute Enum.any?(replay_lines, &String.starts_with?(&1, "@time=")),
+             "lines must not carry @time tag without server-time cap"
 
       :gen_tcp.close(sock)
     end

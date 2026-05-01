@@ -30,12 +30,15 @@ defmodule Egghead.IRC.Connection do
     StreamBuffer,
     Format,
     Channels,
-    ChatHistory
+    ChatHistory,
+    Forwarder,
+    Agents,
+    Whois,
+    Wire,
+    Verbs
   }
 
   alias Egghead.Chat.Room
-
-  @pubsub Egghead.PubSub
 
   # Server-side keepalive. Every `@ping_interval` ms we send a fresh
   # PING to the client; the client must PONG back before the *next*
@@ -396,63 +399,24 @@ defmodule Egghead.IRC.Connection do
 
   # --- Wire helpers for actions / notices ---
 
-  # Wraps text in CTCP ACTION delimiters (\x01ACTION ...\x01). Most IRC
-  # clients render these as `* nick text` (the `/me` line style).
-  defp send_action(socket, state, nick, room_id, text) do
-    send_line(
-      socket,
-      Protocol.encode(
-        tags: time_tag(state),
-        prefix: nick,
-        command: "PRIVMSG",
-        params: [display_channel(state, room_id)],
-        trailing: <<1>> <> "ACTION " <> text <> <<1>>
-      )
-    )
+  # Channel-aware wrappers around `Wire` — these resolve the per-conn
+  # display alias and current server-time tag set, then delegate the
+  # actual line shaping. Kept as defps so the 100+ call sites in this
+  # module stay terse.
 
+  defp send_action(socket, state, nick, room_id, text) do
+    Wire.send_action(socket, nick, display_channel(state, room_id), text, time_tag(state))
     state
   end
 
   defp send_notice(socket, state, room_id, text) do
-    channel = display_channel(state, room_id)
-    tags = time_tag(state)
-
-    text
-    |> String.split(~r/\r?\n/)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.each(fn line ->
-      send_line(
-        socket,
-        Protocol.encode(
-          tags: tags,
-          prefix: state.server,
-          command: "NOTICE",
-          params: [channel],
-          trailing: line
-        )
-      )
-    end)
-
+    Wire.send_notice(socket, state.server, display_channel(state, room_id), text, time_tag(state))
     state
   end
 
-  # Synthetic prefix for events sourced from agents (no real socket).
-  # `nick!egghead@server` is recognizable, validates as a hostmask, and
-  # makes it clear this isn't a human peer.
-  defp agent_prefix(nick, state), do: "#{nick}!egghead@#{state.server}"
+  defp agent_prefix(nick, state), do: Wire.agent_prefix(nick, state.server)
 
-  # IRCv3 `server-time` tag. Returns `%{}` if the client didn't
-  # negotiate the cap (so the encoder emits no tag prefix at all),
-  # else `%{"time" => ISO-8601}`. Pass an explicit `DateTime` for
-  # historical messages (scrollback replay); otherwise defaults to now.
-  defp time_tag(state, dt \\ nil) do
-    if MapSet.member?(state.caps, "server-time") do
-      iso = (dt || DateTime.utc_now()) |> DateTime.to_iso8601()
-      %{"time" => iso}
-    else
-      %{}
-    end
-  end
+  defp time_tag(state, dt \\ nil), do: Wire.time_tag(state.caps, dt)
 
   # --- Command dispatch ---
 
@@ -505,27 +469,13 @@ defmodule Egghead.IRC.Connection do
 
       # Egghead verbs — TUI slash-command palette over the IRC wire.
       # ERC's `/handoff scout` sends `HANDOFF scout`; users get the
-      # exact muscle memory they have in the TUI.
-      "HANDOFF" ->
-        require_registered(state, fn -> handle_handoff(msg, state) end)
-
-      "SAVE" ->
-        require_registered(state, fn -> handle_save(msg, state) end)
-
-      "CONTINUE" ->
-        require_registered(state, fn -> handle_continue_cmd(msg, state) end)
-
-      "HALT" ->
-        require_registered(state, fn -> handle_halt(msg, state) end)
-
-      "MUTE" ->
-        require_registered(state, fn -> handle_mute(msg, state) end)
-
-      "UNMUTE" ->
-        require_registered(state, fn -> handle_unmute(msg, state) end)
-
-      "CONTEXT" ->
-        require_registered(state, fn -> handle_context(msg, state) end)
+      # exact muscle memory they have in the TUI. Implementation lives
+      # in `Egghead.IRC.Verbs`.
+      verb when verb in ["HANDOFF", "SAVE", "CONTINUE", "HALT", "MUTE", "UNMUTE", "CONTEXT"] ->
+        require_registered(state, fn ->
+          Verbs.handle(msg, verbs_ctx(state))
+          {:continue, state}
+        end)
 
       "KICK" ->
         require_registered(state, fn -> handle_kick(msg, state) end)
@@ -901,24 +851,13 @@ defmodule Egghead.IRC.Connection do
         :agent -> NickMap.id_to_nick(msg.sender.id)
       end
 
-    channel = display_channel(state, room_id)
-    tags = time_tag(state, msg.timestamp)
-
-    msg.content
-    |> String.split(~r/\r?\n/)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.each(fn line ->
-      send_line(
-        socket,
-        Protocol.encode(
-          tags: tags,
-          prefix: nick,
-          command: "PRIVMSG",
-          params: [channel],
-          trailing: line
-        )
-      )
-    end)
+    Wire.send_privmsg(
+      socket,
+      nick,
+      display_channel(state, room_id),
+      msg.content,
+      time_tag(state, msg.timestamp)
+    )
   end
 
   # Synthesized channel topic — currently just an agent count. Lives in
@@ -960,13 +899,8 @@ defmodule Egghead.IRC.Connection do
   defp target_to_room_id(state, channel),
     do: Channels.target_to_room_id(state.aliases, channel)
 
-  # Spawn a forwarder Task that subscribes to the room's PubSub topic
-  # and re-sends each message tagged with the room_id. Linked to the
-  # connection process so socket close kills the forwarder; unsubscribe
-  # is handled implicitly when the forwarder exits.
   defp subscribe_room(state, room_id) do
-    parent = self()
-    pid = spawn_link(fn -> route_room(parent, room_id) end)
+    pid = Forwarder.start_link(self(), room_id)
 
     %{
       state
@@ -975,22 +909,9 @@ defmodule Egghead.IRC.Connection do
     }
   end
 
-  defp route_room(parent, room_id) do
-    Phoenix.PubSub.subscribe(@pubsub, Room.topic(room_id))
-    do_route_room(parent, room_id)
-  end
-
-  defp do_route_room(parent, room_id) do
-    receive do
-      msg ->
-        send(parent, {:room_event, room_id, msg})
-        do_route_room(parent, room_id)
-    end
-  end
-
   defp drop_room(state, room_id) do
     case Map.fetch(state.routers, room_id) do
-      {:ok, pid} -> Process.exit(pid, :normal)
+      {:ok, pid} -> Forwarder.stop(pid)
       :error -> :ok
     end
 
@@ -1072,7 +993,7 @@ defmodule Egghead.IRC.Connection do
   # nicks and NOTICE for known humans.
   defp do_dm(nick, body, state) do
     cond do
-      match = Enum.find(safe_list_agents(), fn a -> NickMap.id_to_nick(a.id) == nick end) ->
+      match = Agents.find_by_nick(nick) ->
         spawn_dm_prompt(match.id, nick, body, state)
 
       Registry.whereis(nick) != nil ->
@@ -1314,242 +1235,17 @@ defmodule Egghead.IRC.Connection do
     end
   end
 
-  # --- Egghead verbs (TUI slash-command palette over IRC) ---
-  #
-  # IRC commands don't carry a "current channel" on the wire — when the
-  # user types `/save` in their #foo buffer, ERC sends a bare `SAVE`.
-  # Each verb resolves the target room via `resolve_room_arg/2`:
-  # explicit `#channel` first arg wins; otherwise default to the user's
-  # only joined channel; otherwise 461 NEEDMOREPARAMS.
-
-  defp handle_save(msg, state) do
-    with_room(msg, state, fn _args, room_id ->
-      case Room.save_transcript(room_id) do
-        {:ok, record_id} ->
-          reply_notice(state, "Saved transcript as #{record_id}")
-          {:continue, state}
-
-        {:error, reason} ->
-          reply_notice(state, "Save failed: #{inspect(reason)}")
-          {:continue, state}
-      end
-    end)
-  end
-
-  defp handle_continue_cmd(msg, state) do
-    with_room(msg, state, fn _args, room_id ->
-      Room.continue(room_id)
-      {:continue, state}
-    end)
-  end
-
-  defp handle_halt(msg, state) do
-    with_room(msg, state, fn _args, room_id ->
-      Room.halt(room_id)
-      {:continue, state}
-    end)
-  end
-
-  defp handle_mute(msg, state) do
-    with_room_and_agent(msg, state, "MUTE", fn _room_arg, _agent_arg, room_id, agent_id ->
-      Room.mute(room_id, agent_id)
-      {:continue, state}
-    end)
-  end
-
-  defp handle_unmute(msg, state) do
-    with_room_and_agent(msg, state, "UNMUTE", fn _room_arg, _agent_arg, room_id, agent_id ->
-      Room.unmute(room_id, agent_id)
-      {:continue, state}
-    end)
-  end
-
-  # HANDOFF runs an LLM summarization call (multi-second). Spawn it so
-  # the connection stays responsive; report completion via NOTICE.
-  defp handle_handoff(msg, state) do
-    with_room_and_agent(msg, state, "HANDOFF", fn _room_arg, agent_arg, _room_id, agent_id ->
-      socket = state.__socket__
-      server = state.server
-      nick = state.nick
-
-      Task.start(fn ->
-        case Egghead.handoff(agent_id, []) do
-          {:ok, _summary} ->
-            send_notice_direct(
-              socket,
-              server,
-              nick,
-              "#{agent_arg}: handoff complete (context cleared, summary saved)"
-            )
-
-          {:error, reason} ->
-            send_notice_direct(
-              socket,
-              server,
-              nick,
-              "#{agent_arg}: handoff failed (#{inspect(reason)})"
-            )
-        end
-      end)
-
-      reply_notice(state, "Handing off #{agent_arg}…")
-      {:continue, state}
-    end)
-  end
-
-  # /context — Claude Code-style snapshot. Shows each agent's current
-  # context-window utilization in the room as a NOTICE block. Compact:
-  # one line per agent, percentage bar + raw counts.
-  defp handle_context(msg, state) do
-    with_room(msg, state, fn _args, room_id ->
-      lines = context_report(room_id)
-      Enum.each(lines, fn line -> reply_notice(state, line) end)
-      {:continue, state}
-    end)
-  end
-
-  defp context_report(room_id) do
-    room_agent_ids =
-      if Room.exists?(room_id) do
-        case Room.get_state(room_id) do
-          %{agents: agents} -> Enum.into(agents, [])
-          _ -> []
-        end
-      else
-        []
-      end
-
-    case room_agent_ids do
-      [] ->
-        ["No agents in this room."]
-
-      ids ->
-        all = safe_list_agents()
-        roster = Enum.filter(all, fn a -> a.id in ids end)
-
-        max_nick =
-          roster |> Enum.map(&String.length(NickMap.id_to_nick(&1.id))) |> Enum.max(fn -> 0 end)
-
-        ["Context windows:"] ++
-          Enum.map(roster, fn agent ->
-            nick = NickMap.id_to_nick(agent.id)
-            ctx = agent.current_context_tokens || 0
-            window = agent.context_window || 0
-            pct = if window > 0, do: round(ctx / window * 100), else: 0
-            bar = Format.context_bar(pct)
-
-            "  #{String.pad_trailing(nick, max_nick)}  #{bar}  #{String.pad_leading("#{pct}%", 4)}  " <>
-              "(#{Format.int(ctx)} / #{Format.int(window)})"
-          end)
-    end
-  end
-
-  # --- Verb argument resolution ---
-
-  # Pulls a channel arg or falls back to the user's only joined channel.
-  # Calls `fun.(remaining_args, room_id)` on success; emits 461 if no
-  # channel can be inferred.
-  defp with_room(msg, state, fun) do
-    args = Protocol.Message.args(msg)
-    cmd = msg.command
-
-    case resolve_room_arg(args, state) do
-      {:ok, room_id, rest} ->
-        fun.(rest, room_id)
-
-      {:error, :no_channel} ->
-        reply(state, Numerics.need_more_params(state.server, state.nick, cmd))
-        {:continue, state}
-
-      {:error, :ambiguous} ->
-        reply_notice(
-          state,
-          "You're in multiple channels — specify one (#room) as the first argument."
-        )
-
-        {:continue, state}
-
-      {:error, :unknown_channel} ->
-        reply(state, Numerics.need_more_params(state.server, state.nick, cmd))
-        {:continue, state}
-    end
-  end
-
-  # Like `with_room/3` but also expects an agent nick in the args.
-  # Resolves nick → agent_id by looking up the basename in the room's
-  # roster (since IRC nicks drop the `agents/` namespace).
-  defp with_room_and_agent(msg, state, cmd, fun) do
-    with_room(msg, state, fn rest, room_id ->
-      case rest do
-        [agent_nick | _] ->
-          case resolve_agent_in_room(agent_nick, room_id) do
-            {:ok, agent_id} ->
-              fun.(nil, agent_nick, room_id, agent_id)
-
-            :not_found ->
-              reply(
-                state,
-                %Protocol.Message{
-                  prefix: state.server,
-                  command: "401",
-                  params: [state.nick, agent_nick],
-                  trailing: "No such nick in this room"
-                }
-              )
-
-              {:continue, state}
-          end
-
-        [] ->
-          reply(state, Numerics.need_more_params(state.server, state.nick, cmd))
-          {:continue, state}
-      end
-    end)
-  end
-
-  defp resolve_room_arg(args, state) do
-    case args do
-      ["#" <> _ = channel | rest] ->
-        case target_to_room_id(state, channel) do
-          nil -> {:error, :unknown_channel}
-          room_id -> {:ok, room_id, rest}
-        end
-
-      _ ->
-        case MapSet.to_list(state.channels) do
-          [] -> {:error, :no_channel}
-          [room_id] -> {:ok, room_id, args}
-          _ -> {:error, :ambiguous}
-        end
-    end
-  end
-
-  defp resolve_agent_in_room(nick, room_id) do
-    if Room.exists?(room_id) do
-      case Room.get_state(room_id) do
-        %{agents: agents} ->
-          case Enum.find(agents, fn id -> NickMap.id_to_nick(id) == nick end) do
-            nil -> :not_found
-            id -> {:ok, id}
-          end
-
-        _ ->
-          :not_found
-      end
-    else
-      :not_found
-    end
-  end
-
-  defp reply_notice(state, text) do
-    send_notice_direct(state.__socket__, state.server, state.nick, text)
-  end
-
-  defp send_notice_direct(socket, server, nick, text) do
-    send_line(
-      socket,
-      Protocol.encode(prefix: server, command: "NOTICE", params: [nick], trailing: text)
-    )
+  # Slash-verb context bundle. Built per-dispatch from the live state —
+  # `Verbs.handle/2` reads it but doesn't keep a reference.
+  defp verbs_ctx(state) do
+    %{
+      server: state.server,
+      nick: state.nick,
+      channels: state.channels,
+      aliases: state.aliases,
+      socket: state.__socket__,
+      emit: fn iodata -> Wire.write(state.__socket__, iodata) end
+    }
   end
 
   # --- KICK / INVITE ---
@@ -1572,7 +1268,7 @@ defmodule Egghead.IRC.Connection do
               reply(state, Numerics.not_on_channel(state.server, state.nick, channel))
             end
 
-            case resolve_agent_in_room(nick, room_id) do
+            case Agents.find_in_room(nick, room_id) do
               {:ok, agent_id} ->
                 Room.leave(room_id, agent_id)
 
@@ -1660,140 +1356,26 @@ defmodule Egghead.IRC.Connection do
   # `resolve_agent_in_room/2` instead since they only operate on the
   # current roster.
   defp resolve_agent_anywhere(nick) do
-    case Enum.find(safe_list_agents(), fn a -> NickMap.id_to_nick(a.id) == nick end) do
+    case Agents.find_by_nick(nick) do
       nil -> :not_found
       agent -> {:ok, agent.id}
     end
   end
 
-  # `Egghead.Agent.list_agents/0` requires the record store to be up.
-  # In test (and degraded headless modes) it isn't, and would crash the
-  # connection. Wrap so resolution / WHOIS gracefully report "no such
-  # nick" instead of dropping the socket.
-  defp safe_list_agents do
-    try do
-      Egghead.Agent.list_agents()
-    catch
-      _, _ -> []
-    end
-  end
-
   # --- WHOIS ---
   #
-  # WHOIS for an agent packs model + context % into 311's realname,
-  # tags + capabilities into 312's server-info, walks `Room.list_ids/0`
-  # for 319 channel membership, and emits 335 RPL_WHOISBOT to mark the
-  # nick as a bot in modern clients. WHOIS for a connected human
-  # returns 311 + 312 only — joined-channels for humans needs a
-  # per-conn-room reverse index in `Egghead.IRC.Registry`.
+  # Subprotocol lives in `Egghead.IRC.Whois`; this clause builds the
+  # context bundle and delegates.
 
   defp handle_whois(msg, state) do
-    case Protocol.Message.args(msg) do
-      [target | _] ->
-        agent_match =
-          Enum.find(safe_list_agents(), fn a -> NickMap.id_to_nick(a.id) == target end)
+    ctx = %{
+      server: state.server,
+      nick: state.nick,
+      emit: fn iodata -> send_line(state.__socket__, iodata) end
+    }
 
-        cond do
-          agent_match -> whois_agent(target, agent_match, state)
-          Registry.whereis(target) != nil -> whois_human(target, state)
-          true -> reply(state, Numerics.no_such_nick(state.server, state.nick, target))
-        end
-
-        reply(state, Numerics.end_of_whois(state.server, state.nick, target))
-        {:continue, state}
-
-      [] ->
-        reply(state, Numerics.need_more_params(state.server, state.nick, "WHOIS"))
-        {:continue, state}
-    end
-  end
-
-  defp whois_agent(nick, agent, state) do
-    # Pack metadata into the realname (311) and server-info (312)
-    # fields, which clients render verbatim. Avoid 320 RPL_WHOISSPECIAL
-    # — ERC and several other clients hardcode it as "is identified to
-    # services" regardless of trailing text. 335 RPL_WHOISBOT marks
-    # agents distinctly in modern clients.
-    #
-    # NOTE: deliberately not surfacing `agent.disposition` here. That
-    # field is `record.body || ""` (see `lib/egghead/record/agent.ex`)
-    # — i.e. the whole system prompt, multi-paragraph. Client renderers
-    # wrap it across many lines. Tags and capabilities are short labels
-    # that fit on one line each.
-    ctx = agent.current_context_tokens || 0
-    window = agent.context_window || 0
-    pct = if window > 0, do: round(ctx / window * 100), else: 0
-
-    realname =
-      [agent.name, agent.model || "no model", "context #{pct}%"]
-      |> Enum.join(" · ")
-
-    info =
-      ["Egghead agent · #{agent.id}"]
-      |> maybe_append(format_tags(agent.tags), fn t -> "tags: #{t}" end)
-      |> maybe_append(format_caps(agent.capabilities), fn c -> "caps: #{c}" end)
-      |> Enum.join(" · ")
-
-    reply(
-      state,
-      Numerics.whois_user(state.server, state.nick, nick, "agent", state.server, realname)
-    )
-
-    reply(state, Numerics.whois_server(state.server, state.nick, nick, state.server, info))
-
-    channels = agent_channels(agent.id)
-
-    if channels != [] do
-      reply(state, Numerics.whois_channels(state.server, state.nick, nick, channels))
-    end
-
-    reply(state, Numerics.whois_bot(state.server, state.nick, nick))
-  end
-
-  defp maybe_append(list, nil, _fmt), do: list
-  defp maybe_append(list, "", _fmt), do: list
-  defp maybe_append(list, [], _fmt), do: list
-  defp maybe_append(list, value, fmt), do: list ++ [fmt.(value)]
-
-  defp format_caps(nil), do: nil
-  defp format_caps([]), do: nil
-
-  defp format_caps(caps) do
-    caps
-    |> Enum.map(fn
-      %{resource: r, verb: v} -> "#{r}.#{v}"
-      other -> inspect(other)
-    end)
-    |> Enum.join(", ")
-  end
-
-  defp format_tags(nil), do: nil
-  defp format_tags([]), do: nil
-  defp format_tags(tags) when is_list(tags), do: Enum.join(tags, ", ")
-  defp format_tags(_), do: nil
-
-  defp whois_human(nick, state) do
-    reply(
-      state,
-      Numerics.whois_user(state.server, state.nick, nick, "user", state.server, nick)
-    )
-
-    reply(
-      state,
-      Numerics.whois_server(state.server, state.nick, nick, state.server, "Egghead human user")
-    )
-  end
-
-  defp agent_channels(agent_id) do
-    Room.list_ids()
-    |> Enum.filter(fn room_id ->
-      Room.exists?(room_id) and
-        case Room.get_state(room_id) do
-          %{agents: agents} -> agent_id in agents
-          _ -> false
-        end
-    end)
-    |> Enum.map(&NickMap.room_to_channel/1)
+    Whois.handle(msg, ctx)
+    {:continue, state}
   end
 
   # --- MOTD / VERSION / TIME ---
@@ -1899,56 +1481,33 @@ defmodule Egghead.IRC.Connection do
   end
 
   defp cleanup(state) do
-    # Routers are linked to us, so they'd die with the socket regardless;
-    # exit them explicitly here for a clean PART scenario where the
-    # socket is still alive but the connection is winding down.
+    # Forwarders are linked to us, so they'd die with the socket
+    # regardless; stop them explicitly here for a clean PART scenario
+    # where the socket is still alive but the connection is winding down.
     state
     |> Map.get(:routers, %{})
     |> Map.values()
-    |> Enum.each(fn pid ->
-      if Process.alive?(pid), do: Process.exit(pid, :normal)
-    end)
+    |> Enum.each(&Forwarder.stop/1)
 
     if state.nick, do: Registry.unregister(state.nick)
     :ok
   end
 
   defp send_privmsg(socket, state, from_nick, room_id, content) do
-    channel = display_channel(state, room_id)
-    tags = time_tag(state)
-
-    # IRC PRIVMSG is one line per message; the streaming buffer splits
-    # on `\n\n` upstream, but multi-line user messages still need a
-    # split here so paragraphs don't drop content.
-    content
-    |> String.split(~r/\r?\n/)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.each(fn line ->
-      send_line(
-        socket,
-        Protocol.encode(
-          tags: tags,
-          prefix: from_nick,
-          command: "PRIVMSG",
-          params: [channel],
-          trailing: line
-        )
-      )
-    end)
+    Wire.send_privmsg(
+      socket,
+      from_nick,
+      display_channel(state, room_id),
+      content,
+      time_tag(state)
+    )
   end
 
-  defp reply(state, msg), do: send_line(state.__socket__, Protocol.encode(msg))
+  defp reply(state, msg), do: Wire.send_message(state.__socket__, msg)
 
-  defp send_line(socket, iodata) do
-    case ThousandIsland.Socket.send(socket, iodata) do
-      :ok -> :ok
-      {:error, reason} -> Logger.debug("IRC send failed: #{inspect(reason)}")
-    end
-  end
+  defp send_line(socket, iodata), do: Wire.write(socket, iodata)
 
-  defp prefix_for(nick, user, host) do
-    "#{nick}!#{user || nick}@#{host}"
-  end
+  defp prefix_for(nick, user, host), do: Wire.prefix(nick, user, host)
 
   defp nick_or_star(%{nick: nil}), do: "*"
   defp nick_or_star(%{nick: n}), do: n

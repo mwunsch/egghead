@@ -211,6 +211,23 @@ defmodule Egghead.IRC.Connection do
     state
   end
 
+  # Tool denied by the capability layer — rendered as a CTCP ACTION
+  # so it reads alongside the tool-call line. The denial's `message`
+  # field is the human-readable reason (e.g. "no grant for net.get on
+  # api.example.com"); we don't surface the structured request/grants
+  # — those live in the log for operators.
+  defp handle_room_event(
+         {:agent_tool_denied, _room_id, agent_id, tool_name, _input, denial},
+         room_id,
+         socket,
+         state
+       ) do
+    nick = NickMap.id_to_nick(agent_id)
+    reason = (denial && Map.get(denial, :message)) || "denied"
+    send_action(socket, state, nick, room_id, "was denied #{tool_name}: #{reason}")
+    state
+  end
+
   # Roster change — emit synthetic JOIN/PART so the IRC client's
   # nicklist updates live without needing a fresh /NAMES query, then
   # push a TOPIC update so the channel header reflects the new count.

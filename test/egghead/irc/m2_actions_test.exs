@@ -112,6 +112,46 @@ defmodule Egghead.IRC.M2ActionsTest do
     end
   end
 
+  describe "tool denials" do
+    test "agent_tool_denied becomes CTCP ACTION with the denial message", %{
+      sock: sock,
+      room_id: room_id
+    } do
+      denial = %Egghead.Capability.Denial{
+        code: :no_grant,
+        agent_id: "agents/scout",
+        tool: "net_get",
+        message: "no grant for net.get on api.example.com",
+        held: []
+      }
+
+      Phoenix.PubSub.broadcast(
+        Egghead.PubSub,
+        Room.topic(room_id),
+        {:agent_tool_denied, room_id, "agents/scout", "net_get", %{"url" => "..."}, denial}
+      )
+
+      line = recv_one(sock, 1500)
+      assert line =~ ~r/^:scout PRIVMSG ##{room_id} :/
+      assert line =~ "ACTION was denied net_get"
+      assert line =~ "no grant for net.get on api.example.com"
+    end
+
+    test "denial with nil/missing message falls back to a generic reason", %{
+      sock: sock,
+      room_id: room_id
+    } do
+      Phoenix.PubSub.broadcast(
+        Egghead.PubSub,
+        Room.topic(room_id),
+        {:agent_tool_denied, room_id, "agents/scout", "tool", %{}, nil}
+      )
+
+      line = recv_one(sock, 1500)
+      assert line =~ "ACTION was denied tool: denied"
+    end
+  end
+
   describe "agent join/leave" do
     test "agent_joined broadcasts a synthetic JOIN line for the agent", %{
       sock: sock,

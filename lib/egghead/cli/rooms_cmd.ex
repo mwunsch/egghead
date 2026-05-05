@@ -50,7 +50,7 @@ defmodule Egghead.CLI.RoomsCmd do
             _, _ -> ""
           end
 
-        IO.puts("  #{room_id}#{marker}#{info}")
+        Widgets.puts("  #{room_id}#{marker}#{info}")
       end)
 
       IO.puts("")

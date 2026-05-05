@@ -97,12 +97,12 @@ defmodule Egghead.CLI.ToolsCmd do
       line = "#{Widgets.pad(tool.name, name_w)}  — #{short_desc(tool.description)}"
 
       if available? do
-        IO.puts("  \e[32m●\e[0m #{line}")
+        Widgets.puts("  \e[32m●\e[0m #{line}")
       else
         # Unavailable: red ○ marker + whole line in grey so this tool
         # recedes visually. Available tools stay in default color so
         # they're the prominent entries for this agent.
-        IO.puts("  \e[31m○\e[0m " <> Widgets.dim(line))
+        Widgets.puts("  \e[31m○\e[0m " <> Widgets.dim(line))
       end
     end)
   end
@@ -139,16 +139,39 @@ defmodule Egghead.CLI.ToolsCmd do
         servers |> Enum.map(&String.length(&1.name)) |> Enum.max(fn -> 0 end) |> max(12)
 
       states = Map.new(servers, fn s -> {s.name, Client.Server.status(s.name)} end)
-      draw_mcp_rows(servers, states, 0, name_w, grants, compact?)
 
-      parent = self()
+      if Widgets.stdout_tty?() do
+        draw_mcp_rows(servers, states, 0, name_w, grants, compact?)
 
-      _watchers =
-        Enum.map(servers, fn s ->
-          spawn_link(fn -> watch_until_terminal(s.name, parent) end)
+        parent = self()
+
+        _watchers =
+          Enum.map(servers, fn s ->
+            spawn_link(fn -> watch_until_terminal(s.name, parent) end)
+          end)
+
+        animate_mcp_loop(servers, states, 0, name_w, grants, compact?)
+      else
+        # No TTY → no animation. Wait until every server reaches a
+        # terminal state, then emit the rows once as plain text.
+        states = wait_for_terminal_states(servers, states)
+        draw_mcp_rows(servers, states, 0, name_w, grants, compact?)
+      end
+    end
+  end
+
+  defp wait_for_terminal_states(servers, states) do
+    if all_terminal?(states) do
+      states
+    else
+      Process.sleep(100)
+
+      states =
+        Enum.reduce(servers, states, fn s, acc ->
+          Map.put(acc, s.name, Client.Server.status(s.name))
         end)
 
-      animate_mcp_loop(servers, states, 0, name_w, grants, compact?)
+      wait_for_terminal_states(servers, states)
     end
   end
 
@@ -191,14 +214,14 @@ defmodule Egghead.CLI.ToolsCmd do
 
   defp redraw_mcp(servers, states, frame, name_w, grants, compact?) do
     # Cursor up N lines, then re-render each.
-    IO.write("\e[#{length(servers)}A")
+    Widgets.write("\e[#{length(servers)}A")
     draw_mcp_rows(servers, states, frame, name_w, grants, compact?)
   end
 
   defp draw_mcp_rows(servers, states, frame, name_w, grants, compact?) do
     Enum.each(servers, fn server ->
       state = Map.get(states, server.name, :offline)
-      IO.write("\e[2K" <> mcp_row(server, state, frame, name_w, grants, compact?) <> "\n")
+      Widgets.write("\e[2K" <> mcp_row(server, state, frame, name_w, grants, compact?) <> "\n")
     end)
   end
 

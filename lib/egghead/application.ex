@@ -43,6 +43,14 @@ defmodule Egghead.Application do
     configure_logging()
     configure_distribution()
 
+    # In release mode the supervision tree (record load, agent sync,
+    # MCP connect) runs synchronously inside this callback — long
+    # before `Egghead.CLI.main` is reached. Wrap it in a spinner so
+    # the user sees something during the cold start. Dev mode runs
+    # the same animation later via `prepare_runtime/0`.
+    show_startup_spinner? = startup_spinner?()
+    if show_startup_spinner?, do: Egghead.CLI.Widgets.spinner_start("Starting Egghead…")
+
     children =
       cond do
         # Connected to a remote server — only start PubSub for cluster fan-out
@@ -107,6 +115,8 @@ defmodule Egghead.Application do
       end
     end
 
+    if show_startup_spinner?, do: Egghead.CLI.Widgets.spinner_stop()
+
     if release_mode?() do
       Task.start(fn ->
         Egghead.CLI.main(burrito_args())
@@ -115,6 +125,18 @@ defmodule Egghead.Application do
     end
 
     result
+  end
+
+  # Show the cold-start spinner only when:
+  # - We're in release mode (dev hits prepare_runtime instead).
+  # - We're actually starting our supervision tree (not --help/config/etc).
+  # - We're not attaching to a remote node (no cold start work).
+  # - stdout is a real terminal (not piped, not MCP, not NO_COLOR).
+  defp startup_spinner? do
+    release_mode?() and
+      Application.get_env(:egghead, :start_record_store, true) and
+      not Egghead.Node.connected?() and
+      Egghead.CLI.Widgets.stdout_tty?()
   end
 
   # --- Command mode detection (release only) ---

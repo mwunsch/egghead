@@ -97,7 +97,7 @@ defmodule Egghead.CLI.LLM do
 
           name = entry[:name] || entry.provider
           base = if entry[:base_url], do: " (#{entry.base_url})", else: ""
-          IO.puts("  #{name}#{base}  #{key_status}")
+          Widgets.puts("  #{name}#{base}  #{key_status}")
         end)
 
       {:ok, %Config{llm: []}} ->
@@ -203,7 +203,7 @@ defmodule Egghead.CLI.LLM do
       |> Enum.group_by(& &1.provider)
       |> Enum.sort_by(fn {provider, _} -> provider end)
       |> Enum.each(fn {provider, provider_models} ->
-        IO.puts("  \e[1m#{provider}\e[0m")
+        Widgets.puts("  \e[1m#{provider}\e[0m")
 
         provider_models
         |> Enum.sort_by(& &1.id)

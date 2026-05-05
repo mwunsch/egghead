@@ -64,7 +64,7 @@ defmodule Egghead.CLI.Init do
     end
 
     IO.puts("")
-    IO.puts("\e[1mWelcome to Egghead.\e[0m")
+    Widgets.puts("\e[1mWelcome to Egghead.\e[0m")
     IO.puts("")
 
     Widgets.header("Records directory")

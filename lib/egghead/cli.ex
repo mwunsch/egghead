@@ -32,6 +32,10 @@ defmodule Egghead.CLI do
       System.put_env("EGGHEAD_SERVER", global_opts[:server])
     end
 
+    if global_opts[:no_tty] do
+      Application.put_env(:egghead, :no_tty, true)
+    end
+
     cond do
       global_opts[:help] == true and is_nil(command) and not has_non_flags?(rest) ->
         print_help()
@@ -74,14 +78,20 @@ defmodule Egghead.CLI do
   def prepare_runtime(opts \\ []) do
     alias Egghead.CLI.Widgets
 
-    Widgets.spinner("Starting Egghead…", fn ->
-      start_app(:silent, web: false)
+    # In release mode the app is already up by the time we get here
+    # (Application.start/2 starts the tree and shows its own spinner).
+    # Only wrap a spinner when we'll actually do work.
+    if Application.started_applications() |> Enum.any?(&match?({:egghead, _, _}, &1)) do
+      :ok
+    else
+      Widgets.spinner("Starting Egghead…", fn ->
+        start_app(:silent, web: false)
 
-      # Sync agents inside the same spinner (standalone only)
-      if not Egghead.Node.connected?() and GenServer.whereis(Egghead.RecordStore) do
-        Egghead.Agent.Supervisor.sync_agents()
-      end
-    end)
+        if not Egghead.Node.connected?() and GenServer.whereis(Egghead.RecordStore) do
+          Egghead.Agent.Supervisor.sync_agents()
+        end
+      end)
+    end
 
     if Egghead.Node.connected?() do
       Widgets.success("Connected to #{Egghead.Node.server_node()}")
@@ -156,11 +166,14 @@ defmodule Egghead.CLI do
     {server, argv} = extract_flag(argv, "--server", :string)
     version = "--version" in argv
     argv = if version, do: List.delete(argv, "--version"), else: argv
+    no_tty = "--no-tty" in argv
+    argv = if no_tty, do: List.delete(argv, "--no-tty"), else: argv
 
     opts = []
     opts = if config, do: Keyword.put(opts, :config, config), else: opts
     opts = if server, do: Keyword.put(opts, :server, server), else: opts
     opts = if version, do: Keyword.put(opts, :version, true), else: opts
+    opts = if no_tty, do: Keyword.put(opts, :no_tty, true), else: opts
 
     # Top-level --help: only when no recognized command is present
     help = Enum.any?(argv, &(&1 in ["--help", "-h"])) and not has_command?(argv)
@@ -310,6 +323,7 @@ defmodule Egghead.CLI do
     FLAGS
       --config PATH   Override config file location
       --server HOST   Attach to an Egghead serve running on HOST
+      --no-tty        Suppress spinners and ANSI styling (for pipes/CI)
       -h, --help      Show this help
       --version       Show version
 
@@ -317,6 +331,8 @@ defmodule Egghead.CLI do
       EGGHEAD_CONFIG  Override the config file path
       EGGHEAD_SERVER  Attach to an Egghead serve running on this host
                       (LAN/tailnet); same as --server
+      NO_COLOR        Suppress spinners and ANSI styling
+                      (https://no-color.org)
 
     EXAMPLES
       $ egghead                       # launch the TUI

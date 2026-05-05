@@ -178,7 +178,7 @@ defmodule Egghead.CLI.Widgets do
   def spinner_start(label) do
     spinner_stop()
 
-    if IO.ANSI.enabled?() do
+    if stdout_tty?() do
       started_at = System.monotonic_time(:millisecond)
       pid = spawn(fn -> spin_loop(label, 0, started_at) end)
       Process.put(:egghead_widget_spinner, pid)
@@ -187,6 +187,36 @@ defmodule Egghead.CLI.Widgets do
     end
 
     :ok
+  end
+
+  @doc """
+  Returns true when stdout is a real terminal we can animate over.
+
+  Suppresses ANSI when:
+  - `--no-tty` was passed (sets `:egghead, :no_tty` app env)
+  - `NO_COLOR` env var is set (https://no-color.org)
+  - stdout is a pipe, file, or other non-TTY
+
+  Under Burrito's `-noshell`, `IO.ANSI.enabled?/0` is unreliable because
+  it's globally forced true in `config/prod.exs`. We reach for
+  `:prim_tty.isatty/1` (OTP 26+) for an actual fd check, falling back
+  to `IO.ANSI.enabled?/0` only when that's unavailable.
+  """
+  @spec stdout_tty?() :: boolean()
+  def stdout_tty? do
+    cond do
+      Application.get_env(:egghead, :no_tty, false) ->
+        false
+
+      System.get_env("NO_COLOR") not in [nil, ""] ->
+        false
+
+      Code.ensure_loaded?(:prim_tty) and function_exported?(:prim_tty, :isatty, 1) ->
+        :prim_tty.isatty(:stdout) == true
+
+      true ->
+        IO.ANSI.enabled?()
+    end
   end
 
   @doc """
@@ -258,10 +288,37 @@ defmodule Egghead.CLI.Widgets do
 
   # ── Styled output (outside raw mode, IO.puts is fine) ──────
 
-  def success(msg), do: IO.puts("\e[32m✓\e[0m #{msg}")
-  def error(msg), do: IO.puts("\e[31m✗\e[0m #{msg}")
-  def warn(msg), do: IO.puts("\e[33m!\e[0m #{msg}")
-  def header(msg), do: IO.puts("\n\e[1m#{msg}\e[0m")
+  @ansi_escape ~r/\e\[[0-9;]*[a-zA-Z]/
+
+  @doc """
+  Pass `text` through unchanged when stdout is a TTY; strip all ANSI
+  escape sequences (SGR colors, cursor moves, line clears) when it
+  isn't. Use this anywhere the CLI emits styled output so piped/CI
+  consumers get clean text.
+  """
+  @spec styled(iodata()) :: binary()
+  def styled(text) do
+    str = IO.iodata_to_binary(text)
+
+    if stdout_tty?() do
+      str
+    else
+      Regex.replace(@ansi_escape, str, "")
+    end
+  end
+
+  @doc "TTY-aware `IO.puts/1`. Strips ANSI from `text` when stdout isn't a terminal."
+  @spec puts(iodata()) :: :ok
+  def puts(text), do: IO.puts(styled(text))
+
+  @doc "TTY-aware `IO.write/1`. Strips ANSI from `text` when stdout isn't a terminal."
+  @spec write(iodata()) :: :ok
+  def write(text), do: IO.write(styled(text))
+
+  def success(msg), do: puts("\e[32m✓\e[0m #{msg}")
+  def error(msg), do: puts("\e[31m✗\e[0m #{msg}")
+  def warn(msg), do: puts("\e[33m!\e[0m #{msg}")
+  def header(msg), do: puts("\n\e[1m#{msg}\e[0m")
 
   @doc """
   Wraps text in a muted foreground for secondary/annotation output
@@ -274,7 +331,9 @@ defmodule Egghead.CLI.Widgets do
   surrounding attributes (bold, underline) survive.
   """
   @spec dim(String.t()) :: String.t()
-  def dim(text) when is_binary(text), do: "\e[38;5;245m#{text}\e[39m"
+  def dim(text) when is_binary(text) do
+    if stdout_tty?(), do: "\e[38;5;245m#{text}\e[39m", else: text
+  end
 
   def format_context(nil), do: ""
   def format_context(n) when n >= 1_000_000, do: "#{div(n, 1_000_000)}M ctx"

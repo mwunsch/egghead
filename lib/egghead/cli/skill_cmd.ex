@@ -161,10 +161,10 @@ defmodule Egghead.CLI.SkillCmd do
 
     Enum.each(results, fn
       {:ok, req} ->
-        IO.puts("  \e[32m✓\e[0m #{format_request(req)}")
+        Widgets.puts("  \e[32m✓\e[0m #{format_request(req)}")
 
       {:denied, req, denial} ->
-        IO.puts("  \e[33m⚠\e[0m #{format_request(req)}")
+        Widgets.puts("  \e[33m⚠\e[0m #{format_request(req)}")
         IO.puts("    " <> Widgets.dim(denial.message))
     end)
 
@@ -178,7 +178,7 @@ defmodule Egghead.CLI.SkillCmd do
 
     cond do
       denied == [] and unknown == [] ->
-        IO.puts("  \e[32mAll requirements satisfied.\e[0m")
+        Widgets.puts("  \e[32mAll requirements satisfied.\e[0m")
 
       denied == [] and unknown != [] ->
         IO.puts("  Known requirements satisfied. #{length(unknown)} unknown tools.")
@@ -261,10 +261,10 @@ defmodule Egghead.CLI.SkillCmd do
 
         case Skill.validate(record) do
           :ok ->
-            IO.puts("  status:   \e[32m✓ conforms to Agent Skills spec\e[0m")
+            Widgets.puts("  status:   \e[32m✓ conforms to Agent Skills spec\e[0m")
 
           {:error, issues} ->
-            IO.puts("  status:   \e[33m⚠ validation issues\e[0m")
+            Widgets.puts("  status:   \e[33m⚠ validation issues\e[0m")
             Enum.each(issues, fn issue -> IO.puts("    - #{issue}") end)
         end
 

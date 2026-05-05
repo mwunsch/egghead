@@ -114,7 +114,7 @@ defmodule Egghead.CLI.AgentCmd do
     dry_run = opts[:dry_run] || false
 
     IO.puts("")
-    IO.puts("\e[1mCreate a New Agent\e[0m")
+    Widgets.puts("\e[1mCreate a New Agent\e[0m")
     IO.puts("")
 
     name = opts[:name] || Widgets.input("Agent name")
@@ -226,9 +226,9 @@ defmodule Egghead.CLI.AgentCmd do
   defp prompt_for_sandbox(capabilities) do
     if needs_sandbox?(capabilities) do
       IO.puts("")
-      IO.puts("  \e[2mSandbox root — the agent's fence for fs.* and proc.*\e[0m")
-      IO.puts("  \e[2mThe agent can only read/write/exec under this path.\e[0m")
-      IO.puts("  \e[2mLeave blank to use the global sandbox from config.yml.\e[0m")
+      Widgets.puts("  \e[2mSandbox root — the agent's fence for fs.* and proc.*\e[0m")
+      Widgets.puts("  \e[2mThe agent can only read/write/exec under this path.\e[0m")
+      Widgets.puts("  \e[2mLeave blank to use the global sandbox from config.yml.\e[0m")
 
       default = Path.expand(global_sandbox() || System.user_home!())
 
@@ -274,7 +274,7 @@ defmodule Egghead.CLI.AgentCmd do
     File.write!(tmp_path, template)
 
     IO.puts("")
-    IO.puts("Opening \e[36m#{editor}\e[0m to write agent instructions...")
+    Widgets.puts("Opening \e[36m#{editor}\e[0m to write agent instructions...")
     IO.puts("Save and close to continue.")
     IO.puts("")
 
@@ -604,7 +604,7 @@ defmodule Egghead.CLI.AgentCmd do
     else
       Enum.each(grants, fn grant ->
         marker = risk_marker(Egghead.Capability.Catalog.risk(grant))
-        IO.puts("  #{marker} #{Egghead.Capability.Catalog.describe(grant)}")
+        Widgets.puts("  #{marker} #{Egghead.Capability.Catalog.describe(grant)}")
       end)
 
       IO.puts("")

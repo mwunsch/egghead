@@ -60,7 +60,7 @@ defmodule Egghead.CLI.EvalCmd do
       |> Enum.group_by(& &1.category)
       |> Enum.sort()
       |> Enum.each(fn {category, group} ->
-        IO.puts("\n  \e[1m#{category}\e[0m")
+        Widgets.puts("\n  \e[1m#{category}\e[0m")
 
         # Leave room for the 6-space indent; wrap the rest.
         blurb_width = max(40, term_cols() - 6)
@@ -73,7 +73,7 @@ defmodule Egghead.CLI.EvalCmd do
 
           blurb = t.description || t.title || first_sentence(t.prompt)
 
-          IO.puts("    \e[1m#{t.id}\e[0m#{caps}")
+          Widgets.puts("    \e[1m#{t.id}\e[0m#{caps}")
 
           blurb
           |> wrap_text(blurb_width)
@@ -128,20 +128,20 @@ defmodule Egghead.CLI.EvalCmd do
       case Egghead.Eval.run(task_id, run_opts) do
         {:ok, %{status: :ok} = result} ->
           IO.puts("")
-          IO.puts(render_summary(result))
+          Widgets.puts(render_summary(result))
 
         {:ok, %{status: :skipped, reason: reason}} ->
           IO.puts("")
-          IO.puts("\e[33mSKIPPED:\e[0m #{inspect(reason)}")
+          Widgets.puts("\e[33mSKIPPED:\e[0m #{inspect(reason)}")
 
         {:ok, %{status: :error, reason: reason}} ->
           IO.puts("")
-          IO.puts("\e[31mERROR:\e[0m #{inspect(reason)}")
+          Widgets.puts("\e[31mERROR:\e[0m #{inspect(reason)}")
           System.halt(1)
 
         {:error, reason} ->
           IO.puts("")
-          IO.puts("\e[31mERROR:\e[0m #{inspect(reason)}")
+          Widgets.puts("\e[31mERROR:\e[0m #{inspect(reason)}")
           System.halt(1)
       end
     after
@@ -210,7 +210,7 @@ defmodule Egghead.CLI.EvalCmd do
     IO.puts("  room:   #{room_id}")
 
     if roster == [] do
-      IO.puts("  agents: " <> "\e[31m(none joined)\e[0m")
+      Widgets.puts("  agents: " <> "\e[31m(none joined)\e[0m")
     else
       IO.puts("  agents: #{Enum.join(roster, ", ")}")
     end
@@ -251,7 +251,7 @@ defmodule Egghead.CLI.EvalCmd do
       |> List.first()
       |> truncate(78)
 
-    IO.puts("  \e[36m#{name}\e[0m  #{preview}")
+    Widgets.puts("  \e[36m#{name}\e[0m  #{preview}")
     Widgets.spinner_start("waiting for next turn…")
   end
 
@@ -282,17 +282,17 @@ defmodule Egghead.CLI.EvalCmd do
 
   defp live_event({:capability_gate, {{:missing, missing}, _roster}}) do
     Widgets.spinner_stop()
-    IO.puts("  \e[33mCapability gate:\e[0m missing #{Enum.join(missing, ", ")}")
+    Widgets.puts("  \e[33mCapability gate:\e[0m missing #{Enum.join(missing, ", ")}")
   end
 
   defp live_event({:skipped, reason}) do
     Widgets.spinner_stop()
-    IO.puts("  \e[33mSkipped:\e[0m #{inspect(reason)}")
+    Widgets.puts("  \e[33mSkipped:\e[0m #{inspect(reason)}")
   end
 
   defp live_event({:error, reason}) do
     Widgets.spinner_stop()
-    IO.puts("  \e[31mError:\e[0m #{inspect(reason)}")
+    Widgets.puts("  \e[31mError:\e[0m #{inspect(reason)}")
   end
 
   defp live_event(_), do: :ok

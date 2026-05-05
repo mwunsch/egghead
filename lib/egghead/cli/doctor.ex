@@ -50,7 +50,7 @@ defmodule Egghead.CLI.Doctor do
     Egghead.CLI.prepare_runtime()
 
     IO.puts("")
-    IO.puts("\e[1mEgghead Doctor\e[0m")
+    Widgets.puts("\e[1mEgghead Doctor\e[0m")
     IO.puts("")
 
     checks =
@@ -424,7 +424,7 @@ defmodule Egghead.CLI.Doctor do
     end
 
     render_capability_list(record)
-    Enum.each(warnings, fn w -> IO.puts("      \e[33m⚠\e[0m #{w}") end)
+    Enum.each(warnings, fn w -> Widgets.puts("      \e[33m⚠\e[0m #{w}") end)
 
     result
   end
@@ -492,7 +492,7 @@ defmodule Egghead.CLI.Doctor do
   end
 
   defp print_result(name, :ok), do: Widgets.success(name)
-  defp print_result(name, {:ok, detail}), do: IO.puts("\e[32m✓\e[0m #{name} — #{detail}")
+  defp print_result(name, {:ok, detail}), do: Widgets.puts("\e[32m✓\e[0m #{name} — #{detail}")
   defp print_result(name, {:warn, detail}), do: Widgets.warn("#{name} — #{detail}")
   defp print_result(name, {:error, detail}), do: Widgets.error("#{name} — #{detail}")
 

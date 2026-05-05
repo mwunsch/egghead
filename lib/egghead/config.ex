@@ -28,6 +28,17 @@ defmodule Egghead.Config do
         port: 4000
         host: localhost
         bind: 127.0.0.1
+
+      irc:
+        port: 6667
+        bind: 127.0.0.1
+        hostname: irc.local           # optional; defaults to gethostname()
+        password: "{env:EGGHEAD_IRC_PASSWORD}"   # optional shared password
+
+  Both `web:` and `irc:` are fully optional — both servers start with the
+  defaults shown above. To disable a server, set `EGGHEAD_WEB=false` or
+  `EGGHEAD_IRC=false` in the environment, or pass `--no-web` / `--no-irc`
+  to `egghead serve`.
   """
 
   defstruct records_dir: "~/.egghead",
@@ -40,7 +51,8 @@ defmodule Egghead.Config do
             theme: "terminal-dark",
             web: %{port: 4000, host: "localhost", bind: "127.0.0.1"},
             mcp_servers: [],
-            server: nil
+            server: nil,
+            irc: %{port: 6667, bind: "127.0.0.1", hostname: nil, password: nil}
 
   @type llm_entry :: %{
           provider: String.t(),
@@ -59,6 +71,13 @@ defmodule Egghead.Config do
           requires: [Egghead.Capability.Grant.t()]
         }
 
+  @type irc_config :: %{
+          port: non_neg_integer(),
+          bind: String.t(),
+          hostname: String.t() | nil,
+          password: String.t() | nil
+        }
+
   @type t :: %__MODULE__{
           records_dir: String.t(),
           skills_dir: String.t(),
@@ -69,7 +88,8 @@ defmodule Egghead.Config do
           default_format: :markdown | :org,
           theme: String.t(),
           web: %{port: non_neg_integer(), host: String.t(), bind: String.t()},
-          mcp_servers: [mcp_server()]
+          mcp_servers: [mcp_server()],
+          irc: irc_config()
         }
 
   # --- Paths ---
@@ -280,9 +300,33 @@ defmodule Egghead.Config do
       theme: data["theme"] || "terminal-dark",
       web: parse_web(data["web"]),
       mcp_servers: parse_mcp_servers(data["mcp_servers"]),
-      server: parse_server(data["server"])
+      server: parse_server(data["server"]),
+      irc: parse_irc(data["irc"])
     }
   end
+
+  defp parse_irc(nil), do: default_irc()
+
+  defp parse_irc(map) when is_map(map) do
+    %{
+      port: int(map["port"], 6667),
+      bind: str(map["bind"], "127.0.0.1"),
+      hostname: str(map["hostname"], nil),
+      password: resolve_value(recover_env_ref(map["password"]))
+    }
+  end
+
+  defp parse_irc(_), do: default_irc()
+
+  defp default_irc do
+    %{port: 6667, bind: "127.0.0.1", hostname: nil, password: nil}
+  end
+
+  defp int(v, _default) when is_integer(v), do: v
+  defp int(_, default), do: default
+
+  defp str(v, _default) when is_binary(v) and v != "", do: v
+  defp str(_, default), do: default
 
   defp parse_mcp_servers(nil), do: []
 
@@ -428,6 +472,7 @@ defmodule Egghead.Config do
       emit_format(config.default_format),
       emit_field("theme", config.theme),
       emit_web(config.web),
+      emit_irc(config.irc),
       emit_mcp_servers(config.mcp_servers)
     ]
 
@@ -545,6 +590,25 @@ defmodule Egghead.Config do
     lines = if web.port != 4000, do: lines ++ ["  port: #{web.port}"], else: lines
     lines = if web.host != "localhost", do: lines ++ ["  host: #{web.host}"], else: lines
     lines = if web.bind != "127.0.0.1", do: lines ++ ["  bind: #{web.bind}"], else: lines
+
+    if length(lines) > 1, do: Enum.join(lines, "\n"), else: nil
+  end
+
+  defp emit_irc(%{port: 6667, bind: "127.0.0.1", hostname: nil, password: nil}), do: nil
+  defp emit_irc(nil), do: nil
+
+  defp emit_irc(irc) do
+    lines = ["irc:"]
+    lines = if irc[:port] && irc.port != 6667, do: lines ++ ["  port: #{irc.port}"], else: lines
+
+    lines =
+      if irc[:bind] && irc.bind != "127.0.0.1", do: lines ++ ["  bind: #{irc.bind}"], else: lines
+
+    lines =
+      if irc[:hostname], do: lines ++ ["  hostname: #{yaml_escape(irc.hostname)}"], else: lines
+
+    lines =
+      if irc[:password], do: lines ++ ["  password: #{yaml_escape(irc.password)}"], else: lines
 
     if length(lines) > 1, do: Enum.join(lines, "\n"), else: nil
   end

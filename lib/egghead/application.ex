@@ -5,20 +5,20 @@ defmodule Egghead.Application do
   All runtime configuration is loaded here in `apply_config/0`.
   No runtime.exs. Sources in precedence order:
 
-  1. Environment variables (EGGHEAD_RECORDS, PORT, etc.)
+  1. Environment variables (EGGHEAD_RECORDS, PORT, EGGHEAD_IRC_PORT, etc.)
   2. Config file (~/.config/egghead/config.yml)
   3. Compile-time defaults (config/config.exs)
 
   In release mode (Burrito binary), `configure_for_command/1` parses
   argv BEFORE the supervision tree to determine what to start:
 
-  | Command | Record store | Web | Log mode |
-  |---------|-------------|-----|----------|
-  | (none) / tui | yes | no | :file |
-  | serve | yes | yes | :console |
-  | mcp | yes | no | :silent |
-  | agent list, llm models, doctor, init | yes | no | :silent |
-  | --help, --version, config, llm list, logs | no | no | :silent |
+  | Command | Record store | Web | IRC | Log mode |
+  |---------|-------------|-----|-----|----------|
+  | (none) / tui | yes | no | no | :file |
+  | serve | yes | yes | yes | :console |
+  | mcp | yes | no | no | :silent |
+  | agent list, llm models, doctor, init | yes | no | no | :silent |
+  | --help, --version, config, llm list, logs | no | no | no | :silent |
   """
 
   use Application
@@ -81,7 +81,7 @@ defmodule Egghead.Application do
             {Registry, keys: :unique, name: Egghead.Doc.Registry},
             {Egghead.Doc.Supervisor, []},
             Egghead.TUI.MarkdownCache
-          ] ++ web_children()
+          ] ++ web_children() ++ irc_children()
 
         # Commands that don't need the app (--help, config, etc.)
         true ->
@@ -187,14 +187,17 @@ defmodule Egghead.Application do
       nil ->
         # Default = TUI
         Application.put_env(:egghead, :start_web, false)
+        Application.put_env(:egghead, :start_irc, false)
         Application.put_env(:egghead, :log_mode, :file)
 
       "tui" ->
         Application.put_env(:egghead, :start_web, false)
+        Application.put_env(:egghead, :start_irc, false)
         Application.put_env(:egghead, :log_mode, :file)
 
       _ ->
         Application.put_env(:egghead, :start_web, false)
+        Application.put_env(:egghead, :start_irc, false)
         Application.put_env(:egghead, :log_mode, :silent)
     end
   end
@@ -264,6 +267,11 @@ defmodule Egghead.Application do
         Application.put_env(:egghead, Egghead.Web.Endpoint, endpoint_config)
 
       {:error, _} ->
+        # No config file — register a default Config struct so callers
+        # that read `Application.get_env(:egghead, :config)` (notably
+        # the IRC supervisor) still see the same default-bearing shape
+        # as a successfully-loaded config.
+        Application.put_env(:egghead, :config, %Egghead.Config{})
         Application.put_env(:egghead, :records_dir, Path.expand("~/.egghead"))
 
         current = Application.get_env(:egghead, Egghead.Web.Endpoint, [])
@@ -317,6 +325,34 @@ defmodule Egghead.Application do
         Egghead.Web.Endpoint,
         Keyword.put(current, :http, Keyword.put(http, :ip, {0, 0, 0, 0}))
       )
+    end
+
+    # IRC env overrides — mirror PORT / EGGHEAD_BIND / EGGHEAD_WEB but
+    # name-spaced so they don't collide with web. Mutate the loaded
+    # `:config` struct in place (the IRC supervisor reads from there).
+    if System.get_env("EGGHEAD_IRC") == "false" do
+      Application.put_env(:egghead, :start_irc, false)
+    end
+
+    if port_str = System.get_env("EGGHEAD_IRC_PORT") do
+      put_irc(:port, String.to_integer(port_str))
+    end
+
+    if System.get_env("EGGHEAD_IRC_BIND") == "0.0.0.0" do
+      put_irc(:bind, "0.0.0.0")
+    end
+  end
+
+  # Update one field of the IRC config map in-place. The IRC supervisor
+  # reads `Application.get_env(:egghead, :config).irc` at boot.
+  defp put_irc(key, value) do
+    case Application.get_env(:egghead, :config) do
+      %Egghead.Config{} = cfg ->
+        irc = Map.put(cfg.irc || %{}, key, value)
+        Application.put_env(:egghead, :config, %{cfg | irc: irc})
+
+      _ ->
+        :ok
     end
   end
 
@@ -423,6 +459,26 @@ defmodule Egghead.Application do
       [Egghead.Web.Endpoint]
     else
       []
+    end
+  end
+
+  defp irc_children do
+    if Application.get_env(:egghead, :start_irc, true) do
+      [{Egghead.IRC.Server, config: irc_config()}]
+    else
+      []
+    end
+  end
+
+  # Always returns a map — the Config struct's `:irc` field defaults
+  # to a populated map, and the no-config-file branch in apply_config/0
+  # registers a default `%Egghead.Config{}`. If a downstream caller
+  # somehow blanked the field, fall back to the same defaults so the
+  # IRC supervisor never sees nil.
+  defp irc_config do
+    case Application.get_env(:egghead, :config) do
+      %{irc: cfg} when is_map(cfg) -> cfg
+      _ -> %{port: 6667, bind: "127.0.0.1", hostname: nil, password: nil}
     end
   end
 

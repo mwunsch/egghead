@@ -78,19 +78,28 @@ defmodule Egghead.CLI do
   def prepare_runtime(opts \\ []) do
     alias Egghead.CLI.Widgets
 
-    # In release mode the app is already up by the time we get here
-    # (Application.start/2 starts the tree and shows its own spinner).
-    # Only wrap a spinner when we'll actually do work.
-    if Application.started_applications() |> Enum.any?(&match?({:egghead, _, _}, &1)) do
-      :ok
-    else
-      Widgets.spinner("Starting Egghead…", fn ->
-        start_app(:silent, web: false)
+    # In release mode the supervision tree is already up by the time we
+    # get here (Application.start/2 starts it and shows its own spinner)
+    # — but only if the command was recognized as needing the app. A
+    # short-circuit on `Application.started_applications/0` would lie:
+    # the application can be "started" with an empty children list when
+    # `:start_record_store` was set false. Probe the actual RecordStore
+    # process so this code path is correct in both branches.
+    cond do
+      Egghead.Node.connected?() ->
+        :ok
 
-        if not Egghead.Node.connected?() and GenServer.whereis(Egghead.RecordStore) do
-          Egghead.Agent.Supervisor.sync_agents()
-        end
-      end)
+      GenServer.whereis(Egghead.RecordStore) ->
+        :ok
+
+      true ->
+        Widgets.spinner("Starting Egghead…", fn ->
+          start_app(:silent, web: false)
+
+          if not Egghead.Node.connected?() and GenServer.whereis(Egghead.RecordStore) do
+            Egghead.Agent.Supervisor.sync_agents()
+          end
+        end)
     end
 
     if Egghead.Node.connected?() do

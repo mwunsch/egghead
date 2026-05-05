@@ -23,13 +23,13 @@ defmodule Egghead.Application do
 
   use Application
 
-  # Commands that need the record store + agent layer running
-  @app_commands ~w(serve mcp tui init doctor rooms)
-  @app_subcommands %{
-    "agents" => ~w(list new),
-    "llm" => ~w(test models),
-    # tools always needs the app: querying agents + MCP client state
-    "tools" => ~w(list show add remove who mcp)
+  # Commands that DO NOT need the record store + agent layer running.
+  # Everything else gets the full supervision tree by default — the cost
+  # of an unneeded start is a slow command; the cost of a needed-but-
+  # missing tree is a hang on the first GenServer.call.
+  @no_app_commands ~w(config logs help service)
+  @no_app_subcommands %{
+    "llm" => ~w(list add remove)
   }
 
   @impl true
@@ -132,10 +132,12 @@ defmodule Egghead.Application do
   # - We're actually starting our supervision tree (not --help/config/etc).
   # - We're not attaching to a remote node (no cold start work).
   # - stdout is a real terminal (not piped, not MCP, not NO_COLOR).
+  # - The command isn't streaming logs to stdout (`serve` uses :console).
   defp startup_spinner? do
     release_mode?() and
       Application.get_env(:egghead, :start_record_store, true) and
       not Egghead.Node.connected?() and
+      Application.get_env(:egghead, :log_mode) != :console and
       Egghead.CLI.Widgets.stdout_tty?()
   end
 
@@ -197,15 +199,15 @@ defmodule Egghead.Application do
     end
   end
 
-  # default = TUI
+  # Default to "needs the app." Only the small explicit no-app list
+  # opts out. nil command is the TUI, which always needs the app.
   defp needs_app?(nil, _), do: true
-  defp needs_app?(cmd, _) when cmd in @app_commands, do: true
+  defp needs_app?(cmd, _) when cmd in @no_app_commands, do: false
 
   defp needs_app?(cmd, sub) do
-    case Map.get(@app_subcommands, cmd) do
-      # config, logs, help, llm list, llm remove
-      nil -> false
-      subs -> sub in subs
+    case Map.get(@no_app_subcommands, cmd) do
+      nil -> true
+      no_app_subs -> sub not in no_app_subs
     end
   end
 

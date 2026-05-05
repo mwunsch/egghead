@@ -20,7 +20,8 @@ participant reads, not through a dispatcher that routes each turn.
 The rest of the documentation explains how each of those choices
 works in practice and what it costs you when it doesn't fit.
 
-If you are new to the system, read **Getting started** first; it
+If you are new to the system, read
+[Getting started]({{< ref "getting-started" >}}) first; it
 gets you to a running node with one agent in about ten minutes.
 After that, the order in the left rail follows the order things
 become useful: records and record classes describe what you
@@ -28,6 +29,11 @@ store; the agents section describes what runs against that store;
 the capabilities section describes what those agents are allowed
 to do; and the rest of the rail covers integration, day-to-day
 operations, and evaluation.
+
+If you want the *why* before (or after) the *how*, the
+[founding essay]({{< ref "rationale" >}}) is an optional
+long-read on what Egghead is for and why it is shaped the way
+it is.
 
 Every guide is written against the current release. If a CLI
 flag, configuration key, or function signature in these pages

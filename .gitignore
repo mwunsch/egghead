@@ -36,3 +36,11 @@ egghead-*.tar
 
 # Burrito builds self-contained binaries here.
 /burrito_out/
+
+# Phoenix asset digest outputs (`mix phx.digest`). Source assets
+# (app.css, app.js, icons) stay tracked; the cache manifest, gzip
+# copies, and fingerprinted "name-<32hex>.ext" variants are regenerated
+# every release and shouldn't be committed.
+/priv/static/cache_manifest.json
+/priv/static/**/*.gz
+/priv/static/**/*-????????????????????????????????.*

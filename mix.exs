@@ -294,7 +294,7 @@ defmodule Egghead.MixProject do
   defp releases do
     [
       egghead: [
-        steps: [:assemble, &Burrito.wrap/1],
+        steps: [&digest_static/1, :assemble, &Burrito.wrap/1],
         burrito: [
           targets: [
             macos_arm64: [os: :darwin, cpu: :aarch64],
@@ -304,6 +304,15 @@ defmodule Egghead.MixProject do
         ]
       ]
     ]
+  end
+
+  # Generate priv/static/cache_manifest.json before assembling. Without
+  # this step a local `mix release` produces a Burrito binary whose
+  # endpoint warm-up fails with `cache_static_manifest` errors. CI runs
+  # `mix phx.digest` as a separate step; this makes it work locally too.
+  defp digest_static(release) do
+    Mix.Task.run("phx.digest", [])
+    release
   end
 
   defp package do

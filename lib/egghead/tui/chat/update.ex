@@ -1573,18 +1573,14 @@ defmodule Egghead.TUI.Chat.Update do
   defp resolve_invite_record(agent_id), do: Egghead.Agent.resolve_for_invite(agent_id)
 
   defp ensure_agent_started(record) do
-    name = Egghead.Agent.agent_name(record.id)
-
-    case GenServer.whereis(name) do
-      nil ->
-        case Egghead.Agent.Supervisor.start_agent(record) do
-          {:ok, _pid} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-          {:error, _reason} -> :ok
-        end
-
-      _pid ->
-        :ok
+    if Egghead.Agent.running?(record.id) do
+      :ok
+    else
+      case Egghead.Agent.Supervisor.start_agent(record) do
+        {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+        {:error, _reason} -> :ok
+      end
     end
   end
 

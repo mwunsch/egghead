@@ -226,7 +226,7 @@ defmodule Egghead.Chat.Coordinator do
       agents_to_activate = tier1_filter(msg, candidates)
 
       if agents_to_activate == [] do
-        Logger.warning("Coordinator: no agents registered, nobody to activate")
+        log_no_activation(state, room_id, msg, candidates)
       end
 
       activate(agents_to_activate, msg, room_id, state)
@@ -796,6 +796,46 @@ defmodule Egghead.Chat.Coordinator do
       end
     catch
       _, _ -> all_agents
+    end
+  end
+
+  # Diagnostic split for the "nobody activated" path. Three distinct
+  # failure modes get rolled into one log line otherwise — and they each
+  # point at a different bug:
+  #
+  #   * empty `state.agents` — the coordinator never received a
+  #     :started for any agent (lifecycle subscription dropped, or
+  #     boot order regressed)
+  #   * empty `candidates` — agents are registered but none are joined
+  #     to this room (invite didn't land, or roster diverged)
+  #   * empty `agents_to_activate` with mentions — the @-mention text
+  #     didn't match any of the candidates' ids/basenames/names
+  defp log_no_activation(state, room_id, msg, candidates) do
+    mentions = msg.mentions || []
+    registered = map_size(state.agents)
+    joined = map_size(candidates)
+
+    cond do
+      registered == 0 ->
+        Logger.warning("Coordinator: no agents registered, nobody to activate")
+
+      joined == 0 ->
+        Logger.warning(
+          "Coordinator: no agents joined to room #{room_id} " <>
+            "(#{registered} registered globally: #{state.agents |> Map.keys() |> inspect()})"
+        )
+
+      mentions != [] ->
+        Logger.warning(
+          "Coordinator: @-mention #{inspect(mentions)} matched no agent in room #{room_id} " <>
+            "(candidates: #{candidates |> Map.keys() |> inspect()})"
+        )
+
+      true ->
+        Logger.warning(
+          "Coordinator: tier1 filter activated nobody in room #{room_id} " <>
+            "(#{joined} candidates, mentions=#{inspect(mentions)})"
+        )
     end
   end
 

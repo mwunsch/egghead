@@ -260,6 +260,18 @@ defmodule Egghead.Agent do
     :"egghead_agent_#{id}"
   end
 
+  @doc """
+  Whether an agent process is currently running. Node-aware: when this
+  process is attached to a remote `egghead serve`, the registered name
+  lives on the server node, so a local `GenServer.whereis/1` would
+  always return nil and mislead client-side callers into restarting an
+  agent that's already up.
+  """
+  @spec running?(String.t()) :: boolean()
+  def running?(agent_id) when is_binary(agent_id) do
+    whereis_node_aware(agent_name(agent_id)) != nil
+  end
+
   # Node-aware process lookup. Checks remote node when connected.
   defp whereis_node_aware(name) do
     case Egghead.Node.server_node() do

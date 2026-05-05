@@ -49,7 +49,7 @@ defmodule Egghead.CLI.TUI do
       :exit, {:exit, {:disconnected, _}} ->
         IO.puts("\nServer disconnected. Restart egghead to continue.")
 
-      :exit, {reason, _} when reason in [:nodedown, :noproc] ->
+      :exit, {:nodedown, _} ->
         IO.puts("\nServer disconnected. Restart egghead to continue.")
     end
 

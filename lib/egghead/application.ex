@@ -53,10 +53,16 @@ defmodule Egghead.Application do
 
     children =
       cond do
-        # Connected to a remote server — only start PubSub for cluster fan-out
+        # Connected to a remote server — start PubSub for cluster fan-out
+        # plus a local Task.Supervisor for fire-and-forget client-side
+        # work (chat slash commands, LiveView async tasks). Without it,
+        # exec_async sites that target `Egghead.Tool.TaskSupervisor`
+        # exit `:noproc` and the TUI's catch-all reads that as a node
+        # disconnect — surfacing a misleading "Server disconnected" banner.
         Egghead.Node.connected?() ->
           [
             {Phoenix.PubSub, name: Egghead.PubSub},
+            {Task.Supervisor, name: Egghead.Tool.TaskSupervisor},
             Egghead.TUI.MarkdownCache
           ]
 

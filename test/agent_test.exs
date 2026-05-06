@@ -202,13 +202,16 @@ defmodule Egghead.AgentTest do
 
       # Simulate a linked session process that exits normally
       session =
-        spawn_link(fn ->
+        spawn(fn ->
           Process.link(pid)
-          :ok
+
+          receive do
+            :exit -> :ok
+          end
         end)
 
-      # Wait for the session to finish
       ref = Process.monitor(session)
+      send(session, :exit)
       assert_receive {:DOWN, ^ref, :process, ^session, :normal}
 
       # Give the agent time to process the EXIT message
